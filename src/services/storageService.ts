@@ -6,6 +6,7 @@ import {
   INITIAL_PRODUCTS, INITIAL_CUSTOMERS, INITIAL_SUPPLIERS, INITIAL_SHIFT,
   INITIAL_EXPENSES, INITIAL_CASH_MOVEMENTS, INITIAL_INVOICES, INITIAL_USERS
 } from '../data/initialData';
+import { licenseService } from './licenseService';
 
 const STORAGE_KEYS = {
   PRODUCTS: 'sm_products_v3',
@@ -364,6 +365,15 @@ class StorageService {
   }
 
   public postSalesInvoice(invoice: SalesInvoice): { success: boolean; error?: string; hasNegativeStock?: boolean } {
+    // License verification check (enforced only when LICENSE_ENFORCEMENT is true)
+    if (!licenseService.canCreateSalesInvoice()) {
+      const state = licenseService.getLicenseState();
+      return {
+        success: false,
+        error: `لا يمكن إنشاء فاتورة بيع جديدة: ${state.message}`,
+      };
+    }
+
     const products = this.getProducts();
     const customers = this.getCustomers();
 

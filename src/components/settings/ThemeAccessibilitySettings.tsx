@@ -14,16 +14,32 @@ import {
   Check,
   Receipt,
   ShoppingCart,
-  Boxes
+  Boxes,
+  Key,
+  ShieldCheck,
+  ShieldAlert,
+  Clock,
+  Laptop
 } from 'lucide-react';
+import { licenseService, LicenseStateResult } from '../../services/licenseService';
+import { LicenseActivationModal } from '../license/LicenseActivationModal';
 
 export const ThemeAccessibilitySettings: React.FC = () => {
   const [settings, setSettings] = useState<AccessibilitySettings>(themeService.getSettings());
+  const [licenseState, setLicenseState] = useState<LicenseStateResult>(() => licenseService.getLicenseState());
+  const [isActivationModalOpen, setIsActivationModalOpen] = useState<boolean>(false);
 
   useEffect(() => {
-    return themeService.subscribe((updated) => {
+    const unsubTheme = themeService.subscribe((updated) => {
       setSettings(updated);
     });
+    const unsubLicense = licenseService.subscribe(() => {
+      setLicenseState(licenseService.getLicenseState());
+    });
+    return () => {
+      unsubTheme();
+      unsubLicense();
+    };
   }, []);
 
   const handleThemeChange = (mode: ThemeMode) => {
@@ -363,7 +379,92 @@ export const ThemeAccessibilitySettings: React.FC = () => {
         </div>
       </div>
 
-      {/* Section 5: Operational Guarantee Note */}
+      {/* Section 5: Offline Licensing (قسم الترخيص الأوفلاين) */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-2xl p-6 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3 gap-3">
+          <div>
+            <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <span className="p-1.5 bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 rounded-lg">🔑</span>
+              <span>الترخيص الأوفلاين للجهاز (Offline License)</span>
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
+              إدارة تفعيل النظام المشفر (ECDSA P-256) للأجهزة التي تعمل بدون إنترنت أو عبر الشبكة المحلية.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsActivationModalOpen(true)}
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-black flex items-center gap-1.5 cursor-pointer shadow-sm transition-all active:scale-95 shrink-0"
+          >
+            <Key className="w-4 h-4" />
+            <span>تفعيل أو تجديد الترخيص</span>
+          </button>
+        </div>
+
+        {/* License Details Cards */}
+        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-1">
+          <div className="p-3.5 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1">
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-bold block">حالة الترخيص:</span>
+            <span className={`text-xs font-black inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${
+              licenseState.status === 'valid'
+                ? 'bg-emerald-100 dark:bg-emerald-950/80 text-emerald-700 dark:text-emerald-300'
+                : licenseState.status === 'grace'
+                ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-700 dark:text-amber-300'
+                : 'bg-rose-100 dark:bg-rose-950/80 text-rose-700 dark:text-rose-300'
+            }`}>
+              {licenseState.status === 'valid' ? 'سارٍ ومفعّل ✓' :
+               licenseState.status === 'grace' ? 'فترة سماح ⏳' :
+               licenseState.status === 'expired' ? 'منتهي الصلاحية' :
+               licenseState.status === 'tampered' ? 'توقيع تالف' :
+               licenseState.status === 'wrong-device' ? 'جهاز مختلف' :
+               licenseState.status === 'clock-rollback' ? 'خطأ في الساعة' : 'غير مرخص'}
+            </span>
+          </div>
+
+          <div className="p-3.5 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1">
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-bold block">الأيام المتبقية:</span>
+            <span className="font-mono text-sm font-black text-slate-900 dark:text-white block">
+              {licenseState.daysRemaining > 0 ? `${licenseState.daysRemaining} يوم` : '—'}
+            </span>
+          </div>
+
+          <div className="p-3.5 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1">
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-bold block">الخطة (Plan):</span>
+            <span className="text-xs font-bold text-slate-900 dark:text-white block truncate">
+              {licenseState.payload?.plan || 'باقة تجريبية / افتراضية'}
+            </span>
+          </div>
+
+          <div className="p-3.5 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1">
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-bold block">وضع التشغيل (Mode):</span>
+            <span className="text-xs font-bold text-emerald-700 dark:text-emerald-400 block">
+              {licenseState.payload?.mode === 'offline' ? 'أوفلاين محلي (Offline)' : (licenseState.payload?.mode || 'أوفلاين / هجين')}
+            </span>
+          </div>
+
+          <div className="p-3.5 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1 col-span-2 sm:col-span-1">
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-bold block">تاريخ الانتهاء:</span>
+            <span className="font-mono text-xs font-bold text-slate-900 dark:text-white block">
+              {licenseState.payload?.validUntil ? licenseState.payload.validUntil.slice(0, 10) : '—'}
+            </span>
+          </div>
+        </div>
+
+        {/* License status explanation banner */}
+        <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400 flex items-center justify-between flex-wrap gap-2">
+          <span>{licenseState.message}</span>
+          <span className="font-mono text-[10px] text-slate-400">معرف الجهاز: {licenseService.getDeviceId()}</span>
+        </div>
+      </div>
+
+      {/* License Activation Modal */}
+      <LicenseActivationModal
+        isOpen={isActivationModalOpen}
+        onClose={() => setIsActivationModalOpen(false)}
+        onSuccess={() => setLicenseState(licenseService.getLicenseState())}
+      />
+
+      {/* Section 6: Operational Guarantee Note */}
       <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800/80 rounded-2xl p-5 text-emerald-900 dark:text-emerald-200 text-sm flex items-start gap-3">
         <Sparkles className="w-6 h-6 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
         <div className="space-y-1">

@@ -43,8 +43,14 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   onClose,
   isLockScreen = false,
 }) => {
-  const [authMode, setAuthMode] = useState<'PIN' | 'CLOUD_EMAIL'>('PIN');
-  const [cloudEmail, setCloudEmail] = useState<string>(cloudService.getLinkedStore().ownerEmail || 'mahmoud.mansour0b@gmail.com');
+  const [isStoreActivated, setIsStoreActivated] = useState<boolean>(cloudService.isStoreActivated());
+  const [authMode, setAuthMode] = useState<'PIN' | 'CLOUD_EMAIL'>(
+    cloudService.isStoreActivated() ? 'PIN' : 'CLOUD_EMAIL'
+  );
+  const [activeStep, setActiveStep] = useState<1 | 2 | 3>(
+    cloudService.isStoreActivated() ? 3 : 1
+  );
+  const [cloudEmail, setCloudEmail] = useState<string>(cloudService.getPrimaryOwnerEmail());
   const [cloudPassword, setCloudPassword] = useState<string>('••••••••');
   const [showCloudPassword, setShowCloudPassword] = useState<boolean>(false);
   const [isCloudLoggingIn, setIsCloudLoggingIn] = useState<boolean>(false);
@@ -68,6 +74,17 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const selectedUser = users.find(u => u.id === selectedUserId) || users[0];
   const defaultPinForSelected = selectedUser.role === 'ADMIN' ? '1234' : '1111';
 
+  // Strict Lock Store & Revoke All Access Handler
+  const handleLockStoreCompletely = async () => {
+    await cloudService.lockStoreAndRevokeAccess();
+    setIsStoreActivated(false);
+    setAuthMode('CLOUD_EMAIL');
+    setActiveStep(1);
+    setPin('');
+    setResetNotice('تم إقفال المحل وسحب كافة الصلاحيات بنجاح. لا يملك أي شخص صلاحية الدخول حتى يتم تسجيل دخول المالك بالبريد المعتمد.');
+    setTimeout(() => setResetNotice(null), 5000);
+  };
+
   const handleCloudLogin = async (e?: React.FormEvent, overrideEmail?: string, overridePass?: string) => {
     if (e) e.preventDefault();
     setError(null);
@@ -80,16 +97,17 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     setIsCloudLoggingIn(false);
 
     if (res.success) {
-      // Find admin user or create/use primary user
-      const adminUser = users.find(u => u.role === 'ADMIN') || users[0];
+      setIsStoreActivated(true);
+      setActiveStep(3);
       setResetNotice(
         res.offlineMode 
-          ? `تم الدخول بنجاح بحساب (${emailToUse}) في وضع الأوفلاين المحلي (تم حفظ البيانات على الجهاز).`
-          : `تم توثيق الدخول السحابي بنجاح بحساب (${emailToUse}) ومزامنة بيانات المحل!`
+          ? `✓ الخطوات 1 و 2 مكتملة: تم توثيق حساب المالك (${emailToUse}) بنجاح وتفعيل المحل محلياً وسحابياً!`
+          : `✓ الخطوات 1 و 2 مكتملة: تم التحقق السحابي لحساب المالك (${emailToUse}) وتفعيل كافة صلاحيات المحل بنجاح!`
       );
       setTimeout(() => {
+        const adminUser = users.find(u => u.role === 'ADMIN') || users[0];
         onLoginSuccess(adminUser);
-      }, 700);
+      }, 900);
     } else {
       setError(res.error || 'فشل تسجيل الدخول. يرجى التأكد من كتابة البريد وكلمة المرور بشكل صحيح.');
     }
@@ -118,6 +136,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   };
 
   const handleLogin = (pinToTest?: string) => {
+    // Gatekeeper enforcement: No cashier can enter if store is not activated by owner!
+    if (!cloudService.isStoreActivated()) {
+      setError('⛔ لا تملك أي صلاحية للدخول! المحل مقفل بالكامل، يلزم إتمام الخطوة 1 بتسجيل دخول المالك بالبريد الإلكتروني المعتمد أولاً.');
+      return;
+    }
+
     const rawPin = pinToTest !== undefined ? pinToTest : pin;
     const cleanPin = normalizeArabicDigits(rawPin).trim();
     
@@ -135,9 +159,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     }
   };
 
-  // One-click quick login with default PIN
+  // One-click quick login with default PIN (Protected by Gatekeeper)
   const handleDirectDefaultLogin = () => {
-    // If the pin in storage was changed or desynced, ensure selected user has the default PIN
+    if (!cloudService.isStoreActivated()) {
+      setError('⛔ لا تملك أي صلاحية للدخول! المحل مقفل بالكامل، يلزم إتمام الخطوة 1 بتسجيل دخول المالك بالبريد الإلكتروني المعتمد أولاً.');
+      return;
+    }
+
     const allUsers = storage.getUsers();
     const u = allUsers.find(usr => usr.id === selectedUserId);
     if (u) {

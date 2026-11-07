@@ -18,6 +18,7 @@ import { ThemeAccessibilitySettings } from './components/settings/ThemeAccessibi
 import { BackupManager } from './components/backup/BackupManager';
 import { AuditTrail } from './components/audit/AuditTrail';
 import { PrintableInvoice } from './components/common/PrintableInvoice';
+import { EnvironmentBanner } from './components/common/EnvironmentBanner';
 import { LoginModal } from './components/auth/LoginModal';
 import { CloudDashboard } from './components/cloud/CloudDashboard';
 import { cloudService } from './services/cloudService';
@@ -113,6 +114,9 @@ export default function App() {
         onOpenLogin={() => setIsLoginOpen(true)}
         onToggleMobileMenu={() => setIsMobileMenuOpen(prev => !prev)}
       />
+
+      {/* System Environment Notification Banner */}
+      <EnvironmentBanner />
 
       {/* Main Workspace (Sidebar + Dynamic Screen Area) */}
       <div className="flex-1 flex overflow-hidden">
