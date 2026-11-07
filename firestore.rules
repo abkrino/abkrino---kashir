@@ -1,65 +1,173 @@
+// لا تُنشر قبل ربط التطبيق بالمخطط الجديد (الخطوة اللاحقة)
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Global Safety Net: Default Deny
+
+    // -------------------------------------------------------------------------
+    // Global Safety Net: Default Deny All
+    // -------------------------------------------------------------------------
     match /{document=**} {
       allow read, write: if false;
     }
 
+    // -------------------------------------------------------------------------
+    // Helper Functions
+    // -------------------------------------------------------------------------
     function isSignedIn() {
       return request.auth != null;
     }
 
+    // Check if the authenticated user has a document in the admins collection
+    function isAdmin() {
+      return isSignedIn() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    // Check if the authenticated user is the owner of this organization
+    function isOrgOwner(orgId) {
+      return isSignedIn() && request.auth.uid == orgId;
+    }
+
+    // Check if the organization has an active status and valid subscription
+    function isOrgActive(orgId) {
+      let org = get(/databases/$(database)/documents/orgs/$(orgId)).data;
+      return org.status == 'active' && org.validUntil > request.time;
+    }
+
     function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+      return id is string && id.size() > 0 && id.size() <= 128;
     }
 
-    function isStoreOwner(storeId) {
-      return isSignedIn() && (
-        request.auth.token.email == 'mahmoud.mansour0b@gmail.com' ||
-        request.auth.uid == storeId ||
-        request.auth.uid != null
-      );
+    function isValidDateId(id) {
+      return id is string && id.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
     }
 
-    // Stores collection
-    match /stores/{storeId} {
-      allow read, write: if isSignedIn() && isValidId(storeId);
+    // -------------------------------------------------------------------------
+    // 1. Admins Collection
+    // Created manually in Console. No write access from any client.
+    // -------------------------------------------------------------------------
+    match /admins/{uid} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
 
-      // Products subcollection
-      match /products/{productId} {
-        allow read, write: if isSignedIn() && isValidId(storeId) && isValidId(productId);
+    // -------------------------------------------------------------------------
+    // 2. Organizations Private Collection (orgsPrivate/{orgId})
+    // Internal administrative metadata (notes, private tags, internal billing).
+    // Accessible EXCLUSIVELY by Superadmin (Read & Write). Client has ZERO access.
+    // -------------------------------------------------------------------------
+    match /orgsPrivate/{orgId} {
+      allow read, write: if isAdmin();
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. Organizations Collection (orgs/{orgId} where orgId == uid)
+    // Read: Owner or Admin.
+    // Write: Admin ONLY. Client cannot create or edit org fields.
+    // -------------------------------------------------------------------------
+    match /orgs/{orgId} {
+      allow read: if isOrgOwner(orgId) || isAdmin();
+      allow write: if isAdmin();
+
+      // -----------------------------------------------------------------------
+      // Branches Subcollection
+      // Create/Delete: Admin only.
+      // Update: Admin OR Owner updating heartbeat/version fields with active sub.
+      // Heartbeat lastSeenAt MUST equal request.time (serverTimestamp).
+      // -----------------------------------------------------------------------
+      match /branches/{branchId} {
+        allow read: if isOrgOwner(orgId) || isAdmin();
+        allow create, delete: if isAdmin();
+        allow update: if isAdmin() || (
+          isOrgOwner(orgId) &&
+          isOrgActive(orgId) &&
+          isValidId(branchId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'lastSeenAt',
+            'appVersion',
+            'windowsVersion',
+            'mode'
+          ]) &&
+          request.resource.data.lastSeenAt == request.time
+        );
+
+        // ---------------------------------------------------------------------
+        // Daily Summaries Subcollection (yyyy-MM-dd)
+        // Read: Owner or Admin.
+        // Write: Owner only with active subscription and valid schema.
+        // ---------------------------------------------------------------------
+        match /dailySummaries/{dateId} {
+          allow read: if isOrgOwner(orgId) || isAdmin();
+          allow create, update: if isOrgOwner(orgId) &&
+            isOrgActive(orgId) &&
+            isValidDateId(dateId) &&
+            request.resource.data.salesTotal is number &&
+            request.resource.data.invoiceCount is int &&
+            request.resource.data.cashInDrawer is number &&
+            request.resource.data.purchasesTotal is number &&
+            request.resource.data.customerDebt is number &&
+            request.resource.data.supplierDue is number &&
+            request.resource.data.lowStockCount is int &&
+            request.resource.data.updatedAt is timestamp;
+          allow delete: if false;
+        }
+
+        // ---------------------------------------------------------------------
+        // Backups Subcollection (Metadata Doc + chunks Subcollection)
+        // Metadata Read: Owner or Admin.
+        // Metadata Write: Owner with active subscription and metadata schema validation.
+        // Chunks Read/Write: Owner ONLY with active subscription (Admin has NO access).
+        // Each chunk must not exceed 900,000 bytes.
+        // ---------------------------------------------------------------------
+        match /backups/{backupId} {
+          allow read: if isOrgOwner(orgId) || isAdmin();
+          allow create, update: if isOrgOwner(orgId) &&
+            isOrgActive(orgId) &&
+            isValidId(backupId) &&
+            request.resource.data.metadata is map &&
+            request.resource.data.metadata.sizeBytes is number &&
+            request.resource.data.metadata.createdAt is timestamp &&
+            request.resource.data.metadata.appVersion is string;
+          allow delete: if isOrgOwner(orgId) && isOrgActive(orgId);
+
+          match /chunks/{chunkIndex} {
+            allow read: if isOrgOwner(orgId) && isOrgActive(orgId);
+            allow create, update: if isOrgOwner(orgId) &&
+              isOrgActive(orgId) &&
+              request.resource.data.data is string &&
+              request.resource.data.data.size() <= 900000;
+            allow delete: if isOrgOwner(orgId) && isOrgActive(orgId);
+          }
+        }
       }
 
-      // Customers subcollection
-      match /customers/{customerId} {
-        allow read, write: if isSignedIn() && isValidId(storeId) && isValidId(customerId);
+      // -----------------------------------------------------------------------
+      // License Events Subcollection
+      // Read: Owner or Admin.
+      // Write: FORBIDDEN from all clients (Server-side Admin SDK only).
+      // -----------------------------------------------------------------------
+      match /licenseEvents/{eventId} {
+        allow read: if isOrgOwner(orgId) || isAdmin();
+        allow write: if false;
       }
+    }
 
-      // Invoices subcollection
-      match /invoices/{invoiceId} {
-        allow read, write: if isSignedIn() && isValidId(storeId) && isValidId(invoiceId);
-      }
+    // -------------------------------------------------------------------------
+    // Collection Group Queries (Superadmin Dashboard Queries across all orgs)
+    // -------------------------------------------------------------------------
+    match /{path=**}/branches/{branchId} {
+      allow read: if isAdmin();
+    }
 
-      // Cloud Backups subcollection
-      match /cloudBackups/{backupId} {
-        allow read, write: if isSignedIn() && isValidId(storeId) && isValidId(backupId);
-      }
+    match /{path=**}/dailySummaries/{dateId} {
+      allow read: if isAdmin();
+    }
 
-      // Crashlytics reports subcollection
-      match /crashReports/{reportId} {
-        allow read, write: if isSignedIn() && isValidId(storeId) && isValidId(reportId);
-      }
+    match /{path=**}/backups/{backupId} {
+      allow read: if isAdmin();
+    }
 
-      // Performance metrics subcollection
-      match /performanceMetrics/{metricId} {
-        allow read, write: if isSignedIn() && isValidId(storeId) && isValidId(metricId);
-      }
-
-      // Cloud Alerts / Messaging subcollection
-      match /cloudAlerts/{alertId} {
-        allow read, write: if isSignedIn() && isValidId(storeId) && isValidId(alertId);
-      }
+    match /{path=**}/licenseEvents/{eventId} {
+      allow read: if isAdmin();
     }
   }
 }

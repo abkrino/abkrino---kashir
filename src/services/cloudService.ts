@@ -111,6 +111,7 @@ const LOCAL_STORAGE_KEYS = {
   OFFLINE_QUEUE: 'sm_cloud_offline_queue_v1',
 };
 
+export const LEGACY_STORE_SYNC = false;
 const DEFAULT_STORE_ID = 'main-store';
 const PRIMARY_OWNER_EMAIL = 'mahmoud.mansour0b@gmail.com';
 
@@ -121,37 +122,41 @@ class CloudService {
   private listeners: (() => void)[] = [];
 
   constructor() {
-    window.addEventListener('online', () => {
-      this.isOnlineStatus = true;
-      this.notifyListeners();
-      this.processOfflineQueue();
-      this.logPerformance('NetworkReconnect', 15, 'SUCCESS');
-    });
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', () => {
+        this.isOnlineStatus = true;
+        this.notifyListeners();
+        this.processOfflineQueue();
+        this.logPerformance('NetworkReconnect', 15, 'SUCCESS');
+      });
 
-    window.addEventListener('offline', () => {
-      this.isOnlineStatus = false;
-      this.notifyListeners();
-      this.logCrash('انقطاع الاتصال بالإنترنت - التبديل التلقائي للوضع المحلي أوفلاين', 'Network', 'LOW');
-    });
+      window.addEventListener('offline', () => {
+        this.isOnlineStatus = false;
+        this.notifyListeners();
+        this.logCrash('انقطاع الاتصال بالإنترنت - التبديل التلقائي للوضع المحلي أوفلاين', 'Network', 'LOW');
+      });
 
-    // Listen to Firebase Auth state
-    onAuthStateChanged(auth, (user) => {
-      this.currentFirebaseUser = user;
-      if (user) {
-        // Cache user details locally so offline access works seamlessly
-        localStorage.setItem(LOCAL_STORAGE_KEYS.AUTH_CACHE, JSON.stringify({
-          uid: user.uid,
-          email: user.email,
-          displayName: user.displayName || 'مدير النظام الأساسي',
-          lastLoginTime: new Date().toISOString(),
-          isPrimaryOwner: user.email === PRIMARY_OWNER_EMAIL,
-        }));
-      }
-      this.notifyListeners();
-    });
+      // Listen to Firebase Auth state
+      onAuthStateChanged(auth, (user) => {
+        this.currentFirebaseUser = user;
+        if (user) {
+          // Cache user details locally so offline access works seamlessly
+          try {
+            localStorage.setItem(LOCAL_STORAGE_KEYS.AUTH_CACHE, JSON.stringify({
+              uid: user.uid,
+              email: user.email,
+              displayName: user.displayName || 'مدير النظام الأساسي',
+              lastLoginTime: new Date().toISOString(),
+              isPrimaryOwner: user.email === PRIMARY_OWNER_EMAIL,
+            }));
+          } catch {}
+        }
+        this.notifyListeners();
+      });
 
-    // Seed initial alerts if empty
-    this.initDefaultAlerts();
+      // Seed initial alerts if empty
+      this.initDefaultAlerts();
+    }
   }
 
   // --- SETTINGS ("ضبط الكلود وحفظ النسخة بعد كل عملية") ---
@@ -393,6 +398,7 @@ class CloudService {
 
   // --- AUTOMATIC SYNC AFTER ACTION ("حفظ نسخة على الكلود بعد كل عملية") ---
   public triggerAutoSyncOnAction(actionName: string): void {
+    if (!LEGACY_STORE_SYNC) return;
     const settings = this.getCloudSettings();
     if (!settings.autoSyncOnAction) return;
 
@@ -401,6 +407,7 @@ class CloudService {
   }
 
   private enqueueSyncTask(actionName: string) {
+    if (!LEGACY_STORE_SYNC) return;
     if (!this.isOnline()) {
       const queue = this.getOfflineQueue();
       queue.push({ action: actionName, timestamp: new Date().toISOString() });
@@ -426,6 +433,7 @@ class CloudService {
   }
 
   private async processOfflineQueue() {
+    if (!LEGACY_STORE_SYNC) return;
     const queue = this.getOfflineQueue();
     if (queue.length === 0) return;
 
@@ -443,6 +451,9 @@ class CloudService {
 
   // --- FIRESTORE DATA SYNC ---
   public async syncLocalToCloud(showToast: boolean = true): Promise<{ success: boolean; error?: string }> {
+    if (!LEGACY_STORE_SYNC) {
+      return { success: true };
+    }
     if (this.syncInProgress) return { success: true };
     this.syncInProgress = true;
     this.notifyListeners();

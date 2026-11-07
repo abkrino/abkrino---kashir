@@ -29,8 +29,12 @@ import {
   Wifi,
   WifiOff,
   UserCheck,
-  AlertTriangle
+  AlertTriangle,
+  Clock,
+  Activity
 } from 'lucide-react';
+import { orgSyncService, SyncState } from '../../services/orgSyncService';
+import { auth } from '../../services/cloudService';
 
 interface CloudDashboardProps {
   currentUser: User;
@@ -53,9 +57,17 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(cloudService.isUserAuthenticated());
   const [linkedStore, setLinkedStore] = useState(cloudService.getLinkedStore());
 
+  // Organization Sync Reactive State
+  const [syncState, setSyncState] = useState<SyncState>(orgSyncService.getSyncState());
+  const [lastHeartbeat, setLastHeartbeat] = useState<Date | null>(orgSyncService.getLastHeartbeatDate());
+  const [lastSummary, setLastSummary] = useState<Date | null>(orgSyncService.getLastDailySummaryDate());
+  const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(orgSyncService.getStatusMessage());
+  const [orgContext, setOrgContext] = useState(orgSyncService.getContext());
+  const [firebaseUser, setFirebaseUser] = useState(auth.currentUser);
+
   // Email & Password Login Form State
   const [emailInput, setEmailInput] = useState<string>(cloudService.getLinkedStore().ownerEmail || 'mahmoud.mansour0b@gmail.com');
-  const [passwordInput, setPasswordInput] = useState<string>('••••••••');
+  const [passwordInput, setPasswordInput] = useState<string>('');
   const [isAuthenticating, setIsAuthenticating] = useState<boolean>(false);
   const [authOfflineBanner, setAuthOfflineBanner] = useState<boolean>(false);
 
@@ -71,6 +83,12 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
     setCloudSettings(cloudService.getCloudSettings());
     setIsAuthenticated(cloudService.isUserAuthenticated());
     setLinkedStore(cloudService.getLinkedStore());
+    setSyncState(orgSyncService.getSyncState());
+    setLastHeartbeat(orgSyncService.getLastHeartbeatDate());
+    setLastSummary(orgSyncService.getLastDailySummaryDate());
+    setSyncStatusMsg(orgSyncService.getStatusMessage());
+    setOrgContext(orgSyncService.getContext());
+    setFirebaseUser(auth.currentUser);
 
     const backups = await cloudService.getCloudBackupsList();
     setCloudBackups(backups);
@@ -81,35 +99,48 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
     const unsubscribe = cloudService.subscribe(() => {
       loadAllCloudData();
     });
-    return () => unsubscribe();
+    const unsubscribeOrg = orgSyncService.subscribe(() => {
+      setSyncState(orgSyncService.getSyncState());
+      setLastHeartbeat(orgSyncService.getLastHeartbeatDate());
+      setLastSummary(orgSyncService.getLastDailySummaryDate());
+      setSyncStatusMsg(orgSyncService.getStatusMessage());
+      setOrgContext(orgSyncService.getContext());
+      setFirebaseUser(auth.currentUser);
+    });
+    return () => {
+      unsubscribe();
+      unsubscribeOrg();
+    };
   }, []);
 
-  // Handle Email & Password Login ("نافذة تسجيل دخول بإيميل وباسورد مربوط عليه محل واحد أو سلسلة محلات")
+  // Handle Store Login for Sync (Strictly signInWithEmailAndPassword, no password storage, UID must match orgId)
   const handleEmailPasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsAuthenticating(true);
-    setStatusMessage({ type: 'info', text: 'جاري التحقق من الحساب وربط المحل بالكلود...' });
+    setStatusMessage({ type: 'info', text: 'جاري تسجيل دخول المحل والتحقق من ترخيص الجهاز...' });
 
-    const res = await cloudService.signInWithEmail(emailInput, passwordInput);
+    const res = await orgSyncService.signInStore(emailInput, passwordInput);
     setIsAuthenticating(false);
 
     if (res.success) {
-      setIsAuthenticated(true);
-      setAuthOfflineBanner(Boolean(res.offlineMode));
-      setLinkedStore(cloudService.getLinkedStore());
+      setPasswordInput('');
       setStatusMessage({ 
         type: 'success', 
-        text: res.offlineMode
-          ? `تم تسجيل الدخول بنجاح بحساب (${emailInput}) في وضع الأوفلاين المحلي (تم حفظ بيانات المحل على الجهاز).`
-          : `تم تسجيل الدخول بالكلود بنجاح بحساب (${emailInput}). تم ربط المحل ومزامنة البيانات وتخزين النسخة محلياً.` 
+        text: 'تم تسجيل دخول المحل للمزامنة بنجاح ومطابقة ترخيص الجهاز!' 
       });
       onRefreshAll();
     } else {
       setStatusMessage({ 
         type: 'error', 
-        text: res.error || 'فشل تسجيل الدخول. تأكد من صحة الإيميل وكلمة المرور أو الاتصال بالإنترنت للمرة الأولى.' 
+        text: res.error || 'فشل تسجيل الدخول للمزامنة.' 
       });
     }
+  };
+
+  const handleSignOutStore = async () => {
+    await orgSyncService.signOutStore();
+    setStatusMessage({ type: 'info', text: 'تم تسجيل الخروج من جلسة المزامنة السحابية.' });
+    onRefreshAll();
   };
 
   // Handle Manual Immediate Sync
@@ -410,13 +441,29 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                 </p>
               </div>
 
+              {firebaseUser && (
+                <div className="flex items-center justify-between p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 rounded-xl text-xs">
+                  <div>
+                    <span className="text-emerald-900 dark:text-emerald-200 font-bold block">جلسة الدخول النشطة للمزامنة:</span>
+                    <span className="font-mono text-emerald-700 dark:text-emerald-300 font-black">{firebaseUser.email}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSignOutStore}
+                    className="px-3 py-1 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg font-bold cursor-pointer transition-colors"
+                  >
+                    تسجيل الخروج
+                  </button>
+                </div>
+              )}
+
               <button
                 type="submit"
                 disabled={isAuthenticating}
                 className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black rounded-xl text-xs sm:text-sm cursor-pointer shadow-md flex items-center justify-center gap-2 transition-all active:scale-95"
               >
                 <ShieldCheck className="w-4 h-4" />
-                <span>{isAuthenticating ? 'جاري التحقق والمصادقة...' : 'تسجيل الدخول وربط المحل بالكلود'}</span>
+                <span>{isAuthenticating ? 'جاري التحقق والمصادقة...' : 'تسجيل دخول المحل للمزامنة'}</span>
               </button>
             </form>
           </div>
@@ -426,44 +473,75 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
             <div className="border-b border-slate-200 dark:border-slate-800 pb-3">
               <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
                 <Store className="w-5 h-5 text-blue-600" />
-                <span>بيانات المحل وسلسلة المحلات المربوطة بالإيميل</span>
+                <span>حالة المزامنة السحابية ومعلومات الترخيص</span>
               </h3>
               <p className="text-xs text-slate-500 mt-1">
-                هذا الإيميل هو المالك المعتمد المشترك في الباقة الموحدة التي سيتم إعدادها لكافة الفروع
+                متابعة الاتصال اللحظي ونبضات الفروع والملخص اليومي المشفر
               </p>
             </div>
 
             <div className="space-y-3 text-xs">
+              {/* 1. Login Status */}
               <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
-                <span className="font-bold text-slate-600 dark:text-slate-400">المحل الحالي:</span>
-                <span className="font-black text-slate-900 dark:text-white">{linkedStore.storeName}</span>
-              </div>
-
-              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
-                <span className="font-bold text-slate-600 dark:text-slate-400">الفرع النشط:</span>
-                <span className="font-bold text-slate-800 dark:text-slate-200">{linkedStore.branchName}</span>
-              </div>
-
-              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
-                <span className="font-bold text-slate-600 dark:text-slate-400">سلسلة المحلات:</span>
-                <span className="font-black text-blue-700 dark:text-blue-300">{linkedStore.chainName}</span>
-              </div>
-
-              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
-                <span className="font-bold text-slate-600 dark:text-slate-400">الإيميل المشترك في الباقة:</span>
-                <span className="font-mono font-black text-emerald-700 dark:text-emerald-400">{linkedStore.ownerEmail}</span>
-              </div>
-
-              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
-                <span className="font-bold text-slate-600 dark:text-slate-400">حالة الاشتراك والباقة:</span>
-                <span className="text-[11px] bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 px-2.5 py-0.5 rounded-full font-bold border border-emerald-300 dark:border-emerald-800">
-                  {linkedStore.subscriptionPlan} (نشط ✓)
+                <span className="font-bold text-slate-600 dark:text-slate-400">حالة الدخول:</span>
+                <span className={`font-bold ${firebaseUser ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                  {firebaseUser ? `مسجل دخول (${firebaseUser.email})` : 'غير مسجل دخول للمزامنة'}
                 </span>
               </div>
 
+              {/* 2. Last Successful Heartbeat */}
               <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
-                <span className="font-bold text-slate-600 dark:text-slate-400">عدد الفروع المربوطة حالياً:</span>
-                <span className="font-mono font-black text-slate-900 dark:text-white">1 فرع رئيسي موحد</span>
+                <span className="font-bold text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
+                  <Activity className="w-3.5 h-3.5 text-blue-500" />
+                  <span>وقت آخر نبضة ناجحة (Heartbeat):</span>
+                </span>
+                <span className="font-mono font-bold text-slate-900 dark:text-white">
+                  {lastHeartbeat ? lastHeartbeat.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم تُرسل بعد'}
+                </span>
+              </div>
+
+              {/* 3. Last Daily Summary */}
+              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
+                <span className="font-bold text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>وقت آخر ملخص يومي (Cairo):</span>
+                </span>
+                <span className="font-mono font-bold text-slate-900 dark:text-white">
+                  {lastSummary ? lastSummary.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم يُرفع بعد'}
+                </span>
+              </div>
+
+              {/* 4. Sync State Badge */}
+              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
+                <span className="font-bold text-slate-600 dark:text-slate-400">حالة المزامنة:</span>
+                <span className={`px-2.5 py-0.5 rounded-full font-bold text-[11px] border ${
+                  syncState === 'synced'
+                    ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border-emerald-300'
+                    : syncState === 'syncing'
+                    ? 'bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 border-blue-300'
+                    : syncState === 'subscription-paused'
+                    ? 'bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 border-rose-300'
+                    : syncState === 'wrong-account'
+                    ? 'bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 border-rose-300'
+                    : syncState === 'offline'
+                    ? 'bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-300 border-slate-300'
+                    : 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border-amber-300'
+                }`}>
+                  {syncState === 'synced' ? 'متزامن بنجاح ✓' :
+                   syncState === 'syncing' ? 'جاري المزامنة...' :
+                   syncState === 'subscription-paused' ? 'تم إيقاف المزامنة: الاشتراك منتهٍ' :
+                   syncState === 'wrong-account' ? 'الحساب لا يطابق ترخيص الجهاز' :
+                   syncState === 'offline' ? 'أوفلاين (محلي)' :
+                   syncState === 'no-license' ? 'لا يوجد ترخيص سارٍ' : 'يلزم تسجيل الدخول'}
+                </span>
+              </div>
+
+              {/* Linked Store & Branch from Context */}
+              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
+                <span className="font-bold text-slate-600 dark:text-slate-400">المحل المربوط بالترخيص:</span>
+                <span className="font-black text-slate-900 dark:text-white">
+                  {orgContext ? `المنشأة: ${orgContext.orgId} • الفرع: ${orgContext.branchId}` : linkedStore.storeName}
+                </span>
               </div>
             </div>
 
