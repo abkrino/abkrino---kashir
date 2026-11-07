@@ -191,16 +191,6 @@ class CloudService {
     return Boolean(this.currentFirebaseUser || this.getCachedAuthUser());
   }
 
-  public isStoreActivated(): boolean {
-    const cached = this.getCachedAuthUser();
-    if (!cached || !cached.email) return false;
-    return cached.email.toLowerCase() === PRIMARY_OWNER_EMAIL.toLowerCase();
-  }
-
-  public getPrimaryOwnerEmail(): string {
-    return PRIMARY_OWNER_EMAIL;
-  }
-
   public getCurrentUserEmail(): string {
     return this.currentFirebaseUser?.email || this.getCachedAuthUser()?.email || PRIMARY_OWNER_EMAIL;
   }
@@ -249,15 +239,6 @@ class CloudService {
     }
     if (!cleanPassword || cleanPassword.length < 4) {
       return { success: false, error: 'كلمة المرور يجب ألا تقل عن 4 أحرف أو أرقام' };
-    }
-
-    // STRICT OWNER CHECK: The store is exclusively bound to PRIMARY_OWNER_EMAIL
-    if (cleanEmail !== PRIMARY_OWNER_EMAIL.toLowerCase()) {
-      this.logCrash(`محاولة دخول غير مصرح بها باستخدام بريد غير معتمد: ${cleanEmail}`, 'Auth:ForbiddenEmail', 'HIGH');
-      return {
-        success: false,
-        error: `⛔ لا تملك أي صلاحية! هذا النظام مرخص ومربوط حصرياً للمالك بالبريد الإلكتروني المعتمد (${PRIMARY_OWNER_EMAIL}). لا يمكن لأي حساب آخر تسجيل الدخول أو فتح المحل.`
-      };
     }
 
     // Check if network is online
@@ -378,17 +359,10 @@ class CloudService {
       await firebaseSignOut(auth);
       this.currentFirebaseUser = null;
       localStorage.removeItem(LOCAL_STORAGE_KEYS.AUTH_CACHE);
-      const store = this.getLinkedStore();
-      store.subscriptionStatus = 'LOCKED';
-      this.saveLinkedStore(store);
       this.notifyListeners();
     } catch (err) {
       console.error('Error signing out:', err);
     }
-  }
-
-  public async lockStoreAndRevokeAccess(): Promise<void> {
-    await this.signOut();
   }
 
   // --- AUTOMATIC SYNC AFTER ACTION ("حفظ نسخة على الكلود بعد كل عملية") ---
