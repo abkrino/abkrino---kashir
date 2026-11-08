@@ -19,7 +19,10 @@ export interface User {
   fullName: string;
   role: Role;
   isActive: boolean;
-  pinCode: string; // كلمة المرور / الرقم السري
+  pinCode?: string; // كلمة المرور القديمة الصريحة (تُحذف فور الترحيل والتشفير)
+  pinHash?: string; // PBKDF2-SHA256 hash (100,000 iterations)
+  pinSalt?: string; // Random salt per user (hex)
+  mustChangePin?: boolean; // فرض تغيير الرقم السري فورياً إذا كان رقم افتراضي قديم
   phone?: string;
   avatarColor?: string;
   permissions?: UserPermissions;

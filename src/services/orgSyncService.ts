@@ -1,4 +1,4 @@
-import { doc, updateDoc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, updateDoc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
 import { signInWithEmailAndPassword, signOut as fbSignOut } from 'firebase/auth';
 import { db, auth } from './cloudService';
 import { licenseService } from './licenseService';
@@ -6,6 +6,7 @@ import { detectEnvironment } from './environmentService';
 import { storage } from './storageService';
 import { DailySummaryDoc } from '../types/cloud';
 import { SalesInvoice, PurchaseInvoice, Product, Customer, Supplier } from '../types';
+import { APP_VERSION } from '../config/appConfig';
 
 export type SyncState = 
   | 'idle'
@@ -116,6 +117,8 @@ class OrgSyncService {
 
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private rescheduleSummaryTimer: ReturnType<typeof setTimeout> | null = null;
+  private permissionRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private isSubPaused: boolean = false;
 
   constructor() {
@@ -159,22 +162,31 @@ class OrgSyncService {
       this.scheduleDebouncedDailySummary();
     });
 
-    // License change listener
+    // License change listener: resets subscription pause and retries
     licenseService.subscribe(() => {
-      this.notifyListeners();
+      if (this.isSubPaused) {
+        this.resetSubscriptionPause();
+        if (typeof navigator !== 'undefined' && navigator.onLine) {
+          this.sendHeartbeat().catch(() => {});
+          this.pushDailySummary(false).catch(() => {});
+        }
+      } else {
+        this.notifyListeners();
+      }
     });
   }
 
   // -------------------------------------------------------------------------
-  // 1. getContext(): Returns { orgId, branchId } from active license ONLY
+  // 1. getContext(): Returns { orgId, branchId, mode } from active license ONLY
   // -------------------------------------------------------------------------
-  public getContext(): { orgId: string; branchId: string } | null {
+  public getContext(): { orgId: string; branchId: string; mode: 'offline' | 'online' } | null {
     const licState = licenseService.getLicenseState();
     if ((licState.status === 'valid' || licState.status === 'grace') && licState.payload) {
       if (licState.payload.orgId && licState.payload.branchId) {
         return {
           orgId: licState.payload.orgId,
           branchId: licState.payload.branchId,
+          mode: licState.payload.mode || 'offline',
         };
       }
     }
@@ -221,7 +233,10 @@ class OrgSyncService {
       this.syncState = 'syncing';
       this.notifyListeners();
 
-      // STRICT REQUIREMENT: signInWithEmailAndPassword ONLY. NO createUserWithEmailAndPassword.
+      // Reset subscription pause on any new sign-in attempt
+      this.resetSubscriptionPause();
+
+      // STRICT REQUIREMENT: signInWithEmailAndPassword ONLY for store sync login.
       const cred = await signInWithEmailAndPassword(auth, cleanEmail, pass);
       const user = cred.user;
 
@@ -234,7 +249,6 @@ class OrgSyncService {
         return { success: false, error: 'هذا الحساب لا يطابق ترخيص الجهاز' };
       }
 
-      this.isSubPaused = false;
       this.syncState = 'synced';
       this.statusMessage = 'تم تسجيل دخول المحل للمزامنة بنجاح.';
       this.notifyListeners();
@@ -275,7 +289,7 @@ class OrgSyncService {
   }
 
   // -------------------------------------------------------------------------
-  // 4. sendHeartbeat(): updateDoc with serverTimestamp()
+  // 4. sendHeartbeat(): updateDoc with serverTimestamp() + clock reconcile
   // -------------------------------------------------------------------------
   public async sendHeartbeat(): Promise<{ success: boolean; error?: string }> {
     if (this.isSubPaused) return { success: false, error: 'subscription-paused' };
@@ -305,12 +319,42 @@ class OrgSyncService {
       const branchRef = doc(db, 'orgs', context.orgId, 'branches', context.branchId);
 
       // STRICT: lastSeenAt must be serverTimestamp() as enforced by firestore.rules
+      // mode is taken from license payload, and appVersion from APP_VERSION constant
       await updateDoc(branchRef, {
         lastSeenAt: serverTimestamp(),
-        appVersion: '1.0.0',
+        appVersion: APP_VERSION,
         windowsVersion: env.windowsVersion,
-        mode: 'offline',
+        mode: context.mode,
       });
+
+      // Read back server lastSeenAt to reconcile clock
+      try {
+        const branchSnap = await getDoc(branchRef);
+        if (branchSnap.exists()) {
+          const branchData = branchSnap.data();
+          const serverTime = branchData?.lastSeenAt;
+          if (serverTime) {
+            let serverMs: number | null = null;
+            if (typeof serverTime.toMillis === 'function') {
+              serverMs = serverTime.toMillis();
+            } else if (typeof serverTime.toDate === 'function') {
+              serverMs = serverTime.toDate().getTime();
+            } else if (serverTime instanceof Date) {
+              serverMs = serverTime.getTime();
+            } else if (typeof serverTime === 'number') {
+              serverMs = serverTime;
+            }
+            if (serverMs !== null) {
+              const clockRes = licenseService.reconcileClockWithServer(serverMs);
+              if (!clockRes.reconciled && clockRes.warning) {
+                this.statusMessage = clockRes.warning;
+              }
+            }
+          }
+        }
+      } catch (clockErr) {
+        console.warn('Clock reconciliation read error:', clockErr);
+      }
 
       this.lastHeartbeatDate = new Date();
       if (this.syncState !== 'syncing') {
@@ -364,8 +408,26 @@ class OrgSyncService {
 
     // Rate-limiting check: minimum 10 minutes between writes unless forceImmediate is true
     const now = Date.now();
-    if (!shouldPushSummary(now, this.lastDailySummaryPushMs, 10 * 60 * 1000, forceImmediate)) {
-      return { success: true }; // skipped cleanly due to rate limit
+    const TEN_MINUTES_MS = 10 * 60 * 1000;
+    if (!shouldPushSummary(now, this.lastDailySummaryPushMs, TEN_MINUTES_MS, forceImmediate)) {
+      // Re-schedule for remaining cooldown time so update is never lost
+      const elapsed = now - this.lastDailySummaryPushMs;
+      const remainingMs = Math.max(1000, TEN_MINUTES_MS - elapsed);
+      if (this.rescheduleSummaryTimer) {
+        clearTimeout(this.rescheduleSummaryTimer);
+      }
+      this.rescheduleSummaryTimer = setTimeout(() => {
+        this.rescheduleSummaryTimer = null;
+        this.pushDailySummary(false).catch(() => {});
+      }, remainingMs);
+
+      return { success: true };
+    }
+
+    // Clear pending reschedule timer if pushing now
+    if (this.rescheduleSummaryTimer) {
+      clearTimeout(this.rescheduleSummaryTimer);
+      this.rescheduleSummaryTimer = null;
     }
 
     try {
@@ -410,7 +472,34 @@ class OrgSyncService {
   }
 
   // -------------------------------------------------------------------------
-  // Error Handler: Handle permission-denied without retries or cashier crashes
+  // Subscription Pause and 6-hour Retry Handling
+  // -------------------------------------------------------------------------
+  public resetSubscriptionPause(): void {
+    this.isSubPaused = false;
+    if (this.permissionRetryTimer) {
+      clearTimeout(this.permissionRetryTimer);
+      this.permissionRetryTimer = null;
+    }
+    if (this.syncState === 'subscription-paused') {
+      this.syncState = 'idle';
+    }
+    this.notifyListeners();
+  }
+
+  public schedulePermissionRetry(retryDelayMs: number = 6 * 60 * 60 * 1000): void {
+    if (this.permissionRetryTimer) {
+      clearTimeout(this.permissionRetryTimer);
+    }
+    this.permissionRetryTimer = setTimeout(() => {
+      this.permissionRetryTimer = null;
+      this.resetSubscriptionPause();
+      this.sendHeartbeat().catch(() => {});
+      this.pushDailySummary(false).catch(() => {});
+    }, retryDelayMs);
+  }
+
+  // -------------------------------------------------------------------------
+  // Error Handler: Handle permission-denied with 6-hour retry without cashier crashes
   // -------------------------------------------------------------------------
   private handleSyncError(err: unknown, op: string): { success: boolean; error: string } {
     const errObj = err as { code?: string; message?: string };
@@ -423,6 +512,7 @@ class OrgSyncService {
       this.isSubPaused = true;
       this.syncState = 'subscription-paused';
       this.statusMessage = 'تم إيقاف المزامنة السحابية: اشتراك المنشأة منتهٍ أو معلق. يرجى تجديد الاشتراك للمتابعة.';
+      this.schedulePermissionRetry();
       this.notifyListeners();
       return { success: false, error: 'subscription-paused' };
     }
@@ -440,7 +530,7 @@ class OrgSyncService {
   }
 
   // -------------------------------------------------------------------------
-  // Getters for UI
+  // Getters for UI and Tests
   // -------------------------------------------------------------------------
   public getSyncState(): SyncState {
     return this.syncState;
@@ -460,6 +550,23 @@ class OrgSyncService {
 
   public isSubscriptionPaused(): boolean {
     return this.isSubPaused;
+  }
+
+  public getRescheduleSummaryTimer(): ReturnType<typeof setTimeout> | null {
+    return this.rescheduleSummaryTimer;
+  }
+
+  public getPermissionRetryTimer(): ReturnType<typeof setTimeout> | null {
+    return this.permissionRetryTimer;
+  }
+
+  public setLastDailySummaryPushMs(timeMs: number): void {
+    this.lastDailySummaryPushMs = timeMs;
+  }
+
+  public setSyncState(state: SyncState): void {
+    this.syncState = state;
+    this.notifyListeners();
   }
 
   public subscribe(listener: () => void): () => void {

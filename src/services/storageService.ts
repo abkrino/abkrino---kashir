@@ -69,8 +69,7 @@ class StorageService {
       this.setItem(STORAGE_KEYS.CASH_MOVEMENTS, INITIAL_CASH_MOVEMENTS);
       this.setItem(STORAGE_KEYS.EXPENSES, INITIAL_EXPENSES);
       this.setItem(STORAGE_KEYS.SHIFT, INITIAL_SHIFT);
-      this.setItem(STORAGE_KEYS.USERS, INITIAL_USERS);
-      this.setItem(STORAGE_KEYS.ACTIVE_USER_ID, INITIAL_USERS[0].id);
+      this.setItem(STORAGE_KEYS.USERS, []);
       this.setItem(STORAGE_KEYS.PARKED_CARTS, []);
       this.addAuditLog('SYSTEM', 'إعداد النظام', 'النظام', 'sys-0', 'تمت تهيئة نظام كاشير ومبيعات السوبر ماركت وقسم الألبان');
     }
@@ -78,13 +77,9 @@ class StorageService {
 
   // --- USERS & ROLES MANAGEMENT ---
   public getUsers(): User[] {
-    const users = this.getItem<User[]>(STORAGE_KEYS.USERS, INITIAL_USERS);
+    const users = this.getItem<User[]>(STORAGE_KEYS.USERS, []);
     let migrated = false;
     for (const u of users) {
-      if (!u.pinCode) {
-        u.pinCode = u.role === 'ADMIN' ? '1234' : '1111';
-        migrated = true;
-      }
       if (!u.permissions) {
         u.permissions = {
           canEditPrice: true,
@@ -106,10 +101,15 @@ class StorageService {
     return users;
   }
 
-  public getActiveUser(): User {
+  public getActiveUser(): User | null {
     const users = this.getUsers();
-    const activeId = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER_ID) || users[0].id;
-    return users.find(u => u.id === activeId) || users[0];
+    if (!users || users.length === 0) return null;
+    const activeId = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER_ID);
+    if (activeId) {
+      const found = users.find(u => u.id === activeId);
+      if (found) return found;
+    }
+    return users[0] || null;
   }
 
   public setActiveUser(userId: string): void {
@@ -129,7 +129,6 @@ class StorageService {
       users.push(user);
     }
     this.setItem(STORAGE_KEYS.USERS, users);
-    this.addAuditLog('USER', 'حفظ مستخدم', 'المستخدمين', user.id, `تم حفظ بيانات المستخدم: ${user.fullName} (${user.role})`);
     return { success: true };
   }
 
@@ -139,7 +138,7 @@ class StorageService {
     if (!user) return { success: false, error: 'المستخدم غير موجود' };
     
     // Prevent deleting last admin
-    const admins = users.filter(u => u.role === 'ADMIN');
+    const admins = users.filter(u => u.role === 'ADMIN' && u.isActive !== false);
     if (user.role === 'ADMIN' && admins.length <= 1) {
       return { success: false, error: 'لا يمكن حذف آخر مدير نظام متبقي في البرنامج' };
     }
@@ -154,21 +153,21 @@ class StorageService {
     const users = this.getUsers();
     const user = users.find(u => u.id === userId);
     if (!user) return { success: false, error: 'المستخدم غير موجود' };
+    if (user.isActive === false) return { success: false, error: 'هذا الحساب معطل حالياً' };
     
-    const validPin = (user.pinCode || (user.role === 'ADMIN' ? '1234' : '1111')).trim();
-    if (validPin !== pin.trim()) {
-      return { success: false, error: 'الرقم السري غير صحيح، حاول مرة أخرى' };
+    // Legacy fallback check if pinCode exists
+    if (user.pinCode && user.pinCode.trim() === pin.trim()) {
+      this.setActiveUser(user.id);
+      return { success: true, user };
     }
-    this.setActiveUser(user.id);
-    this.addAuditLog('AUTH', 'تسجيل دخول', 'الأمان', user.id, `تسجيل دخول: ${user.fullName} (${user.role === 'ADMIN' ? 'مدير عام' : 'كاشير'})`);
-    return { success: true, user };
+    return { success: false, error: 'الرقم السري غير صحيح أو يتطلب تحقق أمني' };
   }
 
   public changeUserPin(userId: string, oldPin: string, newPin: string): { success: boolean; error?: string } {
     const users = this.getUsers();
     const user = users.find(u => u.id === userId);
     if (!user) return { success: false, error: 'المستخدم غير موجود' };
-    if (user.pinCode !== oldPin) return { success: false, error: 'الرقم السري الحالي غير صحيح' };
+    if (user.pinCode && user.pinCode !== oldPin) return { success: false, error: 'الرقم السري الحالي غير صحيح' };
     if (newPin.trim().length < 4) return { success: false, error: 'الرقم السري يجب ألا يقل عن 4 خانات' };
 
     user.pinCode = newPin.trim();
@@ -479,7 +478,7 @@ class StorageService {
         amount: invoice.paidAmount,
         referenceId: invoice.invoiceNumber,
         description: `رد نقدية لحذف فاتورة المبيعات رقم ${invoice.invoiceNumber}`,
-        performedBy: this.getActiveUser().fullName,
+        performedBy: this.getActiveUser()?.fullName || 'النظام',
       });
     }
 
@@ -826,7 +825,7 @@ class StorageService {
         supplierId: supp.id,
         supplierName: supp.name,
         description: `سداد نقدي لفاتورة شراء ${purchase.invoiceNumber} من ${supp.name}`,
-        performedBy: this.getActiveUser().fullName,
+        performedBy: this.getActiveUser()?.fullName || 'النظام',
       });
     }
 
@@ -898,7 +897,7 @@ class StorageService {
         amount: purchase.paidAmount,
         referenceId: purchase.invoiceNumber,
         description: `رد نقدية لحذف فاتورة الشراء رقم ${purchase.invoiceNumber} من ${purchase.supplierName}`,
-        performedBy: this.getActiveUser().fullName,
+        performedBy: this.getActiveUser()?.fullName || 'النظام',
       });
     }
 
@@ -1021,8 +1020,8 @@ class StorageService {
     const newLog: AuditLog = {
       id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       timestamp: new Date().toLocaleString('ar-EG'),
-      userId: activeUser.id,
-      username: activeUser.fullName,
+      userId: activeUser ? activeUser.id : 'sys',
+      username: activeUser ? activeUser.fullName : 'النظام',
       action: entity,
       actionArabic,
       entity: entityArabic,

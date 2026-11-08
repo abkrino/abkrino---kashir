@@ -92,7 +92,49 @@ describe('licenseService Unit Tests', () => {
     expect(state.canOperate).toBe(true);
   });
 
-  it('2. حمولة معدّلة (Tampered payload) - detection of tampered data and invalid signature', async () => {
+  it('2. (أ) تعديل localStorage يدوياً لا يغيّر الحالة - الـ payload لا يؤخذ أبداً من التخزين بل من التوكن المشفر', async () => {
+    // First, verify a valid license
+    const deviceId = licenseService.getDeviceId();
+    const now = new Date();
+    const validUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    const payload: LicensePayload = {
+      v: 1,
+      orgId: 'org-real',
+      branchId: 'branch-1',
+      deviceId,
+      mode: 'offline',
+      plan: 'باقة أصلية',
+      issuedAt: now.toISOString(),
+      validUntil: validUntil.toISOString(),
+      graceDays: 7,
+      maxOfflineDays: 30,
+    };
+
+    const token = signToken(payload);
+    await licenseService.verifyAndStoreLicense(token);
+
+    // Attacker modifies localStorage directly
+    localStorage.setItem('app_license_payload', JSON.stringify({
+      ...payload,
+      plan: 'باقة مخترقة وغير مصرح بها VIP',
+      validUntil: new Date(now.getTime() + 3650 * 24 * 60 * 60 * 1000).toISOString(),
+    }));
+
+    // getLicenseState should completely ignore app_license_payload in localStorage
+    const state = licenseService.getLicenseState();
+    expect(state.payload?.plan).toBe('باقة أصلية');
+
+    // Startup with a tampered token in localStorage yields 'tampered'
+    localStorage.setItem('app_license_token', 'tampered.token.data');
+    await licenseService.initLicense();
+    const stateAfterInit = licenseService.getLicenseState();
+    expect(stateAfterInit.status).toBe('tampered');
+    expect(stateAfterInit.payload).toBeNull();
+  });
+
+  it('3. (ب) لصق كود خاطئ فوق ترخيص صالح لا يغيّره ولا يستبدل التوكن السليم', async () => {
+    // 1. Activate valid license first
     const deviceId = licenseService.getDeviceId();
     const now = new Date();
     const validUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
@@ -103,52 +145,93 @@ describe('licenseService Unit Tests', () => {
       branchId: 'branch-1',
       deviceId,
       mode: 'offline',
-      plan: 'باقة احترافية',
+      plan: 'باقة المحل الأساسية',
       issuedAt: now.toISOString(),
       validUntil: validUntil.toISOString(),
       graceDays: 7,
       maxOfflineDays: 30,
     };
 
-    // Sign and then tamper with the payload string
-    const tamperedToken = signToken(payload, true);
-    const result = await licenseService.verifyAndStoreLicense(tamperedToken);
+    const validToken = signToken(payload);
+    const validResult = await licenseService.verifyAndStoreLicense(validToken);
+    expect(validResult.success).toBe(true);
 
-    expect(result.success).toBe(false);
-    expect(result.error).toBeDefined();
+    const stateBefore = licenseService.getLicenseState();
+    expect(stateBefore.status).toBe('valid');
+    expect(stateBefore.payload?.plan).toBe('باقة المحل الأساسية');
 
-    const state = licenseService.getLicenseState();
-    expect(state.status).toBe('tampered');
+    // 2. User pastes a bad token with invalid signature
+    const badToken = signToken(payload, true);
+    const badResult = await licenseService.verifyAndStoreLicense(badToken);
+    expect(badResult.success).toBe(false);
+
+    // 3. User pastes malformed string
+    const malformedResult = await licenseService.verifyAndStoreLicense('garbage_data_without_dot');
+    expect(malformedResult.success).toBe(false);
+
+    // 4. User pastes token for different device
+    const wrongDeviceToken = signToken({ ...payload, deviceId: 'other-machine-456' });
+    const wrongDevResult = await licenseService.verifyAndStoreLicense(wrongDeviceToken);
+    expect(wrongDevResult.success).toBe(false);
+
+    // The existing valid license remains 100% active and untouched
+    const stateAfter = licenseService.getLicenseState();
+    expect(stateAfter.status).toBe('valid');
+    expect(stateAfter.payload?.plan).toBe('باقة المحل الأساسية');
+    expect(licenseService.getStoredToken()).toBe(validToken);
+    expect(localStorage.getItem('app_license_tampered_flag')).toBeNull();
   });
 
-  it('3. جهاز مختلف (Wrong device) - license signature is valid but deviceId mismatches', async () => {
-    const differentDeviceId = 'different-machine-device-999';
-    const now = new Date();
-    const validUntil = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+  it('4. (ج) ضبط الساعة 30 يوماً للأمام ثم إرجاعها مع heartbeat سليم لا يقفل (السيرفر هو الحكم)', async () => {
+    const deviceId = licenseService.getDeviceId();
+    const now = Date.now();
+    const validUntil = new Date(now + 365 * 24 * 60 * 60 * 1000);
 
     const payload: LicensePayload = {
       v: 1,
       orgId: 'org-test',
       branchId: 'branch-1',
-      deviceId: differentDeviceId,
+      deviceId,
       mode: 'offline',
-      plan: 'باقة احترافية',
-      issuedAt: now.toISOString(),
+      plan: 'باقة سنوية',
+      issuedAt: new Date(now).toISOString(),
       validUntil: validUntil.toISOString(),
       graceDays: 7,
       maxOfflineDays: 30,
     };
 
     const token = signToken(payload);
-    const result = await licenseService.verifyAndStoreLicense(token);
+    await licenseService.verifyAndStoreLicense(token);
 
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('الترخيص مخصص لجهاز آخر');
+    // Simulate clock set ahead 30 days in the past, storing a future timestamp
+    const future30Days = now + 30 * 24 * 60 * 60 * 1000;
+    localStorage.setItem('app_license_last_seen_at', String(future30Days));
+
+    // Clock rollback is detected initially because now < future30Days - 5 min
+    expect(licenseService.checkClockRollback()).toBe(true);
+    expect(licenseService.getLicenseState().status).toBe('clock-rollback');
+
+    // Server heartbeat arrives: server time confirms real time is within 5 minutes of device now
+    const serverTimestampMs = now + 1000; // 1 second difference with device
+    const reconcileResult = licenseService.reconcileClockWithServer(serverTimestampMs);
+
+    expect(reconcileResult.reconciled).toBe(true);
+    expect(licenseService.checkClockRollback()).toBe(false);
+
+    // System is unlocked and functions normally without lockout
+    const state = licenseService.getLicenseState();
+    expect(state.status).toBe('valid');
+    expect(state.canOperate).toBe(true);
+
+    // If server time difference > 5 minutes, clock does not reconcile and warning is emitted
+    const distantServerTime = now + 15 * 60 * 1000; // 15 minutes difference
+    const badReconcile = licenseService.reconcileClockWithServer(distantServerTime);
+    expect(badReconcile.reconciled).toBe(false);
+    expect(badReconcile.warning).toBe('ساعة الجهاز تختلف عن الوقت الحقيقي');
   });
 
-  it('4. ترخيص منتهي (Expired license beyond grace period) - correctly identifies expired status', async () => {
+  it('5. ترخيص منتهي (Expired license beyond grace period)', async () => {
     const deviceId = licenseService.getDeviceId();
-    // Issued 60 days ago, expired 20 days ago (past the 7 days grace)
     const now = Date.now();
     const issuedAt = new Date(now - 60 * 24 * 60 * 60 * 1000);
     const validUntil = new Date(now - 20 * 24 * 60 * 60 * 1000);
@@ -175,9 +258,8 @@ describe('licenseService Unit Tests', () => {
     expect(state.daysRemaining).toBe(0);
   });
 
-  it('5. داخل فترة السماح (Inside grace period) - identifies grace period and remaining grace days', async () => {
+  it('6. داخل فترة السماح (Inside grace period)', async () => {
     const deviceId = licenseService.getDeviceId();
-    // Expired 2 days ago, but within 7 grace days -> 5 grace days remaining
     const now = Date.now();
     const issuedAt = new Date(now - 35 * 24 * 60 * 60 * 1000);
     const validUntil = new Date(now - 2 * 24 * 60 * 60 * 1000);
@@ -203,18 +285,5 @@ describe('licenseService Unit Tests', () => {
     expect(state.status).toBe('grace');
     expect(state.daysRemaining).toBeGreaterThanOrEqual(4);
     expect(state.canOperate).toBe(true);
-  });
-
-  it('6. رجوع الساعة (Clock rollback) - detects system clock turned backward by more than 5 minutes', () => {
-    // Record a future timestamp into lastSeenAt (e.g. 2 hours in the future)
-    const futureTime = Date.now() + 2 * 60 * 60 * 1000;
-    localStorage.setItem('app_license_last_seen_at', String(futureTime));
-
-    const rollbackDetected = licenseService.checkClockRollback();
-    expect(rollbackDetected).toBe(true);
-
-    const state = licenseService.getLicenseState();
-    expect(state.status).toBe('clock-rollback');
-    expect(state.message).toContain('تم تعديل أو إرجاع وقت وتاريخ الجهاز إلى الوراء');
   });
 });

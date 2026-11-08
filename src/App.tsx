@@ -20,8 +20,12 @@ import { AuditTrail } from './components/audit/AuditTrail';
 import { PrintableInvoice } from './components/common/PrintableInvoice';
 import { EnvironmentBanner } from './components/common/EnvironmentBanner';
 import { LoginModal } from './components/auth/LoginModal';
+import { AdminSetupModal } from './components/auth/AdminSetupModal';
+import { LicenseGate } from './components/license/LicenseGate';
 import { CloudDashboard } from './components/cloud/CloudDashboard';
 import { cloudService } from './services/cloudService';
+import { licenseService } from './services/licenseService';
+import { authSecurityService } from './services/authSecurityService';
 import { LayoutDashboard, ShoppingCart, Receipt, Boxes, Menu } from 'lucide-react';
 
 export default function App() {
@@ -35,6 +39,10 @@ export default function App() {
   const [isLocked, setIsLocked] = useState<boolean>(false);
   const [isLoginOpen, setIsLoginOpen] = useState<boolean>(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+
+  // License and activation reactive state
+  const [licenseState, setLicenseState] = useState(() => licenseService.getLicenseState());
+  const [isStoreActivated, setIsStoreActivated] = useState<boolean>(() => licenseService.isStoreActivated());
 
   // Sync Data
   const refreshAll = () => {
@@ -53,6 +61,15 @@ export default function App() {
     storage.initDatabase();
     refreshAll();
     setIsInitialized(true);
+
+    // Initialize offline license verification
+    licenseService.initLicense().catch(() => {});
+
+    // Subscribe to license changes
+    const unsubLicense = licenseService.subscribe(() => {
+      setLicenseState(licenseService.getLicenseState());
+      setIsStoreActivated(licenseService.isStoreActivated());
+    });
 
     const unsubAction = storage.onAction((actionName) => {
       cloudService.triggerAutoSyncOnAction(actionName);
@@ -79,15 +96,91 @@ export default function App() {
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+      unsubLicense();
       unsubAction();
     };
   }, []);
+
+  // Inactivity Auto-Lock (Requirement 8 - default 10 minutes, configurable)
+  const lastActivityRef = React.useRef<number>(Date.now());
+  const hasAdmin = users.some(u => u.role === 'ADMIN' && u.isActive !== false);
+
+  useEffect(() => {
+    const handleActivity = () => {
+      lastActivityRef.current = Date.now();
+    };
+
+    const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click'];
+    events.forEach(evt => window.addEventListener(evt, handleActivity, { passive: true }));
+
+    const interval = setInterval(() => {
+      const settings = authSecurityService.getSecuritySettings();
+      const lockMinutes = settings.autoLockMinutes;
+      if (lockMinutes > 0 && !isLocked && currentUser && isStoreActivated && hasAdmin) {
+        const idleMs = Date.now() - lastActivityRef.current;
+        if (idleMs >= lockMinutes * 60 * 1000) {
+          setIsLocked(true);
+          storage.addAuditLog(
+            'AUTH',
+            'قفل تلقائي',
+            'الأمان',
+            currentUser.id,
+            `تم قفل الشاشة تلقائياً بعد ${lockMinutes} دقيقة من عدم النشاط`
+          );
+        }
+      }
+    }, 5000);
+
+    return () => {
+      events.forEach(evt => window.removeEventListener(evt, handleActivity));
+      clearInterval(interval);
+    };
+  }, [isLocked, currentUser, isStoreActivated, hasAdmin]);
 
   const handleSwitchUser = (userId: string) => {
     storage.setActiveUser(userId);
     refreshAll();
   };
 
+  // 1. Loading state during cryptographic verification on boot
+  if (licenseState.status === 'checking') {
+    return (
+      <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center font-sans" dir="rtl">
+        <div className="text-center space-y-4">
+          <div className="w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <p className="text-lg font-bold text-slate-200">جاري التحقق من ترخيص النظام...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Gatekeeper: If device is not activated (neither valid nor grace nor trial bypass)
+  if (!isStoreActivated) {
+    return (
+      <LicenseGate
+        onActivationSuccess={() => {
+          setIsStoreActivated(true);
+          setIsLocked(true);
+          refreshAll();
+        }}
+      />
+    );
+  }
+
+  // 3. Admin Setup Gatekeeper: First run after activation when no admin exists (Requirement 3)
+  if (!hasAdmin) {
+    return (
+      <AdminSetupModal
+        onAdminCreated={(newAdmin) => {
+          refreshAll();
+          setCurrentUser(newAdmin);
+          setIsLocked(false);
+        }}
+      />
+    );
+  }
+
+  // 4. App startup loading state
   if (!isInitialized || !currentUser) {
     return (
       <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center font-sans" dir="rtl">

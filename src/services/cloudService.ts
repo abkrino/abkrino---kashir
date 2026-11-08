@@ -1,10 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { 
   getAuth, 
-  GoogleAuthProvider, 
-  signInWithPopup, 
-  signInWithEmailAndPassword,
-  createUserWithEmailAndPassword,
   signOut as firebaseSignOut, 
   onAuthStateChanged, 
   User as FirebaseUser 
@@ -33,6 +29,8 @@ import {
   PerformanceMetric, 
   CloudSettings 
 } from '../types';
+import { isStoreActivated } from './licenseService';
+import { orgSyncService } from './orgSyncService';
 
 // Initialize Firebase App
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
@@ -113,7 +111,6 @@ const LOCAL_STORAGE_KEYS = {
 
 export const LEGACY_STORE_SYNC = false;
 const DEFAULT_STORE_ID = 'main-store';
-const PRIMARY_OWNER_EMAIL = 'mahmoud.mansour0b@gmail.com';
 
 class CloudService {
   private isOnlineStatus: boolean = navigator.onLine;
@@ -139,18 +136,6 @@ class CloudService {
       // Listen to Firebase Auth state
       onAuthStateChanged(auth, (user) => {
         this.currentFirebaseUser = user;
-        if (user) {
-          // Cache user details locally so offline access works seamlessly
-          try {
-            localStorage.setItem(LOCAL_STORAGE_KEYS.AUTH_CACHE, JSON.stringify({
-              uid: user.uid,
-              email: user.email,
-              displayName: user.displayName || 'مدير النظام الأساسي',
-              lastLoginTime: new Date().toISOString(),
-              isPrimaryOwner: user.email === PRIMARY_OWNER_EMAIL,
-            }));
-          } catch {}
-        }
         this.notifyListeners();
       });
 
@@ -168,7 +153,7 @@ class CloudService {
 
     const defaults: CloudSettings = {
       autoSyncOnAction: true, // حفظ نسخة على الكلود بعد كل عملية
-      primaryEmail: PRIMARY_OWNER_EMAIL,
+      primaryEmail: this.getCurrentUserEmail(),
       autoBackupIntervalHours: 24,
       autoFunctionsEnabled: true,
       crashReportingEnabled: true,
@@ -185,29 +170,30 @@ class CloudService {
   }
 
   public getCachedAuthUser() {
-    try {
-      const data = localStorage.getItem(LOCAL_STORAGE_KEYS.AUTH_CACHE);
-      if (data) return JSON.parse(data);
-    } catch {}
+    if (this.currentFirebaseUser) {
+      return {
+        uid: this.currentFirebaseUser.uid,
+        email: this.currentFirebaseUser.email,
+        displayName: this.currentFirebaseUser.displayName || 'مدير النظام',
+      };
+    }
     return null;
   }
 
   public isUserAuthenticated(): boolean {
-    return Boolean(this.currentFirebaseUser || this.getCachedAuthUser());
+    return orgSyncService.ensureSignedIn() === 'ok';
   }
 
   public isStoreActivated(): boolean {
-    const cached = this.getCachedAuthUser();
-    if (!cached || !cached.email) return false;
-    return cached.email.toLowerCase() === PRIMARY_OWNER_EMAIL.toLowerCase();
+    return isStoreActivated();
   }
 
   public getPrimaryOwnerEmail(): string {
-    return PRIMARY_OWNER_EMAIL;
+    return this.getCurrentUserEmail();
   }
 
   public getCurrentUserEmail(): string {
-    return this.currentFirebaseUser?.email || this.getCachedAuthUser()?.email || PRIMARY_OWNER_EMAIL;
+    return this.currentFirebaseUser?.email || '';
   }
 
   public isOnline(): boolean {
@@ -243,140 +229,7 @@ class CloudService {
     this.notifyListeners();
   }
 
-  // --- AUTHENTICATION ("الدخول بالإيميل والباسورد للمحل وسلسلة المحلات") ---
-  public async signInWithEmail(email: string, password: string): Promise<{ success: boolean; user?: any; offlineMode?: boolean; error?: string }> {
-    const startTime = performance.now();
-    const cleanEmail = email.trim().toLowerCase();
-    const cleanPassword = password.trim();
-
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      return { success: false, error: 'يرجى كتابة عنوان بريد إلكتروني صحيح' };
-    }
-    if (!cleanPassword || cleanPassword.length < 4) {
-      return { success: false, error: 'كلمة المرور يجب ألا تقل عن 4 أحرف أو أرقام' };
-    }
-
-    // STRICT OWNER CHECK: The store is exclusively bound to PRIMARY_OWNER_EMAIL
-    if (cleanEmail !== PRIMARY_OWNER_EMAIL.toLowerCase()) {
-      this.logCrash(`محاولة دخول غير مصرح بها باستخدام بريد غير معتمد: ${cleanEmail}`, 'Auth:ForbiddenEmail', 'HIGH');
-      return {
-        success: false,
-        error: `⛔ لا تملك أي صلاحية! هذا النظام مرخص ومربوط حصرياً للمالك بالبريد الإلكتروني المعتمد (${PRIMARY_OWNER_EMAIL}). لا يمكن لأي حساب آخر تسجيل الدخول أو فتح المحل.`
-      };
-    }
-
-    // Check if network is online
-    if (this.isOnline()) {
-      try {
-        let authUser: FirebaseUser | null = null;
-        try {
-          const res = await signInWithEmailAndPassword(auth, cleanEmail, cleanPassword);
-          authUser = res.user;
-        } catch (signInErr: any) {
-          // If user doesn't exist yet in Firebase Auth, auto-register them
-          if (signInErr?.code === 'auth/user-not-found' || signInErr?.code === 'auth/invalid-credential') {
-            try {
-              const createRes = await createUserWithEmailAndPassword(auth, cleanEmail, cleanPassword);
-              authUser = createRes.user;
-            } catch {
-              // Fallback to local offline cache
-            }
-          }
-        }
-
-        // Cache session and credentials locally for offline fallback
-        const cachedAccount = {
-          uid: authUser?.uid || `usr-${Date.now()}`,
-          email: cleanEmail,
-          displayName: cleanEmail.split('@')[0],
-          lastLoginTime: new Date().toISOString(),
-          isPrimaryOwner: cleanEmail === PRIMARY_OWNER_EMAIL,
-          cachedPassword: cleanPassword,
-          offlineVerified: true,
-        };
-        localStorage.setItem(LOCAL_STORAGE_KEYS.AUTH_CACHE, JSON.stringify(cachedAccount));
-
-        // Update linked store owner email
-        const store = this.getLinkedStore();
-        store.ownerEmail = cleanEmail;
-        this.saveLinkedStore(store);
-
-        const duration = Math.round(performance.now() - startTime);
-        this.logPerformance('Auth:EmailSignInOnline', duration, 'SUCCESS');
-
-        // Async sync local data with cloud
-        this.syncLocalToCloud(false).catch(() => {});
-
-        this.notifyListeners();
-        return { success: true, user: cachedAccount, offlineMode: false };
-      } catch (onlineErr: any) {
-        console.warn('Online email auth encountered issue, falling back to local verification:', onlineErr);
-      }
-    }
-
-    // OFFLINE LOGIN FALLBACK (ويلزم دخول نت للمرة الأولى، وبعد ذلك حفظ النسخة محلياً)
-    const cached = this.getCachedAuthUser();
-    const isMatchedEmail = cached && cached.email && cached.email.toLowerCase() === cleanEmail;
-    const isPrimaryMatch = cleanEmail === PRIMARY_OWNER_EMAIL;
-
-    if (cached || isPrimaryMatch || isMatchedEmail) {
-      const offlineUser = {
-        uid: cached?.uid || 'cached-owner-uid',
-        email: cleanEmail,
-        displayName: cached?.displayName || 'مدير المحل (محلي)',
-        lastLoginTime: new Date().toISOString(),
-        isPrimaryOwner: isPrimaryMatch,
-        offlineVerified: true,
-      };
-      localStorage.setItem(LOCAL_STORAGE_KEYS.AUTH_CACHE, JSON.stringify(offlineUser));
-      this.notifyListeners();
-      return { 
-        success: true, 
-        user: offlineUser, 
-        offlineMode: true 
-      };
-    }
-
-    return { 
-      success: false, 
-      error: 'لم يتم التحقق من هذا الإيميل مسبقاً عبر الإنترنت. يلزم الاتصال بالإنترنت للمرة الأولى فقط لتفعيل الحساب والمحل.' 
-    };
-  }
-
-  public async signInWithGoogle(): Promise<{ success: boolean; user?: FirebaseUser; error?: string }> {
-    const startTime = performance.now();
-    try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({
-        prompt: 'select_account',
-        login_hint: PRIMARY_OWNER_EMAIL,
-      });
-
-      const result = await signInWithPopup(auth, provider);
-      this.currentFirebaseUser = result.user;
-      
-      const duration = Math.round(performance.now() - startTime);
-      this.logPerformance('Auth:GoogleSignIn', duration, 'SUCCESS');
-
-      this.addAlert(
-        'تم تسجيل الدخول بالكلود بنجاح',
-        `تم الربط والمصادقة بحساب: ${result.user.email} ومزامنة بيانات السوبر ماركت وقسم الألبان.`,
-        'SYSTEM',
-        'NORMAL'
-      );
-
-      // Perform initial cloud sync
-      await this.syncLocalToCloud();
-
-      return { success: true, user: result.user };
-    } catch (err: unknown) {
-      const duration = Math.round(performance.now() - startTime);
-      this.logPerformance('Auth:GoogleSignIn', duration, 'FAILED');
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logCrash(msg, 'Auth:GoogleSignIn', 'MEDIUM');
-      return { success: false, error: msg };
-    }
-  }
+  // Note: Store sync authentication is handled strictly via orgSyncService.signInStore
 
   public async signOut(): Promise<void> {
     try {

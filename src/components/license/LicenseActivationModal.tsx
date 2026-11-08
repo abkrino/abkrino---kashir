@@ -128,6 +128,12 @@ export const LicenseActivationModal: React.FC<LicenseActivationModalProps> = ({
           color: 'bg-rose-500/20 text-rose-800 dark:text-rose-300 border-rose-500/30',
           icon: ShieldAlert,
         };
+      case 'checking':
+        return {
+          label: 'جاري التحقق من الترخيص...',
+          color: 'bg-amber-500/20 text-amber-800 dark:text-amber-300 border-amber-500/30',
+          icon: RotateCcw,
+        };
       case 'tampered':
         return {
           label: 'توقيع تالف أو غير صالح',

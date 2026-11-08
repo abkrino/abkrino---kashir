@@ -66,7 +66,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
   const [firebaseUser, setFirebaseUser] = useState(auth.currentUser);
 
   // Email & Password Login Form State
-  const [emailInput, setEmailInput] = useState<string>(cloudService.getLinkedStore().ownerEmail || 'mahmoud.mansour0b@gmail.com');
+  const [emailInput, setEmailInput] = useState<string>(cloudService.getLinkedStore().ownerEmail || '');
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [isAuthenticating, setIsAuthenticating] = useState<boolean>(false);
   const [authOfflineBanner, setAuthOfflineBanner] = useState<boolean>(false);

@@ -1,5 +1,6 @@
 import { LICENSE_PUBLIC_KEY_JWK } from '../config/licensePublicKey';
 import { detectEnvironment } from './environmentService';
+import { APP_VERSION } from '../config/appConfig';
 
 export interface LicensePayload {
   v: number;
@@ -15,6 +16,7 @@ export interface LicensePayload {
 }
 
 export type LicenseStatus =
+  | 'checking'
   | 'unlicensed'
   | 'valid'
   | 'grace'
@@ -32,14 +34,20 @@ export interface LicenseStateResult {
 }
 
 // Default to false so developers are not locked during development
-export const LICENSE_ENFORCEMENT = false;
+export let LICENSE_ENFORCEMENT = false;
+
+export const setLicenseEnforcement = (val: boolean): void => {
+  LICENSE_ENFORCEMENT = val;
+};
+
+export const TRIAL_BYPASS_KEY = 'app_license_trial_bypass';
 
 const STORAGE_KEYS = {
   DEVICE_ID: 'app_device_id',
   LICENSE_TOKEN: 'app_license_token',
-  LICENSE_PAYLOAD: 'app_license_payload',
+  LICENSE_PAYLOAD: 'app_license_payload', // Wiped on init; never trusted
   LAST_SEEN_AT: 'app_license_last_seen_at',
-  TAMPERED_FLAG: 'app_license_tampered_flag',
+  TRIAL_BYPASS: TRIAL_BYPASS_KEY,
 };
 
 // Base64URL Helpers
@@ -79,11 +87,19 @@ export function base64UrlToBytes(base64url: string): Uint8Array {
 
 class LicenseService {
   private cachedCryptoKey: CryptoKey | null = null;
+  private verifiedPayload: LicensePayload | null = null;
+  private isChecking: boolean = false;
+  private isTamperedOnBoot: boolean = false;
+  private clockWarning: string | null = null;
   private listeners: (() => void)[] = [];
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.initClockProtection();
+    // In browser environment, initiate cryptographic verification on startup
+    if (typeof window !== 'undefined') {
+      this.initLicense().catch(() => {});
+    }
   }
 
   // --- Clock Rollback Protection ---
@@ -135,6 +151,40 @@ class LicenseService {
     }
   }
 
+  // Reconcile clock with server (Server is authority)
+  public reconcileClockWithServer(serverTimestampMs: number): {
+    reconciled: boolean;
+    warning?: string;
+  } {
+    const deviceNow = Date.now();
+    const diffMs = Math.abs(serverTimestampMs - deviceNow);
+    const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+    if (diffMs <= FIVE_MINUTES_MS) {
+      // Within 5 minutes: Fix local lastSeenAt = deviceNow even if less than stored
+      if (typeof localStorage !== 'undefined') {
+        try {
+          localStorage.setItem(STORAGE_KEYS.LAST_SEEN_AT, String(deviceNow));
+        } catch {}
+      }
+      this.clockWarning = null;
+      this.notifyListeners();
+      return { reconciled: true };
+    } else {
+      // Server diff is greater than 5 minutes: do not change lastSeenAt, show warning
+      this.clockWarning = 'ساعة الجهاز تختلف عن الوقت الحقيقي';
+      this.notifyListeners();
+      return {
+        reconciled: false,
+        warning: 'ساعة الجهاز تختلف عن الوقت الحقيقي',
+      };
+    }
+  }
+
+  public getClockWarning(): string | null {
+    return this.clockWarning;
+  }
+
   // --- Device ID ---
   public getDeviceId(): string {
     // Swappable interface: If running in Electron with machine ID API
@@ -170,7 +220,7 @@ class LicenseService {
     const env = detectEnvironment();
     const payload = {
       deviceId,
-      appVersion: '1.0.0',
+      appVersion: APP_VERSION,
       windowsVersion: env.windowsVersion,
       createdAt: new Date().toISOString(),
     };
@@ -198,7 +248,7 @@ class LicenseService {
     return this.cachedCryptoKey;
   }
 
-  // --- Verify License Token ---
+  // --- Verify License Token Cryptographically ---
   public async verifyLicenseToken(token: string): Promise<{
     valid: boolean;
     payload?: LicensePayload;
@@ -257,6 +307,45 @@ class LicenseService {
     }
   }
 
+  // --- Startup Initialization ---
+  public async initLicense(): Promise<void> {
+    this.isChecking = true;
+    this.isTamperedOnBoot = false;
+
+    // Permanently wipe app_license_payload and legacy tampered flags
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.removeItem(STORAGE_KEYS.LICENSE_PAYLOAD);
+        localStorage.removeItem('app_license_tampered_flag');
+      } catch {}
+    }
+
+    const token = this.getStoredToken();
+    if (!token) {
+      this.verifiedPayload = null;
+      this.isChecking = false;
+      this.notifyListeners();
+      return;
+    }
+
+    // Verify stored token signature cryptographically
+    const verification = await this.verifyLicenseToken(token);
+    if (!verification.valid || !verification.payload) {
+      // Signature failure on boot = 'tampered'
+      this.verifiedPayload = null;
+      this.isTamperedOnBoot = true;
+      this.isChecking = false;
+      this.notifyListeners();
+      return;
+    }
+
+    // Verified successfully: store in memory ONLY
+    this.verifiedPayload = verification.payload;
+    this.isChecking = false;
+    this.recordHeartbeat();
+    this.notifyListeners();
+  }
+
   // --- Verify and Store License ---
   public async verifyAndStoreLicense(token: string): Promise<{
     success: boolean;
@@ -265,11 +354,7 @@ class LicenseService {
   }> {
     const verification = await this.verifyLicenseToken(token);
     if (!verification.valid || !verification.payload) {
-      if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(STORAGE_KEYS.TAMPERED_FLAG, 'true');
-        localStorage.setItem(STORAGE_KEYS.LICENSE_TOKEN, token.trim());
-      }
-      this.notifyListeners();
+      // STRICT: Return error only! Do NOT write any flag, do NOT replace the stored token.
       return { success: false, error: verification.error || 'فشل التحقق من الترخيص' };
     }
 
@@ -277,64 +362,69 @@ class LicenseService {
     const currentDeviceId = this.getDeviceId();
 
     if (payload.deviceId !== currentDeviceId) {
+      // STRICT: Return error only! Do NOT overwrite stored token.
       return {
         success: false,
         error: `الترخيص مخصص لجهاز آخر (${payload.deviceId}) ولا يتطابق مع هذا الجهاز (${currentDeviceId}).`,
       };
     }
 
+    // Verified and matches device: store token in localStorage and payload in memory ONLY
     if (typeof localStorage !== 'undefined') {
       try {
         localStorage.setItem(STORAGE_KEYS.LICENSE_TOKEN, token.trim());
-        localStorage.setItem(STORAGE_KEYS.LICENSE_PAYLOAD, JSON.stringify(payload));
-        localStorage.removeItem(STORAGE_KEYS.TAMPERED_FLAG);
+        localStorage.removeItem(STORAGE_KEYS.LICENSE_PAYLOAD);
         this.recordHeartbeat();
       } catch {
         return { success: false, error: 'تعذر حفظ الترخيص في الذاكرة المحلية للجهاز.' };
       }
     }
 
+    this.verifiedPayload = payload;
+    this.isTamperedOnBoot = false;
+    this.isChecking = false;
     this.notifyListeners();
     return { success: true, payload };
   }
 
   // --- Get License State ---
   public getLicenseState(): LicenseStateResult {
+    // 0. Before verification completes
+    if (this.isChecking) {
+      return {
+        status: 'checking',
+        daysRemaining: 0,
+        payload: null,
+        message: 'جاري التحقق من الترخيص المشفر...',
+        canOperate: true,
+      };
+    }
+
     // 1. Check Clock Rollback First
     if (this.checkClockRollback()) {
       return {
         status: 'clock-rollback',
         daysRemaining: 0,
-        payload: this.getStoredPayload(),
+        payload: this.verifiedPayload,
         message: 'تم تعديل أو إرجاع وقت وتاريخ الجهاز إلى الوراء! يلزم ضبط الساعة للمتابعة.',
         canOperate: !LICENSE_ENFORCEMENT,
       };
     }
 
-    // 2. Check Stored Token
-    if (typeof localStorage === 'undefined') {
-      return {
-        status: 'unlicensed',
-        daysRemaining: 0,
-        payload: null,
-        message: 'لا يوجد ترخيص مسجل على هذا الجهاز.',
-        canOperate: !LICENSE_ENFORCEMENT,
-      };
-    }
-
-    const token = localStorage.getItem(STORAGE_KEYS.LICENSE_TOKEN);
-    const payload = this.getStoredPayload();
-    const isTamperedFlag = localStorage.getItem(STORAGE_KEYS.TAMPERED_FLAG) === 'true';
-
-    if (isTamperedFlag) {
+    // 2. Check if Stored Token Failed Signature on Boot
+    if (this.isTamperedOnBoot) {
       return {
         status: 'tampered',
         daysRemaining: 0,
-        payload,
+        payload: null,
         message: 'تم التلاعب ببيانات ملف الترخيص أو التوقيع الرقمي غير صالح.',
         canOperate: !LICENSE_ENFORCEMENT,
       };
     }
+
+    // 3. Check Verified Payload in Memory
+    const token = this.getStoredToken();
+    const payload = this.verifiedPayload;
 
     if (!token || !payload) {
       return {
@@ -346,7 +436,7 @@ class LicenseService {
       };
     }
 
-    // 3. Check Device Matching
+    // 4. Check Device Matching
     const currentDeviceId = this.getDeviceId();
     if (payload.deviceId !== currentDeviceId) {
       return {
@@ -358,11 +448,16 @@ class LicenseService {
       };
     }
 
-    // 4. Check Expiration & Grace Period
+    // 5. Check Expiration & Grace Period
     const now = Date.now();
     const validUntilMs = new Date(payload.validUntil).getTime();
     const graceDays = payload.graceDays || 0;
     const graceUntilMs = validUntilMs + graceDays * 24 * 60 * 60 * 1000;
+
+    let warningMsg = '';
+    if (this.clockWarning) {
+      warningMsg = ` (${this.clockWarning})`;
+    }
 
     // Normal Valid License
     if (now <= validUntilMs) {
@@ -371,7 +466,7 @@ class LicenseService {
         status: 'valid',
         daysRemaining,
         payload,
-        message: `الترخيص سارٍ بنجاح (متبقي ${daysRemaining} يوم).`,
+        message: `الترخيص سارٍ بنجاح (متبقي ${daysRemaining} يوم).${warningMsg}`,
         canOperate: true,
       };
     }
@@ -383,7 +478,7 @@ class LicenseService {
         status: 'grace',
         daysRemaining: graceDaysRemaining,
         payload,
-        message: `انتهت صلاحية الترخيص، ويعمل النظام حالياً ضمن فترة السماح (متبقي ${graceDaysRemaining} يوم).`,
+        message: `انتهت صلاحية الترخيص، ويعمل النظام حالياً ضمن فترة السماح (متبقي ${graceDaysRemaining} يوم).${warningMsg}`,
         canOperate: true,
       };
     }
@@ -393,7 +488,7 @@ class LicenseService {
       status: 'expired',
       daysRemaining: 0,
       payload,
-      message: 'انتهت صلاحية الترخيص وفترة السماح. يرجى تجديد الترخيص لمتابعة إصدار الفواتير.',
+      message: `انتهت صلاحية الترخيص وفترة السماح. يرجى تجديد الترخيص لمتابعة إصدار الفواتير.${warningMsg}`,
       canOperate: !LICENSE_ENFORCEMENT,
     };
   }
@@ -403,15 +498,9 @@ class LicenseService {
     return localStorage.getItem(STORAGE_KEYS.LICENSE_TOKEN);
   }
 
+  // Returns verified in-memory payload only (never trusts localStorage)
   public getStoredPayload(): LicensePayload | null {
-    if (typeof localStorage === 'undefined') return null;
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.LICENSE_PAYLOAD);
-      if (data) return JSON.parse(data);
-    } catch {
-      // Ignore parse error
-    }
-    return null;
+    return this.verifiedPayload;
   }
 
   // --- Can Create Sales Invoice Check ---
@@ -420,15 +509,59 @@ class LicenseService {
       return true;
     }
     const state = this.getLicenseState();
-    return state.status === 'valid' || state.status === 'grace';
+    return state.status === 'valid' || state.status === 'grace' || state.status === 'checking';
+  }
+
+  public enableTrialBypass(): boolean {
+    if (LICENSE_ENFORCEMENT) {
+      return false;
+    }
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(STORAGE_KEYS.TRIAL_BYPASS, 'true');
+      } catch {}
+    }
+    this.notifyListeners();
+    return true;
+  }
+
+  public clearTrialBypass(): void {
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.removeItem(STORAGE_KEYS.TRIAL_BYPASS);
+      } catch {}
+    }
+    this.notifyListeners();
+  }
+
+  public isStoreActivated(): boolean {
+    const state = this.getLicenseState();
+    if (state.status === 'valid' || state.status === 'grace') {
+      return true;
+    }
+    if (!LICENSE_ENFORCEMENT && typeof localStorage !== 'undefined') {
+      try {
+        return localStorage.getItem(STORAGE_KEYS.TRIAL_BYPASS) === 'true';
+      } catch {
+        return false;
+      }
+    }
+    return false;
   }
 
   public removeLicense(): void {
     if (typeof localStorage !== 'undefined') {
-      localStorage.removeItem(STORAGE_KEYS.LICENSE_TOKEN);
-      localStorage.removeItem(STORAGE_KEYS.LICENSE_PAYLOAD);
-      localStorage.removeItem(STORAGE_KEYS.TAMPERED_FLAG);
+      try {
+        localStorage.removeItem(STORAGE_KEYS.LICENSE_TOKEN);
+        localStorage.removeItem(STORAGE_KEYS.LICENSE_PAYLOAD);
+        localStorage.removeItem(STORAGE_KEYS.TRIAL_BYPASS);
+        localStorage.removeItem('app_license_tampered_flag');
+      } catch {}
     }
+    this.verifiedPayload = null;
+    this.isTamperedOnBoot = false;
+    this.isChecking = false;
+    this.clockWarning = null;
     this.notifyListeners();
   }
 
@@ -452,3 +585,6 @@ class LicenseService {
 }
 
 export const licenseService = new LicenseService();
+export const initLicense = () => licenseService.initLicense();
+export const isStoreActivated = () => licenseService.isStoreActivated();
+

@@ -178,4 +178,42 @@ describe('orgSyncService pure functions', () => {
       expect(shouldPushSummary(twelveMin, lastPush, TEN_MINUTES_MS, false)).toBe(true);
     });
   });
+
+  describe('orgSyncService lifecycle & retry logic', () => {
+    it('(د) إعادة جدولة الملخص عند التخطي بسبب حد الـ 10 دقائق بدل أن يضيع التحديث', async () => {
+      const { orgSyncService } = await import('./orgSyncService');
+      
+      // Set last push to 3 minutes ago
+      const now = Date.now();
+      orgSyncService.setLastDailySummaryPushMs(now - 3 * 60 * 1000);
+
+      // Trigger pushDailySummary (not forced)
+      await orgSyncService.pushDailySummary(false);
+
+      // Verify that a reschedule timer has been set to push after remaining time (~7 minutes)
+      const timer = orgSyncService.getRescheduleSummaryTimer();
+      expect(timer).toBeDefined();
+
+      // Clean up timer
+      if (timer) clearTimeout(timer);
+    });
+
+    it('(هـ) إعادة المحاولة بعد permission-denied (لا توقف للأبد) وإعادة الضبط عند تغير الترخيص أو الدخول', async () => {
+      const { orgSyncService } = await import('./orgSyncService');
+
+      // Simulate permission-denied error encounter
+      orgSyncService.setSyncState('subscription-paused');
+      orgSyncService.schedulePermissionRetry(6 * 60 * 60 * 1000);
+
+      expect(orgSyncService.getPermissionRetryTimer()).toBeDefined();
+
+      // Reset subscription pause (as triggered by new license or sign-in)
+      orgSyncService.resetSubscriptionPause();
+
+      expect(orgSyncService.isSubscriptionPaused()).toBe(false);
+      expect(orgSyncService.getPermissionRetryTimer()).toBeNull();
+      expect(orgSyncService.getSyncState()).toBe('idle');
+    });
+  });
 });
+

@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User } from '../../types';
-import { storage } from '../../services/storageService';
-import { cloudService } from '../../services/cloudService';
+import { 
+  authSecurityService, 
+  isKnownDefaultPin, 
+  LockoutStatus 
+} from '../../services/authSecurityService';
 import { 
   Lock, 
   ShieldCheck, 
@@ -12,18 +15,14 @@ import {
   Delete, 
   Eye, 
   EyeOff, 
-  Sparkles, 
   X,
-  RotateCcw,
-  Mail,
-  Store,
-  Wifi,
-  Cloud
+  Clock,
+  ShieldAlert
 } from 'lucide-react';
 
 interface LoginModalProps {
   users: User[];
-  currentUser: User;
+  currentUser: User | null;
   onLoginSuccess: (user: User) => void;
   onClose?: () => void;
   isLockScreen?: boolean;
@@ -43,27 +42,28 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   onClose,
   isLockScreen = false,
 }) => {
-  const [isStoreActivated, setIsStoreActivated] = useState<boolean>(cloudService.isStoreActivated());
-  const [authMode, setAuthMode] = useState<'PIN' | 'CLOUD_EMAIL'>(
-    cloudService.isStoreActivated() ? 'PIN' : 'CLOUD_EMAIL'
-  );
-  const [activeStep, setActiveStep] = useState<1 | 2 | 3>(
-    cloudService.isStoreActivated() ? 3 : 1
-  );
-  const [cloudEmail, setCloudEmail] = useState<string>(cloudService.getPrimaryOwnerEmail());
-  const [cloudPassword, setCloudPassword] = useState<string>('••••••••');
-  const [showCloudPassword, setShowCloudPassword] = useState<boolean>(false);
-  const [isCloudLoggingIn, setIsCloudLoggingIn] = useState<boolean>(false);
-  const linkedStore = cloudService.getLinkedStore();
+  const activeUsers = users.filter(u => u.isActive !== false);
+  const initialUserId = (currentUser && activeUsers.some(u => u.id === currentUser.id))
+    ? currentUser.id
+    : (activeUsers[0]?.id || users[0]?.id || '');
 
-  const [selectedUserId, setSelectedUserId] = useState<string>(currentUser.id);
+  const [selectedUserId, setSelectedUserId] = useState<string>(initialUserId);
   const [pin, setPin] = useState<string>('');
-  const [showPin, setShowPin] = useState<boolean>(true); // default visible so user sees what they type
+  const [showPin, setShowPin] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
-  const [isChangingPin, setIsChangingPin] = useState<boolean>(false);
-  const [resetNotice, setResetNotice] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  // Change PIN Form
+  // Lockout state
+  const [lockout, setLockout] = useState<LockoutStatus>(() => authSecurityService.getLockoutStatus());
+
+  // Forced PIN change state (Requirement 6)
+  const [isForcedChangePin, setIsForcedChangePin] = useState<boolean>(false);
+  const [pendingMigratedUser, setPendingMigratedUser] = useState<User | null>(null);
+  const [forcedNewPin, setForcedNewPin] = useState<string>('');
+  const [forcedConfirmPin, setForcedConfirmPin] = useState<string>('');
+
+  // Normal Change PIN Form state
+  const [isChangingPin, setIsChangingPin] = useState<boolean>(false);
   const [oldPin, setOldPin] = useState<string>('');
   const [newPin, setNewPin] = useState<string>('');
   const [confirmNewPin, setConfirmNewPin] = useState<string>('');
@@ -72,53 +72,28 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const pinInputRef = useRef<HTMLInputElement>(null);
 
   const selectedUser = users.find(u => u.id === selectedUserId) || users[0];
-  const defaultPinForSelected = selectedUser.role === 'ADMIN' ? '1234' : '1111';
 
-  // Strict Lock Store & Revoke All Access Handler
-  const handleLockStoreCompletely = async () => {
-    await cloudService.lockStoreAndRevokeAccess();
-    setIsStoreActivated(false);
-    setAuthMode('CLOUD_EMAIL');
-    setActiveStep(1);
-    setPin('');
-    setResetNotice('تم إقفال المحل وسحب كافة الصلاحيات بنجاح. لا يملك أي شخص صلاحية الدخول حتى يتم تسجيل دخول المالك بالبريد المعتمد.');
-    setTimeout(() => setResetNotice(null), 5000);
-  };
-
-  const handleCloudLogin = async (e?: React.FormEvent, overrideEmail?: string, overridePass?: string) => {
-    if (e) e.preventDefault();
-    setError(null);
-    setIsCloudLoggingIn(true);
-    
-    const emailToUse = overrideEmail || cloudEmail;
-    const passToUse = overridePass || cloudPassword;
-
-    const res = await cloudService.signInWithEmail(emailToUse, passToUse);
-    setIsCloudLoggingIn(false);
-
-    if (res.success) {
-      setIsStoreActivated(true);
-      setActiveStep(3);
-      setResetNotice(
-        res.offlineMode 
-          ? `✓ الخطوات 1 و 2 مكتملة: تم توثيق حساب المالك (${emailToUse}) بنجاح وتفعيل المحل محلياً وسحابياً!`
-          : `✓ الخطوات 1 و 2 مكتملة: تم التحقق السحابي لحساب المالك (${emailToUse}) وتفعيل كافة صلاحيات المحل بنجاح!`
-      );
-      setTimeout(() => {
-        const adminUser = users.find(u => u.role === 'ADMIN') || users[0];
-        onLoginSuccess(adminUser);
-      }, 900);
-    } else {
-      setError(res.error || 'فشل تسجيل الدخول. يرجى التأكد من كتابة البريد وكلمة المرور بشكل صحيح.');
-    }
-  };
-
-  // Focus input on mount or user change
+  // Poll lockout timer every second
   useEffect(() => {
-    pinInputRef.current?.focus();
-  }, [selectedUserId, isChangingPin]);
+    const checkTimer = () => {
+      const status = authSecurityService.getLockoutStatus();
+      setLockout(status);
+    };
+
+    checkTimer();
+    const interval = setInterval(checkTimer, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Focus input on mount or user switch
+  useEffect(() => {
+    if (!lockout.isLocked && !isChangingPin && !isForcedChangePin) {
+      pinInputRef.current?.focus();
+    }
+  }, [selectedUserId, isChangingPin, isForcedChangePin, lockout.isLocked]);
 
   const handleKeyPress = (num: string) => {
+    if (lockout.isLocked || isLoading) return;
     if (pin.length < 8) {
       setPin(prev => prev + num);
       setError(null);
@@ -126,21 +101,19 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   };
 
   const handleDelete = () => {
+    if (lockout.isLocked || isLoading) return;
     setPin(prev => prev.slice(0, -1));
     setError(null);
   };
 
   const handleClear = () => {
+    if (lockout.isLocked || isLoading) return;
     setPin('');
     setError(null);
   };
 
-  const handleLogin = (pinToTest?: string) => {
-    // Gatekeeper enforcement: No cashier can enter if store is not activated by owner!
-    if (!cloudService.isStoreActivated()) {
-      setError('⛔ لا تملك أي صلاحية للدخول! المحل مقفل بالكامل، يلزم إتمام الخطوة 1 بتسجيل دخول المالك بالبريد الإلكتروني المعتمد أولاً.');
-      return;
-    }
+  const handleLogin = async (pinToTest?: string) => {
+    if (lockout.isLocked || isLoading) return;
 
     const rawPin = pinToTest !== undefined ? pinToTest : pin;
     const cleanPin = normalizeArabicDigits(rawPin).trim();
@@ -150,46 +123,94 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       return;
     }
 
-    const res = storage.authenticate(selectedUserId, cleanPin);
-    if (res.success && res.user) {
-      onLoginSuccess(res.user);
-    } else {
-      setError(res.error || `الرقم السري غير صحيح. الرقم السري الافتراضي هو (${defaultPinForSelected})`);
-      setPin('');
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const res = await authSecurityService.authenticate(selectedUserId, cleanPin);
+      
+      if (res.isLockedOut) {
+        setLockout(authSecurityService.getLockoutStatus());
+        setError(res.error || 'تم قفل تسجيل الدخول مؤقتاً');
+        setPin('');
+        setIsLoading(false);
+        return;
+      }
+
+      if (res.success && res.user) {
+        // Check if forced PIN change is required (migrated default 1234 or 1111)
+        if (res.mustChangePin) {
+          setPendingMigratedUser(res.user);
+          setIsForcedChangePin(true);
+          setPin('');
+          setIsLoading(false);
+          return;
+        }
+
+        onLoginSuccess(res.user);
+      } else {
+        setError(res.error || 'الرقم السري غير صحيح، حاول مرة أخرى');
+        setPin('');
+        setLockout(authSecurityService.getLockoutStatus());
+      }
+    } catch {
+      setError('حدث خطأ أثناء التحقق من الرقم السري');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  // One-click quick login with default PIN (Protected by Gatekeeper)
-  const handleDirectDefaultLogin = () => {
-    if (!cloudService.isStoreActivated()) {
-      setError('⛔ لا تملك أي صلاحية للدخول! المحل مقفل بالكامل، يلزم إتمام الخطوة 1 بتسجيل دخول المالك بالبريد الإلكتروني المعتمد أولاً.');
+  // Submit forced PIN change for migrated default PINs (Requirement 6)
+  const handleForcedPinChangeSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!pendingMigratedUser) return;
+    setError(null);
+
+    const cleanNew = normalizeArabicDigits(forcedNewPin).trim();
+    const cleanConfirm = normalizeArabicDigits(forcedConfirmPin).trim();
+
+    if (cleanNew !== cleanConfirm) {
+      setError('الرقم السري الجديد وتأكيده غير متطابقين');
       return;
     }
 
-    const allUsers = storage.getUsers();
-    const u = allUsers.find(usr => usr.id === selectedUserId);
-    if (u) {
-      u.pinCode = defaultPinForSelected;
-      storage.saveUser(u);
+    if (pendingMigratedUser.role === 'ADMIN') {
+      if (cleanNew.length < 6) {
+        setError('كلمة مرور المدير يجب ألا تقل عن 6 خانات');
+        return;
+      }
+    } else {
+      if (!/^\d{4,6}$/.test(cleanNew)) {
+        setError('الرقم السري للكاشير يجب أن يتكون من 4 إلى 6 أرقام');
+        return;
+      }
     }
-    setPin(defaultPinForSelected);
-    handleLogin(defaultPinForSelected);
+
+    if (isKnownDefaultPin(cleanNew)) {
+      setError('لا يمكن اختيار رقم سري افتراضي شائع (مثل 1234 أو 1111). اختر رقماً خاصاً وقوياً.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      // Temporary verify with old PIN or empty since already authenticated
+      const res = await authSecurityService.changeUserPin(pendingMigratedUser.id, '', cleanNew);
+      if (res.success) {
+        authSecurityService.recordSuccessfulLogin(pendingMigratedUser);
+        setIsForcedChangePin(false);
+        setPendingMigratedUser(null);
+        onLoginSuccess(pendingMigratedUser);
+      } else {
+        setError(res.error || 'فشل تحديث الرقم السري');
+      }
+    } catch {
+      setError('حدث خطأ أثناء حفظ الرقم السري الجديد');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Emergency reset of PINs to 1234 (Admin) and 1111 (Sales)
-  const handleResetAllPinsToDefault = () => {
-    const allUsers = storage.getUsers();
-    for (const u of allUsers) {
-      u.pinCode = u.role === 'ADMIN' ? '1234' : '1111';
-      storage.saveUser(u);
-    }
-    setResetNotice('تمت استعادة الأرقام السرية الافتراضية بنجاح! المدير (1234) • الكاشير (1111)');
-    setError(null);
-    setPin(defaultPinForSelected);
-    setTimeout(() => setResetNotice(null), 4000);
-  };
-
-  const handleChangePinSubmit = (e: React.FormEvent) => {
+  const handleChangePinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setChangeSuccess(null);
@@ -203,29 +224,47 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       return;
     }
 
-    const res = storage.changeUserPin(selectedUserId, cleanOld, cleanNew);
-    if (res.success) {
-      setChangeSuccess('تم تغيير الرقم السري بنجاح!');
-      setOldPin('');
-      setNewPin('');
-      setConfirmNewPin('');
-      setTimeout(() => {
-        setIsChangingPin(false);
-        setChangeSuccess(null);
-      }, 1500);
-    } else {
-      setError(res.error || 'فشل تغيير الرقم السري. تأكد من الرقم السري القديم.');
+    if (isKnownDefaultPin(cleanNew)) {
+      setError('لا يمكن اختيار رقم سري افتراضي شائع (مثل 1234 أو 1111)');
+      return;
     }
+
+    setIsLoading(true);
+    try {
+      const res = await authSecurityService.changeUserPin(selectedUserId, cleanOld, cleanNew);
+      if (res.success) {
+        setChangeSuccess('تم تغيير وتشفير الرقم السري بـ PBKDF2 بنجاح!');
+        setOldPin('');
+        setNewPin('');
+        setConfirmNewPin('');
+        setTimeout(() => {
+          setIsChangingPin(false);
+          setChangeSuccess(null);
+        }, 1500);
+      } else {
+        setError(res.error || 'فشل تغيير الرقم السري. تأكد من الرقم السري القديم.');
+      }
+    } catch {
+      setError('حدث خطأ أثناء تغيير الرقم السري');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const formatRemainingTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
   return (
     <div className="fixed inset-0 bg-slate-950/90 backdrop-blur-md flex items-center justify-center p-4 z-50 select-none overflow-y-auto" dir="rtl">
       <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-md w-full shadow-2xl p-6 text-right relative my-6">
-        {/* Close button if not locked */}
-        {!isLockScreen && onClose && (
+        {/* Close button if not locked screen */}
+        {!isLockScreen && onClose && !isForcedChangePin && (
           <button
             onClick={onClose}
-            className="absolute top-4 left-4 text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer"
+            className="absolute top-4 left-4 text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -233,193 +272,80 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
         {/* Header */}
         <div className="text-center pb-4 border-b border-slate-800">
-          <div className="w-14 h-14 bg-emerald-500/10 border border-emerald-500/30 rounded-full flex items-center justify-center mx-auto mb-2 text-emerald-400">
-            <Lock className="w-7 h-7" />
+          <div className={`w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-2 ${
+            lockout.isLocked
+              ? 'bg-rose-500/10 border border-rose-500/30 text-rose-400 animate-pulse'
+              : 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
+          }`}>
+            {lockout.isLocked ? <ShieldAlert className="w-7 h-7" /> : <Lock className="w-7 h-7" />}
           </div>
           <h2 className="text-lg font-bold text-white">
-            {isLockScreen ? 'شاشة الأمان وقفل البرنامج' : 'تسجيل دخول المستخدم'}
+            {isForcedChangePin
+              ? 'تغيير الرقم السري إجباري'
+              : isLockScreen
+              ? 'شاشة الأمان وقفل البرنامج'
+              : 'تسجيل دخول المستخدم'}
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            اختر المستخدم واكتب الرقم السري (PIN)
+            {isForcedChangePin
+              ? 'لحماية أموال وبيانات المحل، يرجى تعيين رقم سري جديد وخاص بك'
+              : 'اختر المستخدم واكتب الرقم السري (PIN)'}
           </p>
         </div>
 
-        {/* Auth Mode Tabs Switcher */}
-        <div className="flex bg-slate-950 p-1 rounded-xl my-3 border border-slate-800 gap-1">
-          <button
-            type="button"
-            onClick={() => {
-              setAuthMode('PIN');
-              setError(null);
-            }}
-            className={`flex-1 py-2 text-xs font-bold rounded-lg cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
-              authMode === 'PIN'
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <KeyRound className="w-3.5 h-3.5" />
-            <span>كاشير المحل (PIN)</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              setAuthMode('CLOUD_EMAIL');
-              setError(null);
-            }}
-            className={`flex-1 py-2 text-xs font-bold rounded-lg cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
-              authMode === 'CLOUD_EMAIL'
-                ? 'bg-emerald-600 text-white shadow-sm'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Mail className="w-3.5 h-3.5" />
-            <span>حساب المالك بالكلود (إيميل وباسورد)</span>
-          </button>
-        </div>
-
-        {authMode === 'CLOUD_EMAIL' ? (
-          /* Cloud Email & Password Login View */
-          <div className="space-y-3.5 my-2">
-            {/* Linked Store & Chain Card */}
-            <div className="bg-slate-950/90 border border-emerald-500/30 rounded-xl p-3 space-y-2 text-xs">
-              <div className="flex items-center justify-between text-emerald-400 font-bold border-b border-slate-800 pb-1.5">
-                <span className="flex items-center gap-1.5">
-                  <Store className="w-4 h-4 text-emerald-400" />
-                  <span>المحل المربوط بهذا الحساب</span>
-                </span>
-                <span className="text-[10px] bg-emerald-500/20 px-2 py-0.5 rounded-full border border-emerald-500/30">
-                  فرع رئيسي
-                </span>
-              </div>
-              <div className="text-white font-bold text-sm">
-                {linkedStore.storeName}
-              </div>
-              <div className="text-slate-400 text-[11px] flex items-center justify-between">
-                <span>السلسلة: <strong className="text-slate-300">{linkedStore.chainName}</strong></span>
-                <span className="text-amber-400 font-semibold">{linkedStore.subscriptionPlan}</span>
-              </div>
+        {/* Lockout Warning Banner (Requirement 7) */}
+        {lockout.isLocked && (
+          <div className="my-3 p-3.5 rounded-xl bg-rose-950/90 border border-rose-600 text-rose-200 text-xs text-center space-y-1.5 shadow-lg">
+            <div className="flex items-center justify-center gap-1.5 font-bold text-rose-300">
+              <Clock className="w-4 h-4 text-rose-400 animate-spin" />
+              <span>تم قفل تسجيل الدخول بعد 5 محاولات خاطئة متتالية!</span>
             </div>
-
-            {/* Offline Resilience Note */}
-            <div className="p-2.5 rounded-xl bg-blue-950/50 border border-blue-800/60 text-[11px] text-blue-200 flex items-start gap-2 leading-relaxed">
-              <Wifi className="w-4 h-4 text-blue-400 shrink-0 mt-0.5" />
-              <span>
-                <strong>ملاحظة هامة:</strong> يلزم الاتصال بالإنترنت للمرة الأولى فقط لربط المحل بالكلود، وبعدها يتم حفظ البيانات والتوثيق محلياً على الجهاز ليعمل النظام أوفلاين بالكامل مع استمرار الحفظ المزدوج.
-              </span>
+            <div className="text-sm font-mono font-black text-rose-100 bg-rose-900/40 py-1 px-3 rounded-lg inline-block border border-rose-700/50">
+              الوقت المتبقي لفك القفل: {formatRemainingTime(lockout.remainingSeconds)} دقيقة
             </div>
-
-            {/* Email Form */}
-            <form onSubmit={(e) => handleCloudLogin(e)} className="space-y-3">
-              <div>
-                <label className="text-slate-300 block mb-1 text-xs font-semibold">
-                  البريد الإلكتروني الأساسي للمالك:
-                </label>
-                <div className="relative">
-                  <input
-                    type="email"
-                    required
-                    value={cloudEmail}
-                    onChange={(e) => setCloudEmail(e.target.value)}
-                    placeholder="mahmoud.mansour0b@gmail.com"
-                    className="w-full bg-slate-950 border border-slate-700 rounded-xl py-2 px-3 pl-10 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
-                  />
-                  <Mail className="w-4 h-4 text-slate-500 absolute left-3 top-2.5" />
-                </div>
-              </div>
-
-              <div>
-                <label className="text-slate-300 block mb-1 text-xs font-semibold">
-                  كلمة المرور:
-                </label>
-                <div className="relative">
-                  <input
-                    type={showCloudPassword ? 'text' : 'password'}
-                    required
-                    value={cloudPassword}
-                    onChange={(e) => setCloudPassword(e.target.value)}
-                    placeholder="اكتب كلمة المرور..."
-                    className="w-full bg-slate-950 border border-slate-700 rounded-xl py-2 px-3 pl-10 text-white font-mono text-xs focus:outline-none focus:border-emerald-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowCloudPassword(!showCloudPassword)}
-                    className="absolute left-3 top-2.5 text-slate-500 hover:text-slate-300 cursor-pointer"
-                  >
-                    {showCloudPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-              </div>
-
-              {/* 1-Click Quick Fill & Login Button */}
-              <button
-                type="button"
-                onClick={() => {
-                  setCloudEmail('mahmoud.mansour0b@gmail.com');
-                  setCloudPassword('admin123456');
-                  handleCloudLogin(undefined, 'mahmoud.mansour0b@gmail.com', 'admin123456');
-                }}
-                className="w-full bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-600 text-emerald-300 text-xs font-bold py-2 rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md"
-              >
-                <Sparkles className="w-4 h-4 text-amber-400" />
-                <span>دخول سريع وتوثيق حساب المالك الافتراضي (mahmoud.mansour0b@gmail.com)</span>
-              </button>
-
-              <button
-                type="submit"
-                disabled={isCloudLoggingIn}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:opacity-50 text-white font-black text-sm py-2.5 rounded-xl shadow-lg shadow-emerald-950/60 flex items-center justify-center gap-2 cursor-pointer transition-all"
-              >
-                <Cloud className="w-4 h-4" />
-                <span>{isCloudLoggingIn ? 'جاري التحقق والربط...' : 'دخول وتوثيق المحل بالكلود'}</span>
-              </button>
-            </form>
+            <p className="text-[11px] text-rose-400">
+              (حالة القفل محفوظة ولن تتأثر بإعادة تحميل الصفحة لحماية النظام)
+            </p>
           </div>
-        ) : (
-          /* Cashier PIN Login Mode */
-          <>
-            {/* User Selector Chips */}
-            <div className="my-4 grid grid-cols-2 gap-2">
-              {users.map(u => (
-                <button
-                  key={u.id}
-                  type="button"
-                  onClick={() => {
-                    setSelectedUserId(u.id);
-                    setPin('');
-                    setError(null);
-                  }}
-                  className={`p-3 rounded-xl border text-right transition-all cursor-pointer flex items-center gap-2.5 ${
-                    selectedUserId === u.id
-                      ? 'bg-slate-800 border-emerald-500 shadow-md shadow-emerald-950/50'
-                      : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 opacity-60'
-                  }`}
-                >
-                  <div className={`p-2 rounded-lg text-white ${u.role === 'ADMIN' ? 'bg-emerald-600' : 'bg-blue-600'}`}>
-                    {u.role === 'ADMIN' ? <ShieldCheck className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
-                  </div>
-                  <div className="overflow-hidden">
-                    <span className="font-bold text-xs text-slate-100 block truncate">{u.fullName}</span>
-                    <span className="text-[10px] text-emerald-400 block font-mono font-bold">
-                      {u.role === 'ADMIN' ? 'الرقم السري: 1234' : 'الرقم السري: 1111'}
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
+        )}
+
+        {/* User Selector Chips (Only when not forced changing PIN) */}
+        {!isForcedChangePin && (
+          <div className="my-4 grid grid-cols-2 gap-2">
+            {users.map(u => (
+              <button
+                key={u.id}
+                type="button"
+                disabled={lockout.isLocked || u.isActive === false}
+                onClick={() => {
+                  setSelectedUserId(u.id);
+                  setPin('');
+                  setError(null);
+                }}
+                className={`p-3 rounded-xl border text-right transition-all cursor-pointer flex items-center gap-2.5 ${
+                  selectedUserId === u.id
+                    ? 'bg-slate-800 border-emerald-500 shadow-md shadow-emerald-950/50'
+                    : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 opacity-60'
+                } ${u.isActive === false ? 'opacity-40 cursor-not-allowed' : ''}`}
+              >
+                <div className={`p-2 rounded-lg text-white ${u.role === 'ADMIN' ? 'bg-emerald-600' : 'bg-blue-600'}`}>
+                  {u.role === 'ADMIN' ? <ShieldCheck className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
+                </div>
+                <div className="overflow-hidden">
+                  <span className="font-bold text-xs text-slate-100 block truncate">{u.fullName}</span>
+                  <span className="text-[10px] text-slate-400 block font-mono">
+                    {u.role === 'ADMIN' ? 'مدير عام' : 'كاشير مبيعات'}
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
 
         {error && (
           <div className="mb-3 p-2.5 rounded-lg bg-rose-950/80 border border-rose-800 text-rose-300 text-xs flex items-center gap-2">
             <AlertCircle className="w-4 h-4 shrink-0" />
             <span>{error}</span>
-          </div>
-        )}
-
-        {resetNotice && (
-          <div className="mb-3 p-2.5 rounded-lg bg-emerald-950/80 border border-emerald-800 text-emerald-300 text-xs flex items-center gap-2">
-            <CheckCircle className="w-4 h-4 shrink-0" />
-            <span>{resetNotice}</span>
           </div>
         )}
 
@@ -430,17 +356,65 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           </div>
         )}
 
-        {!isChangingPin ? (
+        {/* FORCED PIN CHANGE FORM (Requirement 6) */}
+        {isForcedChangePin && pendingMigratedUser ? (
+          <form onSubmit={handleForcedPinChangeSubmit} className="space-y-3.5 my-3 text-xs">
+            <div className="p-3 bg-amber-950/40 border border-amber-800/80 rounded-xl text-amber-300 text-[11px] leading-relaxed">
+              ⚠️ <strong>تنبيه أمني هام:</strong> حسابك <strong>({pendingMigratedUser.fullName})</strong> كان يستخدم رقماً سرياً افتراضياً قديماً. تم تشفير بياناتك، ويلزم تعيين رقم سري جديد وخاص بك قبل المتابعة.
+            </div>
+
+            <div>
+              <label className="text-slate-300 block mb-1 font-bold">
+                الرقم السري الجديد ({pendingMigratedUser.role === 'ADMIN' ? '6 خانات على الأقل' : '4 إلى 6 أرقام'}):
+              </label>
+              <input
+                type="password"
+                required
+                autoFocus
+                value={forcedNewPin}
+                onChange={(e) => setForcedNewPin(normalizeArabicDigits(e.target.value))}
+                placeholder="اكتب الرقم السري الجديد"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white font-mono text-center tracking-widest text-sm text-emerald-400 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="text-slate-300 block mb-1 font-bold">
+                تأكيد الرقم السري الجديد:
+              </label>
+              <input
+                type="password"
+                required
+                value={forcedConfirmPin}
+                onChange={(e) => setForcedConfirmPin(normalizeArabicDigits(e.target.value))}
+                placeholder="أعد كتابة الرقم السري للتأكيد"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white font-mono text-center tracking-widest text-sm text-emerald-400 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            <div className="pt-2">
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-xl cursor-pointer shadow-md transition-all disabled:opacity-50"
+              >
+                {isLoading ? 'جاري التشفير والحفظ...' : 'تأكيد الرقم السري الجديد والدخول للنظام'}
+              </button>
+            </div>
+          </form>
+        ) : !isChangingPin ? (
+          /* STANDARD LOGIN FORM */
           <div>
-            {/* Direct Input Field for physical keyboard & tablet touch keyboard */}
+            {/* Input Field */}
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 my-2 text-center relative">
               <span className="text-[11px] text-slate-400 block mb-1">
-                الرقم السري لـ <strong className="text-white">({selectedUser.fullName})</strong>:
+                الرقم السري لـ <strong className="text-white">({selectedUser?.fullName})</strong>:
               </span>
               
               <div className="relative max-w-[200px] mx-auto">
                 <input
                   ref={pinInputRef}
+                  disabled={lockout.isLocked || isLoading}
                   type={showPin ? 'text' : 'password'}
                   inputMode="numeric"
                   pattern="[0-9]*"
@@ -457,7 +431,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                     }
                   }}
                   placeholder="اكتب الرقم السري..."
-                  className="w-full bg-slate-900 border border-slate-700 rounded-lg py-2 px-3 text-center text-xl font-mono tracking-widest text-emerald-400 font-bold focus:outline-none focus:border-emerald-500"
+                  className="w-full bg-slate-900 border border-slate-700 rounded-lg py-2 px-3 text-center text-xl font-mono tracking-widest text-emerald-400 font-bold focus:outline-none focus:border-emerald-500 disabled:opacity-50"
                 />
                 
                 <button
@@ -471,48 +445,40 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               </div>
             </div>
 
-            {/* Quick 1-Click Fill and Auto-Login Button */}
-            <div className="my-2.5 text-center">
-              <button
-                type="button"
-                onClick={handleDirectDefaultLogin}
-                className="w-full bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-600 text-emerald-300 text-xs font-bold py-2 rounded-xl flex items-center justify-center gap-2 cursor-pointer transition-all shadow-md"
-              >
-                <Sparkles className="w-4 h-4 text-amber-400" />
-                <span>دخول مباشر وفوري بكلمة السر الافتراضية ({defaultPinForSelected})</span>
-              </button>
-            </div>
-
-            {/* Touch-Friendly On-Screen Numeric Keypad (for POS Touchscreens & Tablets) */}
+            {/* Numeric Keypad */}
             <div className="grid grid-cols-3 gap-2 my-3">
               {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(num => (
                 <button
                   key={num}
                   type="button"
+                  disabled={lockout.isLocked || isLoading}
                   onClick={() => handleKeyPress(num)}
-                  className="bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-100 font-mono font-bold text-lg py-2.5 rounded-xl border border-slate-700/60 shadow-sm cursor-pointer transition-transform active:scale-95"
+                  className="bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-100 font-mono font-bold text-lg py-2.5 rounded-xl border border-slate-700/60 shadow-sm cursor-pointer transition-transform active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {num}
                 </button>
               ))}
               <button
                 type="button"
+                disabled={lockout.isLocked || isLoading}
                 onClick={handleClear}
-                className="bg-slate-950 hover:bg-slate-800 text-slate-400 font-bold text-xs py-2.5 rounded-xl border border-slate-800 cursor-pointer"
+                className="bg-slate-950 hover:bg-slate-800 text-slate-400 font-bold text-xs py-2.5 rounded-xl border border-slate-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 مسح
               </button>
               <button
                 type="button"
+                disabled={lockout.isLocked || isLoading}
                 onClick={() => handleKeyPress('0')}
-                className="bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-100 font-mono font-bold text-lg py-2.5 rounded-xl border border-slate-700/60 shadow-sm cursor-pointer"
+                className="bg-slate-800 hover:bg-slate-700 active:bg-slate-600 text-slate-100 font-mono font-bold text-lg py-2.5 rounded-xl border border-slate-700/60 shadow-sm cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 0
               </button>
               <button
                 type="button"
+                disabled={lockout.isLocked || isLoading}
                 onClick={handleDelete}
-                className="bg-slate-950 hover:bg-slate-800 text-rose-400 flex items-center justify-center py-2.5 rounded-xl border border-slate-800 cursor-pointer"
+                className="bg-slate-950 hover:bg-slate-800 text-rose-400 flex items-center justify-center py-2.5 rounded-xl border border-slate-800 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <Delete className="w-5 h-5" />
               </button>
@@ -522,31 +488,32 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             <div className="space-y-2">
               <button
                 type="button"
+                disabled={lockout.isLocked || isLoading}
                 onClick={() => handleLogin()}
-                className="w-full bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-sm py-2.5 rounded-xl shadow-lg shadow-emerald-950/60 flex items-center justify-center gap-2 cursor-pointer transition-all"
+                className="w-full bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-bold text-sm py-2.5 rounded-xl shadow-lg shadow-emerald-950/60 flex items-center justify-center gap-2 cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                <KeyRound className="w-4 h-4" />
-                <span>دخول النظام</span>
+                {isLoading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <span>جاري التحقق والتشفير...</span>
+                  </>
+                ) : (
+                  <>
+                    <KeyRound className="w-4 h-4" />
+                    <span>دخول النظام</span>
+                  </>
+                )}
               </button>
 
-              <div className="flex items-center justify-between pt-2 text-[11px] text-slate-400 border-t border-slate-800">
+              <div className="flex items-center justify-end pt-2 text-[11px] text-slate-400 border-t border-slate-800">
                 <button
                   type="button"
-                  onClick={handleResetAllPinsToDefault}
-                  className="text-slate-400 hover:text-emerald-400 flex items-center gap-1 cursor-pointer"
-                  title="استعادة الباسورد 1234 و 1111 إذا نسيتها"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                  <span>إعادة تعيين للأرقام الافتراضية</span>
-                </button>
-
-                <button
-                  type="button"
+                  disabled={lockout.isLocked}
                   onClick={() => {
                     setIsChangingPin(true);
                     setError(null);
                   }}
-                  className="text-amber-400 hover:text-amber-300 font-semibold cursor-pointer"
+                  className="text-amber-400 hover:text-amber-300 font-semibold cursor-pointer transition-colors"
                 >
                   تغيير الرقم السري 🔑
                 </button>
@@ -554,28 +521,30 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             </div>
           </div>
         ) : (
-          /* Change PIN Form */
+          /* VOLUNTARY CHANGE PIN FORM */
           <form onSubmit={handleChangePinSubmit} className="space-y-3 my-3 text-xs">
             <div>
-              <label className="text-slate-300 block mb-1">الرقم السري الحالي لـ ({selectedUser.fullName}):</label>
+              <label className="text-slate-300 block mb-1">الرقم السري الحالي لـ ({selectedUser?.fullName}):</label>
               <input
-                type="text"
+                type="password"
                 required
                 value={oldPin}
                 onChange={(e) => setOldPin(normalizeArabicDigits(e.target.value))}
-                placeholder={defaultPinForSelected}
+                placeholder="اكتب الرقم السري الحالي"
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-mono text-center tracking-widest text-sm"
               />
             </div>
 
             <div>
-              <label className="text-slate-300 block mb-1">الرقم السري الجديد (4 أرقام أو أكثر):</label>
+              <label className="text-slate-300 block mb-1">
+                الرقم السري الجديد ({selectedUser?.role === 'ADMIN' ? '6 خانات على الأقل' : '4 إلى 6 أرقام'}):
+              </label>
               <input
-                type="text"
+                type="password"
                 required
                 value={newPin}
                 onChange={(e) => setNewPin(normalizeArabicDigits(e.target.value))}
-                placeholder="اكتب الباسورد الجديد"
+                placeholder="اكتب الرقم السري الجديد"
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-mono text-center tracking-widest text-sm text-emerald-400"
               />
             </div>
@@ -583,11 +552,11 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             <div>
               <label className="text-slate-300 block mb-1">تأكيد الرقم السري الجديد:</label>
               <input
-                type="text"
+                type="password"
                 required
                 value={confirmNewPin}
                 onChange={(e) => setConfirmNewPin(normalizeArabicDigits(e.target.value))}
-                placeholder="أعد كتابة الباسورد الجديد"
+                placeholder="أعد كتابة الرقم السري الجديد"
                 className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white font-mono text-center tracking-widest text-sm text-emerald-400"
               />
             </div>
@@ -605,16 +574,15 @@ export const LoginModal: React.FC<LoginModalProps> = ({
               </button>
               <button
                 type="submit"
-                className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold cursor-pointer"
+                disabled={isLoading}
+                className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold cursor-pointer disabled:opacity-50"
               >
-                حفظ الباسورد الجديد
+                {isLoading ? 'جاري الحفظ...' : 'تشفير وحفظ الرقم السري'}
               </button>
             </div>
           </form>
         )}
-      </>
-    )}
-  </div>
-</div>
+      </div>
+    </div>
   );
 };

@@ -21,13 +21,18 @@ import {
   Clock,
   Laptop
 } from 'lucide-react';
+import { Lock } from 'lucide-react';
 import { licenseService, LicenseStateResult } from '../../services/licenseService';
+import { authSecurityService } from '../../services/authSecurityService';
 import { LicenseActivationModal } from '../license/LicenseActivationModal';
 
 export const ThemeAccessibilitySettings: React.FC = () => {
   const [settings, setSettings] = useState<AccessibilitySettings>(themeService.getSettings());
   const [licenseState, setLicenseState] = useState<LicenseStateResult>(() => licenseService.getLicenseState());
   const [isActivationModalOpen, setIsActivationModalOpen] = useState<boolean>(false);
+  const [autoLockMinutes, setAutoLockMinutes] = useState<number>(() => {
+    return authSecurityService.getSecuritySettings().autoLockMinutes;
+  });
 
   useEffect(() => {
     const unsubTheme = themeService.subscribe((updated) => {
@@ -414,6 +419,7 @@ export const ThemeAccessibilitySettings: React.FC = () => {
             }`}>
               {licenseState.status === 'valid' ? 'سارٍ ومفعّل ✓' :
                licenseState.status === 'grace' ? 'فترة سماح ⏳' :
+               licenseState.status === 'checking' ? 'جاري التحقق...' :
                licenseState.status === 'expired' ? 'منتهي الصلاحية' :
                licenseState.status === 'tampered' ? 'توقيع تالف' :
                licenseState.status === 'wrong-device' ? 'جهاز مختلف' :
@@ -463,6 +469,49 @@ export const ThemeAccessibilitySettings: React.FC = () => {
         onClose={() => setIsActivationModalOpen(false)}
         onSuccess={() => setLicenseState(licenseService.getLicenseState())}
       />
+
+      {/* Section: Auto-Lock Security Settings (Requirement 8) */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-2xl p-6 shadow-sm space-y-4">
+        <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+          <div>
+            <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+              <Lock className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
+              <span>أمان الشاشة والقفل التلقائي عند عدم النشاط (Auto-Lock)</span>
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+              قفل شاشة الكاشير والمبيعات تلقائياً بعد فترة محددة من عدم لمس الجهاز لحماية الخزينة والمحل من تطفل الآخرين.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            { val: 2, label: 'دقيقتان' },
+            { val: 5, label: '5 دقائق' },
+            { val: 10, label: '10 دقائق (موصى به)' },
+            { val: 15, label: '15 دقيقة' },
+            { val: 30, label: '30 دقيقة' },
+            { val: 60, label: 'ساعة كاملة' },
+            { val: 0, label: 'إيقاف القفل التلقائي' },
+          ].map(opt => (
+            <button
+              key={opt.val}
+              type="button"
+              onClick={() => {
+                authSecurityService.updateSecuritySettings({ autoLockMinutes: opt.val });
+                setAutoLockMinutes(opt.val);
+              }}
+              className={`p-3.5 rounded-xl border-2 font-bold text-xs cursor-pointer transition-all ${
+                autoLockMinutes === opt.val
+                  ? 'border-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 shadow-sm ring-2 ring-emerald-500/30'
+                  : 'border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Section 6: Operational Guarantee Note */}
       <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800/80 rounded-2xl p-5 text-emerald-900 dark:text-emerald-200 text-sm flex items-start gap-3">

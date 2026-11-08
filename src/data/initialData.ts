@@ -1,49 +1,6 @@
 import { Product, Customer, Supplier, User, SystemShift, CashMovement, Expense, SalesInvoice } from '../types';
 
-export const INITIAL_USERS: User[] = [
-  {
-    id: 'u-1',
-    username: 'admin',
-    fullName: 'الحاج محمود (المدير المسؤول)',
-    role: 'ADMIN',
-    isActive: true,
-    pinCode: '1234',
-    phone: '01012340001',
-    avatarColor: 'bg-emerald-600',
-    permissions: {
-      canEditPrice: true,
-      canGiveDiscount: true,
-      canSellNegativeStock: true,
-      canDeleteInvoice: true,
-      canEditInvoice: true,
-      canViewProfits: true,
-      canManageProducts: true,
-      canManagePurchases: true,
-      canManageCash: true,
-    },
-  },
-  {
-    id: 'u-2',
-    username: 'sales1',
-    fullName: 'أحمد علي (مسؤول مبيعات المحل)',
-    role: 'SALES',
-    isActive: true,
-    pinCode: '1111',
-    phone: '01123450002',
-    avatarColor: 'bg-blue-600',
-    permissions: {
-      canEditPrice: true,
-      canGiveDiscount: true,
-      canSellNegativeStock: true,
-      canDeleteInvoice: false,
-      canEditInvoice: true,
-      canViewProfits: false,
-      canManageProducts: false,
-      canManagePurchases: false,
-      canManageCash: false,
-    },
-  },
-];
+export const INITIAL_USERS: User[] = [];
 
 export const INITIAL_PRODUCTS: Product[] = [
   // --- قسم الألبان والأجبان (Dairy & Cheese) ---
