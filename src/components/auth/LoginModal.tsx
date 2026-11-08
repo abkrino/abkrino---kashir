@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User } from '../../types';
+import { storage } from '../../services/storageService';
 import { 
   authSecurityService, 
   isKnownDefaultPin, 
@@ -53,8 +54,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  // Lockout state
-  const [lockout, setLockout] = useState<LockoutStatus>(() => authSecurityService.getLockoutStatus());
+  // Lockout state per selected user
+  const [lockout, setLockout] = useState<LockoutStatus>(() => authSecurityService.getLockoutStatus(selectedUserId));
 
   // Forced PIN change state (Requirement 6)
   const [isForcedChangePin, setIsForcedChangePin] = useState<boolean>(false);
@@ -70,19 +71,28 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [changeSuccess, setChangeSuccess] = useState<string | null>(null);
 
   const pinInputRef = useRef<HTMLInputElement>(null);
+  // Requirement 1: Hold the just-entered PIN in memory ONLY during forced PIN change
+  const enteredPinRef = useRef<string>('');
 
   const selectedUser = users.find(u => u.id === selectedUserId) || users[0];
 
-  // Poll lockout timer every second
+  // Poll lockout timer every second for currently selected user
   useEffect(() => {
     const checkTimer = () => {
-      const status = authSecurityService.getLockoutStatus();
+      const status = authSecurityService.getLockoutStatus(selectedUserId);
       setLockout(status);
     };
 
     checkTimer();
     const interval = setInterval(checkTimer, 1000);
     return () => clearInterval(interval);
+  }, [selectedUserId]);
+
+  // Clean in-memory PIN ref on unmount
+  useEffect(() => {
+    return () => {
+      enteredPinRef.current = '';
+    };
   }, []);
 
   // Focus input on mount or user switch
@@ -130,7 +140,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       const res = await authSecurityService.authenticate(selectedUserId, cleanPin);
       
       if (res.isLockedOut) {
-        setLockout(authSecurityService.getLockoutStatus());
+        enteredPinRef.current = '';
+        setLockout(authSecurityService.getLockoutStatus(selectedUserId));
         setError(res.error || 'تم قفل تسجيل الدخول مؤقتاً');
         setPin('');
         setIsLoading(false);
@@ -140,6 +151,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       if (res.success && res.user) {
         // Check if forced PIN change is required (migrated default 1234 or 1111)
         if (res.mustChangePin) {
+          // Requirement 1: Keep in-memory ONLY
+          enteredPinRef.current = cleanPin;
           setPendingMigratedUser(res.user);
           setIsForcedChangePin(true);
           setPin('');
@@ -147,24 +160,35 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           return;
         }
 
+        enteredPinRef.current = '';
         onLoginSuccess(res.user);
       } else {
+        enteredPinRef.current = '';
         setError(res.error || 'الرقم السري غير صحيح، حاول مرة أخرى');
         setPin('');
-        setLockout(authSecurityService.getLockoutStatus());
+        setLockout(authSecurityService.getLockoutStatus(selectedUserId));
       }
     } catch {
+      enteredPinRef.current = '';
       setError('حدث خطأ أثناء التحقق من الرقم السري');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Submit forced PIN change for migrated default PINs (Requirement 6)
+  // Submit forced PIN change for migrated default PINs (Requirement 1 & 2)
   const handleForcedPinChangeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pendingMigratedUser) return;
     setError(null);
+
+    const oldPin = enteredPinRef.current;
+    if (!oldPin) {
+      setError('انتهت صلاحية جلسة التحقق، يرجى إعادة تسجيل الدخول');
+      setIsForcedChangePin(false);
+      setPendingMigratedUser(null);
+      return;
+    }
 
     const cleanNew = normalizeArabicDigits(forcedNewPin).trim();
     const cleanConfirm = normalizeArabicDigits(forcedConfirmPin).trim();
@@ -193,13 +217,31 @@ export const LoginModal: React.FC<LoginModalProps> = ({
 
     setIsLoading(true);
     try {
-      // Temporary verify with old PIN or empty since already authenticated
-      const res = await authSecurityService.changeUserPin(pendingMigratedUser.id, '', cleanNew);
+      // Pass oldPin verified from memory ref - never empty string
+      const res = await authSecurityService.changeUserPin(pendingMigratedUser.id, oldPin, cleanNew);
       if (res.success) {
-        authSecurityService.recordSuccessfulLogin(pendingMigratedUser);
+        // Clear memory ref immediately
+        enteredPinRef.current = '';
+
+        // Get fresh user from storage
+        const latestUsers = storage.getUsers();
+        const updatedUser = latestUsers.find(u => u.id === pendingMigratedUser.id) || pendingMigratedUser;
+
+        // Requirement 2: record in audit log and log user in directly
+        authSecurityService.recordSuccessfulLogin(updatedUser);
+        storage.addAuditLog(
+          'AUTH',
+          'تسجيل دخول ناجح بعد تغيير الرقم السري الإجباري',
+          'الأمان',
+          updatedUser.id,
+          `تسجيل دخول ناجح للمستخدم (${updatedUser.fullName}) بعد تعيين الرقم السري وتشفيره بـ PBKDF2`
+        );
+
         setIsForcedChangePin(false);
         setPendingMigratedUser(null);
-        onLoginSuccess(pendingMigratedUser);
+        setForcedNewPin('');
+        setForcedConfirmPin('');
+        onLoginSuccess(updatedUser);
       } else {
         setError(res.error || 'فشل تحديث الرقم السري');
       }
@@ -263,7 +305,14 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         {/* Close button if not locked screen */}
         {!isLockScreen && onClose && !isForcedChangePin && (
           <button
-            onClick={onClose}
+            onClick={() => {
+              enteredPinRef.current = '';
+              setIsForcedChangePin(false);
+              setPendingMigratedUser(null);
+              setForcedNewPin('');
+              setForcedConfirmPin('');
+              onClose();
+            }}
             className="absolute top-4 left-4 text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer transition-colors"
           >
             <X className="w-5 h-5" />
@@ -312,33 +361,43 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         {/* User Selector Chips (Only when not forced changing PIN) */}
         {!isForcedChangePin && (
           <div className="my-4 grid grid-cols-2 gap-2">
-            {users.map(u => (
-              <button
-                key={u.id}
-                type="button"
-                disabled={lockout.isLocked || u.isActive === false}
-                onClick={() => {
-                  setSelectedUserId(u.id);
-                  setPin('');
-                  setError(null);
-                }}
-                className={`p-3 rounded-xl border text-right transition-all cursor-pointer flex items-center gap-2.5 ${
-                  selectedUserId === u.id
-                    ? 'bg-slate-800 border-emerald-500 shadow-md shadow-emerald-950/50'
-                    : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 opacity-60'
-                } ${u.isActive === false ? 'opacity-40 cursor-not-allowed' : ''}`}
-              >
-                <div className={`p-2 rounded-lg text-white ${u.role === 'ADMIN' ? 'bg-emerald-600' : 'bg-blue-600'}`}>
-                  {u.role === 'ADMIN' ? <ShieldCheck className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
-                </div>
-                <div className="overflow-hidden">
-                  <span className="font-bold text-xs text-slate-100 block truncate">{u.fullName}</span>
-                  <span className="text-[10px] text-slate-400 block font-mono">
-                    {u.role === 'ADMIN' ? 'مدير عام' : 'كاشير مبيعات'}
-                  </span>
-                </div>
-              </button>
-            ))}
+            {users.map(u => {
+              const uLock = authSecurityService.getLockoutStatus(u.id);
+
+              return (
+                <button
+                  key={u.id}
+                  type="button"
+                  disabled={u.isActive === false}
+                  onClick={() => {
+                    enteredPinRef.current = '';
+                    setIsForcedChangePin(false);
+                    setPendingMigratedUser(null);
+                    setForcedNewPin('');
+                    setForcedConfirmPin('');
+                    setSelectedUserId(u.id);
+                    setPin('');
+                    setError(null);
+                    setLockout(authSecurityService.getLockoutStatus(u.id));
+                  }}
+                  className={`p-3 rounded-xl border text-right transition-all cursor-pointer flex items-center gap-2.5 ${
+                    selectedUserId === u.id
+                      ? 'bg-slate-800 border-emerald-500 shadow-md shadow-emerald-950/50'
+                      : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 opacity-60'
+                  } ${u.isActive === false ? 'opacity-40 cursor-not-allowed' : ''}`}
+                >
+                  <div className={`p-2 rounded-lg text-white ${u.role === 'ADMIN' ? 'bg-emerald-600' : 'bg-blue-600'}`}>
+                    {u.role === 'ADMIN' ? <ShieldCheck className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
+                  </div>
+                  <div className="overflow-hidden">
+                    <span className="font-bold text-xs text-slate-100 block truncate">{u.fullName}</span>
+                    <span className="text-[10px] text-slate-400 block font-mono">
+                      {uLock.isLocked ? '🔒 مقفول مؤقتاً' : u.role === 'ADMIN' ? 'مدير عام' : 'كاشير مبيعات'}
+                    </span>
+                  </div>
+                </button>
+              );
+            })}
           </div>
         )}
 

@@ -41,6 +41,14 @@ export interface AuthResult {
 
 export const KNOWN_DEFAULT_PINS = ['1234', '1111', '0000', '123456', '9999', '1122', '0123'];
 
+// Convert any Arabic-Indic numerals (٠-٩) or Eastern Arabic/Persian numerals (۰-۹) to standard Western digits (0-9)
+export function normalizeArabicDigits(str: string): string {
+  if (!str) return '';
+  return str
+    .replace(/[٠-٩]/g, d => '0123456789'['٠١٢٣٤٥٦٧٨٩'.indexOf(d)])
+    .replace(/[۰-۹]/g, d => '0123456789'['۰۱۲۳۴۵۶۷۸۹'.indexOf(d)]);
+}
+
 const STORAGE_KEYS = {
   LOCKOUT: 'pos_auth_lockout_v1',
   SECURITY_SETTINGS: 'pos_security_settings_v1',
@@ -119,7 +127,7 @@ export async function verifyPasswordWithPbkdf2(
 }
 
 export function isKnownDefaultPin(pin: string): boolean {
-  const clean = pin.trim();
+  const clean = normalizeArabicDigits(pin).trim();
   return KNOWN_DEFAULT_PINS.includes(clean);
 }
 
@@ -170,66 +178,85 @@ export function checkUserPermission(
 
 // --- AUTHENTICATION & SECURITY SERVICE ---
 class AuthSecurityService {
-  // Lockout Management
-  public getLockoutStatus(): LockoutStatus {
+  // Lockout Management (Per-User Store with 15-minute cap)
+  private getLockoutStore(): Record<string, LockoutRecord> {
     try {
       const raw = localStorage.getItem(STORAGE_KEYS.LOCKOUT);
-      if (!raw) {
-        return { isLocked: false, remainingSeconds: 0, failedAttempts: 0, lockoutCycle: 0 };
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.failedAttempts === 'number') {
+        return { global: parsed };
       }
-      const record: LockoutRecord = JSON.parse(raw);
-      if (record.lockedUntil) {
-        const diffMs = record.lockedUntil - Date.now();
-        if (diffMs > 0) {
-          return {
-            isLocked: true,
-            remainingSeconds: Math.ceil(diffMs / 1000),
-            failedAttempts: record.failedAttempts || 0,
-            lockoutCycle: record.lockoutCycle || 0,
-          };
-        }
-        // Lockout expired
-        record.lockedUntil = null;
-        record.failedAttempts = 0;
-        localStorage.setItem(STORAGE_KEYS.LOCKOUT, JSON.stringify(record));
-      }
-      return {
-        isLocked: false,
-        remainingSeconds: 0,
-        failedAttempts: record.failedAttempts || 0,
-        lockoutCycle: record.lockoutCycle || 0,
-      };
+      return parsed && typeof parsed === 'object' ? parsed : {};
     } catch {
-      return { isLocked: false, remainingSeconds: 0, failedAttempts: 0, lockoutCycle: 0 };
+      return {};
     }
   }
 
-  public recordFailedAttempt(userId?: string): { isLocked: boolean; remainingSeconds: number; lockoutMinutes: number } {
-    let record: LockoutRecord = { failedAttempts: 0, lockoutCycle: 0, lockedUntil: null };
+  private saveLockoutStore(store: Record<string, LockoutRecord>): void {
     try {
-      const raw = localStorage.getItem(STORAGE_KEYS.LOCKOUT);
-      if (raw) record = JSON.parse(raw);
+      localStorage.setItem(STORAGE_KEYS.LOCKOUT, JSON.stringify(store));
     } catch {
       // ignore
     }
+  }
+
+  public getLockoutStatus(userId?: string): LockoutStatus {
+    const key = userId || 'system';
+    const store = this.getLockoutStore();
+    const record = store[key];
+    if (!record) {
+      return { isLocked: false, remainingSeconds: 0, failedAttempts: 0, lockoutCycle: 0 };
+    }
+
+    if (record.lockedUntil) {
+      const diffMs = record.lockedUntil - Date.now();
+      if (diffMs > 0) {
+        return {
+          isLocked: true,
+          remainingSeconds: Math.ceil(diffMs / 1000),
+          failedAttempts: record.failedAttempts || 0,
+          lockoutCycle: record.lockoutCycle || 0,
+        };
+      }
+      // Lockout expired
+      record.lockedUntil = null;
+      record.failedAttempts = 0;
+      this.saveLockoutStore(store);
+    }
+
+    return {
+      isLocked: false,
+      remainingSeconds: 0,
+      failedAttempts: record.failedAttempts || 0,
+      lockoutCycle: record.lockoutCycle || 0,
+    };
+  }
+
+  public recordFailedAttempt(userId?: string): { isLocked: boolean; remainingSeconds: number; lockoutMinutes: number } {
+    const key = userId || 'system';
+    const store = this.getLockoutStore();
+    const record: LockoutRecord = store[key] || { failedAttempts: 0, lockoutCycle: 0, lockedUntil: null };
 
     record.failedAttempts = (record.failedAttempts || 0) + 1;
 
-    // After 5 failed attempts -> Lockout starts at 2 minutes and doubles each cycle
+    // After 5 failed attempts -> Lockout starts at 2 minutes and doubles each cycle, with max cap of 15 minutes
     if (record.failedAttempts >= 5) {
       record.lockoutCycle = (record.lockoutCycle || 0) + 1;
-      const durationMinutes = 2 * Math.pow(2, record.lockoutCycle - 1); // 2, 4, 8, 16...
+      const rawMinutes = 2 * Math.pow(2, record.lockoutCycle - 1); // 2, 4, 8, 16...
+      const durationMinutes = Math.min(15, rawMinutes); // Capped at 15 minutes!
       record.lockedUntil = Date.now() + durationMinutes * 60 * 1000;
       record.failedAttempts = 0; // Reset counter for next cycle
 
-      localStorage.setItem(STORAGE_KEYS.LOCKOUT, JSON.stringify(record));
+      store[key] = record;
+      this.saveLockoutStore(store);
 
       storage.addAuditLog(
         'AUTH',
-        'قفل أمني للحسابات',
+        'قفل أمني للحساب',
         'الأمان',
-        userId || 'system',
-        `تم قفل تسجيل الدخول لمدة ${durationMinutes} دقيقة بسبب تكرار 5 محاولات خاطئة متتالية (دورة القفل رقم ${record.lockoutCycle})`
+        key,
+        `تم قفل تسجيل الدخول للمستخدم (${key}) لمدة ${durationMinutes} دقيقة بسبب تكرار 5 محاولات خاطئة متتالية (دورة القفل رقم ${record.lockoutCycle})`
       );
 
       return {
@@ -239,22 +266,48 @@ class AuthSecurityService {
       };
     }
 
-    localStorage.setItem(STORAGE_KEYS.LOCKOUT, JSON.stringify(record));
+    store[key] = record;
+    this.saveLockoutStore(store);
     return { isLocked: false, remainingSeconds: 0, lockoutMinutes: 0 };
   }
 
   public recordSuccessfulLogin(user: User): void {
-    const record: LockoutRecord = {
-      failedAttempts: 0,
-      lockoutCycle: 0,
-      lockedUntil: null,
-    };
-    localStorage.setItem(STORAGE_KEYS.LOCKOUT, JSON.stringify(record));
+    const store = this.getLockoutStore();
+    delete store[user.id];
+    delete store['system'];
+    this.saveLockoutStore(store);
     storage.setActiveUser(user.id);
   }
 
-  public resetLockoutForTesting(): void {
-    localStorage.removeItem(STORAGE_KEYS.LOCKOUT);
+  // Admin unlocks any cashier from UsersManager screen (Requirement 2)
+  public unlockUserByAdmin(adminUser: User, targetUserId: string): { success: boolean; error?: string } {
+    if (adminUser.role !== 'ADMIN') {
+      return { success: false, error: 'غير مصرح: فك قفل الحسابات مقتصر على مدير النظام فقط' };
+    }
+
+    const store = this.getLockoutStore();
+    delete store[targetUserId];
+    this.saveLockoutStore(store);
+
+    storage.addAuditLog(
+      'AUTH',
+      'فك قفل الحساب',
+      'الأمان',
+      targetUserId,
+      `قام المدير (${adminUser.fullName}) بفك قفل تسجيل الدخول للمستخدم`
+    );
+
+    return { success: true };
+  }
+
+  public resetLockoutForTesting(userId?: string): void {
+    if (userId) {
+      const store = this.getLockoutStore();
+      delete store[userId];
+      this.saveLockoutStore(store);
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.LOCKOUT);
+    }
   }
 
   // Security Settings (Auto-Lock timeout)
@@ -288,17 +341,17 @@ class AuthSecurityService {
 
   // Authenticate user with PBKDF2 hash, migration from legacy PIN, and default PIN enforcement
   public async authenticate(userId: string, pin: string): Promise<AuthResult> {
-    const lockout = this.getLockoutStatus();
+    const lockout = this.getLockoutStatus(userId);
     if (lockout.isLocked) {
       return {
         success: false,
-        error: `تم قفل تسجيل الدخول مؤقتاً بسبب تكرار المحاولات الخاطئة. يرجى الانتظار ${lockout.remainingSeconds} ثانية.`,
+        error: `تم قفل تسجيل الدخول لهذا المستخدم مؤقتاً بسبب تكرار المحاولات الخاطئة. يرجى الانتظار ${lockout.remainingSeconds} ثانية.`,
         isLockedOut: true,
         remainingSeconds: lockout.remainingSeconds,
       };
     }
 
-    const cleanPin = pin.trim();
+    const cleanPin = normalizeArabicDigits(pin).trim();
     if (!cleanPin) {
       return { success: false, error: 'يرجى إدخال الرقم السري (PIN)' };
     }
@@ -364,7 +417,7 @@ class AuthSecurityService {
 
     // CASE 2: Legacy user with plaintext pinCode
     if (user.pinCode) {
-      const isLegacyMatch = user.pinCode.trim() === cleanPin;
+      const isLegacyMatch = normalizeArabicDigits(user.pinCode).trim() === cleanPin;
       if (!isLegacyMatch) {
         const failResult = this.recordFailedAttempt(user.id);
         storage.addAuditLog(
@@ -441,15 +494,15 @@ class AuthSecurityService {
     const user = users.find(u => u.id === userId);
     if (!user) return { success: false, error: 'المستخدم غير موجود' };
 
-    const cleanOld = oldPin.trim();
-    const cleanNew = newPin.trim();
+    const cleanOld = normalizeArabicDigits(oldPin).trim();
+    const cleanNew = normalizeArabicDigits(newPin).trim();
 
     // Verify old PIN
     if (user.pinHash && user.pinSalt) {
       const match = await verifyPasswordWithPbkdf2(cleanOld, user.pinHash, user.pinSalt);
       if (!match) return { success: false, error: 'الرقم السري الحالي غير صحيح' };
     } else if (user.pinCode) {
-      if (user.pinCode.trim() !== cleanOld) return { success: false, error: 'الرقم السري الحالي غير صحيح' };
+      if (normalizeArabicDigits(user.pinCode).trim() !== cleanOld) return { success: false, error: 'الرقم السري الحالي غير صحيح' };
     } else {
       return { success: false, error: 'تعذر التحقق من الرقم السري القديم' };
     }
@@ -478,7 +531,7 @@ class AuthSecurityService {
     user.pinHash = hashHex;
     user.pinSalt = saltHex;
     delete user.pinCode;
-    user.mustChangePin = false;
+    delete user.mustChangePin;
 
     storage.saveUser(user);
     storage.addAuditLog(
@@ -486,7 +539,7 @@ class AuthSecurityService {
       'تغيير الرقم السري',
       'الأمان',
       user.id,
-      `تم تغيير الرقم السري بنجاح للمستخدم: ${user.fullName}`
+      `تم تغيير وتحديث الرقم السري بنجاح للمستخدم: ${user.fullName} وتشفيره بـ PBKDF2`
     );
 
     return { success: true };
@@ -501,7 +554,7 @@ class AuthSecurityService {
   }): Promise<User> {
     const cleanName = data.fullName.trim();
     const cleanUsername = data.username.toLowerCase().trim();
-    const cleanPassword = data.password.trim();
+    const cleanPassword = normalizeArabicDigits(data.password).trim();
 
     if (!cleanName) {
       throw new Error('يرجى إدخال اسم المدير بالكامل');
@@ -538,7 +591,6 @@ class AuthSecurityService {
       isActive: true,
       pinHash: hashHex,
       pinSalt: saltHex,
-      mustChangePin: false,
       phone: data.phone?.trim() || '',
       avatarColor: 'bg-emerald-600',
       permissions: fullPermissions,
@@ -608,7 +660,7 @@ class AuthSecurityService {
 
       // If new PIN provided
       if (cashierData.pin && cashierData.pin.trim()) {
-        const cleanPin = cashierData.pin.trim();
+        const cleanPin = normalizeArabicDigits(cashierData.pin).trim();
         if (targetUser.role === 'ADMIN') {
           if (cleanPin.length < 6) return { success: false, error: 'كلمة مرور المدير يجب ألا تقل عن 6 خانات' };
         } else {
@@ -623,11 +675,11 @@ class AuthSecurityService {
         targetUser.pinHash = hashHex;
         targetUser.pinSalt = saltHex;
         delete targetUser.pinCode;
-        targetUser.mustChangePin = false;
+        delete targetUser.mustChangePin;
       }
     } else {
       // New user requires PIN
-      const cleanPin = (cashierData.pin || '').trim();
+      const cleanPin = normalizeArabicDigits(cashierData.pin || '').trim();
       if (!cleanPin) {
         return { success: false, error: 'يرجى تحديد الرقم السري للمستخدم الجديد' };
       }
@@ -652,7 +704,6 @@ class AuthSecurityService {
         isActive: cashierData.isActive,
         pinHash: hashHex,
         pinSalt: saltHex,
-        mustChangePin: false,
         phone: cashierData.phone?.trim() || '',
         avatarColor: cashierData.role === 'ADMIN' ? 'bg-emerald-600' : 'bg-blue-600',
         permissions: cashierData.permissions,

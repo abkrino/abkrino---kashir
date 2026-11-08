@@ -212,6 +212,20 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
     }
   };
 
+  // Unlock user by Admin (Requirement 2)
+  const handleUnlockUser = (u: User) => {
+    const res = authSecurityService.unlockUserByAdmin(currentUser, u.id);
+    if (res.success) {
+      setMessage({
+        type: 'success',
+        text: `تم فك قفل تسجيل الدخول للمستخدم (${u.fullName}) بنجاح! يمكنه الآن كتابة رقمه السري والدخول.`
+      });
+      reloadUsers();
+    } else {
+      setMessage({ type: 'error', text: res.error || 'فشل فك قفل المستخدم' });
+    }
+  };
+
   // Submit quick PIN reset for a cashier by Admin
   const handleSetCashierPin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -333,6 +347,7 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
               {users.map(u => {
                 const perms = u.permissions || (u.role === 'ADMIN' ? DEFAULT_ADMIN_PERMISSIONS : DEFAULT_SALES_PERMISSIONS);
                 const isUserActive = u.isActive !== false;
+                const uLock = authSecurityService.getLockoutStatus(u.id);
 
                 return (
                   <tr key={u.id} className={`hover:bg-slate-50 dark:hover:bg-slate-800/40 text-slate-800 dark:text-slate-200 transition-colors ${!isUserActive ? 'opacity-50 bg-slate-50/50 dark:bg-slate-900/40' : ''}`}>
@@ -361,13 +376,20 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
                       </span>
                     </td>
                     <td className="py-3 px-3">
-                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold inline-flex items-center gap-1 ${
-                        isUserActive
-                          ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300'
-                          : 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300'
-                      }`}>
-                        {isUserActive ? '● نشط' : '○ معطل'}
-                      </span>
+                      <div className="flex flex-col gap-1 items-start">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold inline-flex items-center gap-1 ${
+                          isUserActive
+                            ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300'
+                            : 'bg-rose-100 text-rose-800 dark:bg-rose-900/30 dark:text-rose-300'
+                        }`}>
+                          {isUserActive ? '● نشط' : '○ معطل'}
+                        </span>
+                        {uLock.isLocked && (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 border border-amber-300 dark:border-amber-700 animate-pulse">
+                            🔒 مقفول ({Math.ceil(uLock.remainingSeconds / 60)} د)
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 px-3 font-mono font-medium text-slate-400 text-xs">
                       <span className="bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 px-2 py-0.5 rounded tracking-widest text-[11px]">
@@ -388,6 +410,19 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
                       <div className="flex items-center justify-center gap-1.5">
                         {isAdmin && (
                           <>
+                            {/* Unlock user button if locked */}
+                            {uLock.isLocked && (
+                              <button
+                                type="button"
+                                onClick={() => handleUnlockUser(u)}
+                                className="bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/70 dark:hover:bg-amber-900 text-amber-700 dark:text-amber-300 border border-amber-300 dark:border-amber-700 px-2 py-1 rounded-lg cursor-pointer flex items-center gap-1 transition-colors font-bold shadow-xs text-[11px]"
+                                title="فك القفل الأمني لهذا المستخدم فورياً"
+                              >
+                                <Lock className="w-3.5 h-3.5" />
+                                <span>فك القفل</span>
+                              </button>
+                            )}
+
                             <button
                               type="button"
                               onClick={() => openEditModal(u)}

@@ -181,7 +181,7 @@ export default function App() {
   }
 
   // 4. App startup loading state
-  if (!isInitialized || !currentUser) {
+  if (!isInitialized) {
     return (
       <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center font-sans" dir="rtl">
         <div className="text-center space-y-4">
@@ -189,6 +189,23 @@ export default function App() {
           <p className="text-lg font-bold text-slate-200">جاري تشغيل نظام كاشير السوبر ماركت وقسم الألبان...</p>
         </div>
       </div>
+    );
+  }
+
+  // 5. If no active user is logged in (currentUser is null) -> Render Login screen
+  if (!currentUser) {
+    return (
+      <LoginModal
+        users={users}
+        currentUser={null}
+        isLockScreen={true}
+        onLoginSuccess={(user) => {
+          setCurrentUser(user);
+          storage.setActiveUser(user.id);
+          setIsLocked(false);
+          refreshAll();
+        }}
+      />
     );
   }
 

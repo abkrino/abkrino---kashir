@@ -105,11 +105,9 @@ class StorageService {
     const users = this.getUsers();
     if (!users || users.length === 0) return null;
     const activeId = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER_ID);
-    if (activeId) {
-      const found = users.find(u => u.id === activeId);
-      if (found) return found;
-    }
-    return users[0] || null;
+    if (!activeId) return null;
+    const found = users.find(u => u.id === activeId);
+    return found || null;
   }
 
   public setActiveUser(userId: string): void {
@@ -1020,8 +1018,8 @@ class StorageService {
     const newLog: AuditLog = {
       id: `log-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       timestamp: new Date().toLocaleString('ar-EG'),
-      userId: activeUser ? activeUser.id : 'sys',
-      username: activeUser ? activeUser.fullName : 'النظام',
+      userId: activeUser ? activeUser.id : 'unauthenticated',
+      username: activeUser ? activeUser.fullName : 'غير مسجّل (النظام)',
       action: entity,
       actionArabic,
       entity: entityArabic,

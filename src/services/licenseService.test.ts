@@ -6,7 +6,7 @@ import {
   stringToBase64Url,
   bytesToBase64Url
 } from './licenseService';
-import testPrivateKeyJwk from '../../tools/.dev-private-key.json';
+import { beforeAll, afterAll } from 'vitest';
 
 // In-memory localStorage mock for node environment
 const storageMock = (() => {
@@ -33,7 +33,23 @@ if (typeof globalThis.localStorage === 'undefined') {
   });
 }
 
-const privateKey = crypto.createPrivateKey({ key: testPrivateKeyJwk, format: 'jwk' });
+let testPrivateKeyObj: crypto.KeyObject;
+
+beforeAll(async () => {
+  const keyPair = await globalThis.crypto.subtle.generateKey(
+    { name: 'ECDSA', namedCurve: 'P-256' },
+    true,
+    ['sign', 'verify']
+  );
+  const publicJwk = await globalThis.crypto.subtle.exportKey('jwk', keyPair.publicKey);
+  const privateJwk = await globalThis.crypto.subtle.exportKey('jwk', keyPair.privateKey);
+  licenseService.setPublicKeyForTesting(publicJwk as JsonWebKey);
+  testPrivateKeyObj = crypto.createPrivateKey({ key: privateJwk as any, format: 'jwk' });
+});
+
+afterAll(() => {
+  licenseService.setPublicKeyForTesting(null);
+});
 
 function signToken(payload: LicensePayload, tamperedPayload = false): string {
   const jsonStr = JSON.stringify(payload);
@@ -41,7 +57,7 @@ function signToken(payload: LicensePayload, tamperedPayload = false): string {
 
   // IEEE-P1363 raw signature (64 bytes)
   const signature = crypto.sign('SHA256', Buffer.from(payloadB64, 'utf-8'), {
-    key: privateKey,
+    key: testPrivateKeyObj,
     dsaEncoding: 'ieee-p1363',
   });
 

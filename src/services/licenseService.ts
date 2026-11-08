@@ -227,6 +227,14 @@ class LicenseService {
     return stringToBase64Url(JSON.stringify(payload));
   }
 
+  // --- Test Key Injection (Test Mode Only) ---
+  private testPublicKeyJwk: JsonWebKey | null = null;
+
+  public setPublicKeyForTesting(keyJwk: JsonWebKey | null): void {
+    this.testPublicKeyJwk = keyJwk;
+    this.cachedCryptoKey = null; // Clear cached key so next call re-imports
+  }
+
   // --- Crypto Key Import ---
   private async getPublicKey(): Promise<CryptoKey> {
     if (this.cachedCryptoKey) {
@@ -238,9 +246,11 @@ class LicenseService {
       throw new Error('WebCrypto subtle is not available in this environment');
     }
 
+    const jwkToImport = this.testPublicKeyJwk || LICENSE_PUBLIC_KEY_JWK;
+
     this.cachedCryptoKey = await subtle.importKey(
       'jwk',
-      LICENSE_PUBLIC_KEY_JWK,
+      jwkToImport,
       { name: 'ECDSA', namedCurve: 'P-256' },
       true,
       ['verify']

@@ -69,7 +69,7 @@ describe('AuthSecurityService & Local Users Security Tests', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('الرقم السري غير صحيح');
 
-    const lockoutStatus = authSecurityService.getLockoutStatus();
+    const lockoutStatus = authSecurityService.getLockoutStatus(admin.id);
     expect(lockoutStatus.failedAttempts).toBe(1);
     expect(lockoutStatus.isLocked).toBe(false);
   });
@@ -96,7 +96,7 @@ describe('AuthSecurityService & Local Users Security Tests', () => {
     expect(fifthRes.remainingSeconds).toBeGreaterThan(115); // ~120s
 
     // Verify lockout status
-    const statusBefore = authSecurityService.getLockoutStatus();
+    const statusBefore = authSecurityService.getLockoutStatus(admin.id);
     expect(statusBefore.isLocked).toBe(true);
     expect(statusBefore.lockoutCycle).toBe(1);
 
@@ -104,7 +104,7 @@ describe('AuthSecurityService & Local Users Security Tests', () => {
     const rawStored = localStorage.getItem('pos_auth_lockout_v1');
     expect(rawStored).toBeTruthy();
 
-    const freshServiceStatus = authSecurityService.getLockoutStatus();
+    const freshServiceStatus = authSecurityService.getLockoutStatus(admin.id);
     expect(freshServiceStatus.isLocked).toBe(true);
     expect(freshServiceStatus.remainingSeconds).toBeGreaterThan(110);
 
@@ -251,5 +251,169 @@ describe('AuthSecurityService & Local Users Security Tests', () => {
     // Inactive user is denied everything
     const inactiveUser: User = { ...cashierWithDiscount, isActive: false };
     expect(checkUserPermission(inactiveUser, 'give_discount')).toBe(false);
+  });
+
+  // 7. Per-user lockout: Locking cashier A does not block cashier B or admin
+  it('(7) القفل لكل مستخدم: قفل كاشير معين لا يمنع المدير ولا بقية الكاشيرية', async () => {
+    const admin: User = {
+      id: 'u-admin-test',
+      username: 'adminboss',
+      fullName: 'المدير',
+      role: 'ADMIN',
+      isActive: true,
+      pinCode: '998877',
+    };
+    const cashier1: User = {
+      id: 'u-cashier-1',
+      username: 'cashier1',
+      fullName: 'كاشير 1',
+      role: 'SALES',
+      isActive: true,
+      pinCode: '4321',
+    };
+    const cashier2: User = {
+      id: 'u-cashier-2',
+      username: 'cashier2',
+      fullName: 'كاشير 2',
+      role: 'SALES',
+      isActive: true,
+      pinCode: '5678',
+    };
+
+    storage.saveUser(admin);
+    storage.saveUser(cashier1);
+    storage.saveUser(cashier2);
+
+    // Fail cashier1 5 times -> locks cashier1
+    for (let i = 0; i < 5; i++) {
+      await authSecurityService.authenticate(cashier1.id, 'wrong_pin');
+    }
+
+    // Cashier 1 is locked
+    const cashier1Status = authSecurityService.getLockoutStatus(cashier1.id);
+    expect(cashier1Status.isLocked).toBe(true);
+
+    // Cashier 2 is NOT locked!
+    const cashier2Status = authSecurityService.getLockoutStatus(cashier2.id);
+    expect(cashier2Status.isLocked).toBe(false);
+
+    // Admin is NOT locked!
+    const adminStatus = authSecurityService.getLockoutStatus(admin.id);
+    expect(adminStatus.isLocked).toBe(false);
+
+    // Cashier 2 can authenticate normally
+    const c2Auth = await authSecurityService.authenticate(cashier2.id, '5678');
+    expect(c2Auth.success).toBe(true);
+
+    // Admin can authenticate normally
+    const adminAuth = await authSecurityService.authenticate(admin.id, '998877');
+    expect(adminAuth.success).toBe(true);
+  });
+
+  // 8. 15-minute cap on lockout duration
+  it('(8) سقف مدة القفل الأمني هو 15 دقيقة مهما تكررت دورات القفل المتتالية', () => {
+    const testUserId = 'user-ceiling-test';
+
+    // Cycle 1: 2 minutes
+    for (let i = 0; i < 5; i++) authSecurityService.recordFailedAttempt(testUserId);
+    let status = authSecurityService.getLockoutStatus(testUserId);
+    expect(status.isLocked).toBe(true);
+    expect(status.remainingSeconds).toBe(2 * 60);
+
+    // Cycle 2: 4 minutes
+    for (let i = 0; i < 5; i++) authSecurityService.recordFailedAttempt(testUserId);
+    status = authSecurityService.getLockoutStatus(testUserId);
+    expect(status.isLocked).toBe(true);
+    expect(status.remainingSeconds).toBe(4 * 60);
+
+    // Cycle 3: 8 minutes
+    for (let i = 0; i < 5; i++) authSecurityService.recordFailedAttempt(testUserId);
+    status = authSecurityService.getLockoutStatus(testUserId);
+    expect(status.isLocked).toBe(true);
+    expect(status.remainingSeconds).toBe(8 * 60);
+
+    // Cycle 4: 2 * 2^3 = 16 -> capped at 15 minutes!
+    for (let i = 0; i < 5; i++) authSecurityService.recordFailedAttempt(testUserId);
+    status = authSecurityService.getLockoutStatus(testUserId);
+    expect(status.isLocked).toBe(true);
+    expect(status.remainingSeconds).toBe(15 * 60);
+
+    // Cycle 5: 2 * 2^4 = 32 -> still capped at 15 minutes!
+    for (let i = 0; i < 5; i++) authSecurityService.recordFailedAttempt(testUserId);
+    status = authSecurityService.getLockoutStatus(testUserId);
+    expect(status.isLocked).toBe(true);
+    expect(status.remainingSeconds).toBe(15 * 60);
+  });
+
+  // 9. Admin unlocking a cashier
+  it('(9) المدير يستطيع فك قفل أي كاشير من شاشة المستخدمين وتصفير القفل له', async () => {
+    const admin: User = {
+      id: 'admin-unlocker',
+      username: 'bossman',
+      fullName: 'المدير الفاتح',
+      role: 'ADMIN',
+      isActive: true,
+    };
+    const cashier: User = {
+      id: 'cashier-locked',
+      username: 'cashierlock',
+      fullName: 'كاشير مقفول',
+      role: 'SALES',
+      isActive: true,
+      pinCode: '6543',
+    };
+    storage.saveUser(admin);
+    storage.saveUser(cashier);
+
+    // Lock the cashier with 5 failed attempts
+    for (let i = 0; i < 5; i++) {
+      await authSecurityService.authenticate(cashier.id, 'wrong');
+    }
+    expect(authSecurityService.getLockoutStatus(cashier.id).isLocked).toBe(true);
+
+    // Non-admin cannot unlock
+    const nonAdminAttempt = authSecurityService.unlockUserByAdmin(cashier, cashier.id);
+    expect(nonAdminAttempt.success).toBe(false);
+    expect(nonAdminAttempt.error).toContain('غير مصرح');
+    expect(authSecurityService.getLockoutStatus(cashier.id).isLocked).toBe(true);
+
+    // Admin unlocks cashier successfully
+    const adminUnlock = authSecurityService.unlockUserByAdmin(admin, cashier.id);
+    expect(adminUnlock.success).toBe(true);
+
+    // Cashier is now immediately unlocked
+    expect(authSecurityService.getLockoutStatus(cashier.id).isLocked).toBe(false);
+
+    // Cashier can log in right away with correct PIN
+    const loginRes = await authSecurityService.authenticate(cashier.id, '6543');
+    expect(loginRes.success).toBe(true);
+  });
+
+  // 10. getActiveUser() returns null when no active user is set (no fallback to users[0])
+  it('(10) getActiveUser() بدون مستخدم نشط تُرجع null ولا تُرجع users[0]', () => {
+    localStorage.removeItem('pos_active_user_id');
+
+    // Add some users
+    const userA: User = { id: 'u-a', fullName: 'المستخدم الأول', username: 'usera', role: 'ADMIN', isActive: true };
+    const userB: User = { id: 'u-b', fullName: 'المستخدم الثاني', username: 'userb', role: 'SALES', isActive: true };
+    storage.saveUser(userA);
+    storage.saveUser(userB);
+
+    // Ensure no active user ID is set
+    localStorage.removeItem('pos_active_user_id');
+
+    // Must return null, NOT users[0] (userA)!
+    const active = storage.getActiveUser();
+    expect(active).toBeNull();
+
+    // When an active user is explicitly set
+    storage.setActiveUser(userB.id);
+    const updatedActive = storage.getActiveUser();
+    expect(updatedActive).not.toBeNull();
+    expect(updatedActive?.id).toBe(userB.id);
+
+    // If activeId points to non-existent user, it still returns null
+    storage.setActiveUser('non-existent-user-id');
+    expect(storage.getActiveUser()).toBeNull();
   });
 });
