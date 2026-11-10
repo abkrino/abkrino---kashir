@@ -65,13 +65,115 @@ describe('Single Tab Lock, Migration Anti-Regression & Safety Tests', () => {
 
     // Tab 2 attempts to request lock while Tab 1 is holding it
     tabLockService.setLockForTesting(false);
-    const tab2Lock = await tabLockService.requestLock();
+    const tab2Lock = await tabLockService.requestLock({ timeoutMs: 100, retryIntervalMs: 25 });
     expect(tab2Lock.acquired).toBe(false);
 
     // Secondary tab must NOT call storage.init() or write data
     // Verify storage remains unready for Tab 2
     expect(storage.isStorageReady()).toBe(false);
     expect(await idb.kv.count()).toBe(0);
+  });
+
+  // 1b. محاولة أولى تُرفض ثم ثانية تنجح داخل نافذة المحاولات (لا تظهر شاشة الرفض)
+  it('(1b) محاولة أولى تُرفض ثم ثانية تنجح داخل مهلة المحاولات دون إظهار شاشة الرفض', async () => {
+    tabLockService.releaseLock();
+    let callCount = 0;
+    const trySpy = vi.spyOn(tabLockService, 'tryAcquireOnce').mockImplementation(async () => {
+      callCount++;
+      return callCount >= 2; // First attempt false, second attempt true
+    });
+
+    const result = await tabLockService.requestLock({ timeoutMs: 1500, retryIntervalMs: 40 });
+    expect(result.acquired).toBe(true);
+    expect(callCount).toBe(2);
+    expect(tabLockService.isLockAcquired()).toBe(true);
+
+    trySpy.mockRestore();
+  });
+
+  // 1c. تكرار استدعاء requestLock() لا ينشئ أقفالاً مكررة (idempotence)
+  it('(1c) تكرار استدعاء requestLock() لا ينشئ أقفالاً مكررة (idempotent)', async () => {
+    tabLockService.releaseLock();
+    let attempts = 0;
+    const trySpy = vi.spyOn(tabLockService, 'tryAcquireOnce').mockImplementation(async () => {
+      attempts++;
+      await new Promise(r => setTimeout(r, 60));
+      return true;
+    });
+
+    // Fire duplicate calls in parallel while request is in flight
+    const req1 = tabLockService.requestLock();
+    const req2 = tabLockService.requestLock();
+    const req3 = tabLockService.requestLock();
+
+    // Verify all return the exact same in-flight Promise instance
+    expect(req1).toBe(req2);
+    expect(req2).toBe(req3);
+
+    const [res1, res2, res3] = await Promise.all([req1, req2, req3]);
+    expect(res1.acquired).toBe(true);
+    expect(res2.acquired).toBe(true);
+    expect(res3.acquired).toBe(true);
+    expect(attempts).toBe(1); // Only 1 underlying attempt!
+
+    // Subsequent call after lock is already held returns immediately
+    const reqAfter = await tabLockService.requestLock();
+    expect(reqAfter.acquired).toBe(true);
+    expect(attempts).toBe(1); // Still 1!
+
+    trySpy.mockRestore();
+  });
+
+  // 1d. إلغاء المحاولات عند abort فوراً دون انتظار انتهاء المهلة
+  it('(1d) إلغاء المحاولات عند abort يتم فوراً دون انتظار انتهاء المهلة', async () => {
+    tabLockService.releaseLock();
+    const trySpy = vi.spyOn(tabLockService, 'tryAcquireOnce').mockResolvedValue(false);
+
+    const abortController = new AbortController();
+    const startTime = Date.now();
+
+    // Request with 4000ms timeout, but abort after 50ms
+    const lockPromise = tabLockService.requestLock({
+      timeoutMs: 4000,
+      retryIntervalMs: 80,
+      signal: abortController.signal,
+    });
+
+    setTimeout(() => {
+      abortController.abort();
+    }, 50);
+
+    const result = await lockPromise;
+    const elapsed = Date.now() - startTime;
+
+    expect(result.acquired).toBe(false);
+    expect(result.reason).toBe('aborted');
+    expect(elapsed).toBeLessThan(1000); // Exited promptly upon abort, not 4000ms
+
+    trySpy.mockRestore();
+  });
+
+  // 1e. إعادة المحاولة التلقائية بعد فك القفل تنجح وتكمل تهيئة storage.init()
+  it('(1e) إعادة المحاولة من شاشة الرفض بعد زوال القفل تنجح وتكمل تهيئة storage.init() بنجاح', async () => {
+    tabLockService.releaseLock();
+
+    // Step 1: Lock denied initially
+    tabLockService.setLockForTesting(false);
+    const firstAttempt = await tabLockService.requestLock({ timeoutMs: 50, retryIntervalMs: 20 });
+    expect(firstAttempt.acquired).toBe(false);
+    expect(storage.isStorageReady()).toBe(false);
+
+    // Step 2: The other window closes / lock is now released
+    tabLockService.releaseLock();
+    tabLockService.setLockForTesting(true);
+
+    // Step 3: Auto-retry interval triggers requestLock()
+    const retryAttempt = await tabLockService.requestLock();
+    expect(retryAttempt.acquired).toBe(true);
+
+    // Step 4: Page performs storage.init() seamlessly in the same window
+    await storage.init();
+    expect(storage.isStorageReady()).toBe(true);
   });
 
   // 2. حماية الترحيل: وجود idb_migrated_at مع IDB فارغة يمنع النسخ التلقائي ويطلب الاستعادة الصريحة

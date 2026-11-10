@@ -81,46 +81,51 @@ export default function App() {
       setWriteError(err);
     });
 
-    // Requirement 1: Single-Tab Lock via Web Locks API (navigator.locks)
-    tabLockService.requestLock().then((result) => {
+    // Initial App Bootstrapping and Single-Tab Lock with Retries (Fix 1, 2, 3)
+    const startApp = async () => {
+      setTabLockState('checking');
+      const result = await tabLockService.requestLock();
       if (!isMounted) return;
+
       if (!result.acquired) {
         setTabLockState('denied');
-        return; // Secondary tab: DO NOT initialize storage, DO NOT write data, DO NOT start background timers
+        return;
       }
+
       setTabLockState('acquired');
 
-      // Requirement 3 & 4: Load all data from IndexedDB into memory before rendering
-      storage.init()
-        .then(() => {
-          if (!isMounted) return;
+      // Load all data from IndexedDB into memory before rendering
+      try {
+        await storage.init();
+        if (!isMounted) return;
 
-          // Requirement 2: Check if migration recovery is required (idb_migrated_at exists but IDB is empty)
-          if (storage.isMigrationRecoveryRequired()) {
-            const ts = storage.getLegacyBackupTimestamp();
-            const dateStr = ts ? new Date(ts).toLocaleString('ar-EG') : 'غير محدد';
-            setLegacyBackupDate(dateStr);
-            setIsMigrationRecoveryRequired(true);
-            return;
-          }
+        // Check if migration recovery is required (idb_migrated_at exists but IDB is empty)
+        if (storage.isMigrationRecoveryRequired()) {
+          const ts = storage.getLegacyBackupTimestamp();
+          const dateStr = ts ? new Date(ts).toLocaleString('ar-EG') : 'غير محدد';
+          setLegacyBackupDate(dateStr);
+          setIsMigrationRecoveryRequired(true);
+          return;
+        }
 
-          refreshAll();
-          setIsStorageReady(true);
-          setIsInitialized(true);
-          setMigrationWarning(storage.getMigrationWarning());
+        refreshAll();
+        setIsStorageReady(true);
+        setIsInitialized(true);
+        setMigrationWarning(storage.getMigrationWarning());
 
-          // Initialize offline license verification
-          licenseService.initLicense().catch(() => {});
+        // Initialize offline license verification
+        licenseService.initLicense().catch(() => {});
 
-          // Requirement 4: Start background sync & heartbeats ONLY after lock is acquired and storage.init() succeeds
-          orgSyncService.startService();
-        })
-        .catch((err) => {
-          if (!isMounted) return;
-          console.error('Storage initialization failed:', err);
-          setStorageInitError(err?.message || 'تعذر تشغيل قاعدة البيانات المحلية');
-        });
-    });
+        // Start background sync & heartbeats ONLY after lock is acquired and storage.init() succeeds
+        orgSyncService.startService();
+      } catch (err: any) {
+        if (!isMounted) return;
+        console.error('Storage initialization failed:', err);
+        setStorageInitError(err?.message || 'تعذر تشغيل قاعدة البيانات المحلية');
+      }
+    };
+
+    startApp();
 
     // Subscribe to license changes
     const unsubLicense = licenseService.subscribe(() => {
@@ -158,9 +163,41 @@ export default function App() {
       unsubAction();
       unsubWriteError();
       orgSyncService.stopService();
-      tabLockService.releaseLock();
+      // Requirement 2: Do NOT call tabLockService.releaseLock() in useEffect cleanup.
+      // The lock is released by the browser on window/tab close.
     };
   }, []);
+
+  // Requirement 4: Automatic retry every 3 seconds while on the rejection screen
+  useEffect(() => {
+    if (tabLockState !== 'denied') return;
+    const interval = setInterval(async () => {
+      const result = await tabLockService.requestLock();
+      if (result.acquired) {
+        setTabLockState('acquired');
+        try {
+          await storage.init();
+          if (storage.isMigrationRecoveryRequired()) {
+            const ts = storage.getLegacyBackupTimestamp();
+            const dateStr = ts ? new Date(ts).toLocaleString('ar-EG') : 'غير محدد';
+            setLegacyBackupDate(dateStr);
+            setIsMigrationRecoveryRequired(true);
+            return;
+          }
+          refreshAll();
+          setIsStorageReady(true);
+          setIsInitialized(true);
+          setMigrationWarning(storage.getMigrationWarning());
+          licenseService.initLicense().catch(() => {});
+          orgSyncService.startService();
+        } catch (err: any) {
+          setStorageInitError(err?.message || 'تعذر تشغيل قاعدة البيانات المحلية');
+        }
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [tabLockState]);
 
   // Inactivity Auto-Lock (Requirement 8 - default 10 minutes, configurable)
   const lastActivityRef = React.useRef<number>(Date.now());
@@ -203,7 +240,47 @@ export default function App() {
     refreshAll();
   };
 
-  // -1. Single-Tab Lock Denied: Another tab is running (Requirement 1)
+  const handleManualRetry = async () => {
+    setTabLockState('checking');
+    const result = await tabLockService.requestLock();
+    if (!result.acquired) {
+      setTabLockState('denied');
+      return;
+    }
+    setTabLockState('acquired');
+    try {
+      await storage.init();
+      if (storage.isMigrationRecoveryRequired()) {
+        const ts = storage.getLegacyBackupTimestamp();
+        const dateStr = ts ? new Date(ts).toLocaleString('ar-EG') : 'غير محدد';
+        setLegacyBackupDate(dateStr);
+        setIsMigrationRecoveryRequired(true);
+        return;
+      }
+      refreshAll();
+      setIsStorageReady(true);
+      setIsInitialized(true);
+      setMigrationWarning(storage.getMigrationWarning());
+      licenseService.initLicense().catch(() => {});
+      orgSyncService.startService();
+    } catch (err: any) {
+      setStorageInitError(err?.message || 'تعذر تشغيل قاعدة البيانات المحلية');
+    }
+  };
+
+  // -2. Single-Tab Lock Checking Screen (Requirement 3)
+  if (tabLockState === 'checking') {
+    return (
+      <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center font-sans" dir="rtl">
+        <div className="text-center space-y-4">
+          <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+          <p className="text-lg font-bold text-slate-200">جاري التحقق من جاهزية تشغيل النظام...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // -1. Single-Tab Lock Denied: Another tab is running (Requirement 1 & 4)
   if (tabLockState === 'denied') {
     return (
       <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center font-sans p-4" dir="rtl">
@@ -215,9 +292,16 @@ export default function App() {
           <p className="text-sm text-slate-300 leading-relaxed font-medium">
             لحماية قاعدة البيانات المحلية من التعارض أو تلف البيانات، يُسمح بتشغيل نافذة واحدة فقط من النظام في نفس الوقت.
           </p>
-          <div className="bg-slate-950/70 border border-slate-700/50 rounded-xl p-3 text-xs text-slate-400">
-            يرجى إغلاق علامة التبويب هذه والعودة إلى النافذة المفتوحة مسبقاً.
+          <div className="bg-slate-950/70 border border-slate-700/50 rounded-xl p-3 text-xs text-slate-300 leading-relaxed">
+            إن لم تكن فاتحاً النظام في مكان آخر، انتظر ثوانٍ أو اضغط إعادة المحاولة.
           </div>
+          <button
+            type="button"
+            onClick={handleManualRetry}
+            className="w-full bg-amber-600 hover:bg-amber-500 active:bg-amber-700 text-white font-bold py-2.5 px-4 rounded-xl text-sm transition cursor-pointer flex items-center justify-center gap-2 shadow-lg"
+          >
+            <span>إعادة المحاولة الآن</span>
+          </button>
         </div>
       </div>
     );
