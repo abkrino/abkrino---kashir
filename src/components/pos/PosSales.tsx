@@ -522,7 +522,7 @@ export const PosSales: React.FC<PosSalesProps> = ({
   };
 
   // Save / Post Invoice
-  const handleSaveInvoice = (shouldPrint: boolean) => {
+  const handleSaveInvoice = async (shouldPrint: boolean) => {
     if (items.length === 0) {
       setErrorMessage('لا يمكن حفظ فاتورة فارغة. يرجى إضافة أصناف أولاً.');
       return;
@@ -582,6 +582,18 @@ export const PosSales: React.FC<PosSalesProps> = ({
         setErrorMessage(res.error || 'حدث خطأ أثناء حفظ الفاتورة');
         return;
       }
+    }
+
+    // Requirement 3: Immediate flush to persistent storage before showing success/printing
+    try {
+      await storage.flush();
+      if (storage.getWriteError()) {
+        setErrorMessage(`تعذر تأكيد حفظ الفاتورة في التخزين الدائم: ${storage.getWriteError()}`);
+        return;
+      }
+    } catch (flushErr: any) {
+      setErrorMessage(`تعذر تأكيد حفظ الفاتورة في التخزين الدائم: ${flushErr?.message || 'خطأ في التخزين'}`);
+      return;
     }
 
     onInvoiceCreated(invoiceData, shouldPrint);

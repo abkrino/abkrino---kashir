@@ -170,6 +170,18 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
       });
 
       if (res.success) {
+        // Requirement 3: Flush to persistent storage before showing success
+        try {
+          await storage.flush();
+          if (storage.getWriteError()) {
+            setMessage({ type: 'error', text: `تعذر تأكيد حفظ المستخدم في التخزين الدائم: ${storage.getWriteError()}` });
+            return;
+          }
+        } catch (err: any) {
+          setMessage({ type: 'error', text: `تعذر تأكيد حفظ المستخدم في التخزين الدائم: ${err?.message || 'خطأ'}` });
+          return;
+        }
+
         setMessage({
           type: 'success',
           text: `تم ${editingUserId ? 'تعديل' : 'إضافة'} المستخدم (${fullName}) بنجاح وتشفير كلمة المرور بـ PBKDF2!`
@@ -186,10 +198,21 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
     }
   };
 
-  const confirmDeleteUser = () => {
+  const confirmDeleteUser = async () => {
     if (!userToDelete) return;
     const res = storage.deleteUser(userToDelete.id);
     if (res.success) {
+      try {
+        await storage.flush();
+        if (storage.getWriteError()) {
+          setMessage({ type: 'error', text: `تعذر تأكيد حذف المستخدم في التخزين الدائم: ${storage.getWriteError()}` });
+          return;
+        }
+      } catch (err: any) {
+        setMessage({ type: 'error', text: `تعذر تأكيد حذف المستخدم في التخزين الدائم: ${err?.message || 'خطأ'}` });
+        return;
+      }
+
       setMessage({ type: 'success', text: `تم حذف المستخدم (${userToDelete.fullName}) بنجاح.` });
       setUserToDelete(null);
       reloadUsers();
@@ -199,9 +222,20 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
   };
 
   // Toggle user activation (disable / enable cashier) (Requirement 5)
-  const handleToggleUserActive = (u: User) => {
+  const handleToggleUserActive = async (u: User) => {
     const res = authSecurityService.toggleUserActive(currentUser, u.id);
     if (res.success) {
+      try {
+        await storage.flush();
+        if (storage.getWriteError()) {
+          setMessage({ type: 'error', text: `تعذر تأكيد تغيير حالة المستخدم في التخزين الدائم: ${storage.getWriteError()}` });
+          return;
+        }
+      } catch (err: any) {
+        setMessage({ type: 'error', text: `تعذر تأكيد تغيير حالة المستخدم في التخزين الدائم: ${err?.message || 'خطأ'}` });
+        return;
+      }
+
       setMessage({
         type: 'success',
         text: `تم ${res.user?.isActive ? 'إعادة تفعيل' : 'تعطيل'} حساب المستخدم (${u.fullName}) بنجاح.`

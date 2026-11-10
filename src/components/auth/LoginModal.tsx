@@ -220,6 +220,18 @@ export const LoginModal: React.FC<LoginModalProps> = ({
       // Pass oldPin verified from memory ref - never empty string
       const res = await authSecurityService.changeUserPin(pendingMigratedUser.id, oldPin, cleanNew);
       if (res.success) {
+        // Requirement 3: flush to persistent storage
+        try {
+          await storage.flush();
+          if (storage.getWriteError()) {
+            setError(`تعذر تأكيد حفظ الرقم السري في التخزين الدائم: ${storage.getWriteError()}`);
+            return;
+          }
+        } catch (err: any) {
+          setError(`تعذر تأكيد حفظ الرقم السري في التخزين الدائم: ${err?.message || 'خطأ'}`);
+          return;
+        }
+
         // Clear memory ref immediately
         enteredPinRef.current = '';
 
@@ -275,6 +287,18 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     try {
       const res = await authSecurityService.changeUserPin(selectedUserId, cleanOld, cleanNew);
       if (res.success) {
+        // Requirement 3: flush to persistent storage
+        try {
+          await storage.flush();
+          if (storage.getWriteError()) {
+            setError(`تعذر تأكيد تغيير الرقم السري في التخزين الدائم: ${storage.getWriteError()}`);
+            return;
+          }
+        } catch (err: any) {
+          setError(`تعذر تأكيد تغيير الرقم السري في التخزين الدائم: ${err?.message || 'خطأ'}`);
+          return;
+        }
+
         setChangeSuccess('تم تغيير وتشفير الرقم السري بـ PBKDF2 بنجاح!');
         setOldPin('');
         setNewPin('');

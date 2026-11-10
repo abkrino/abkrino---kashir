@@ -395,8 +395,14 @@ class CloudService {
       // Sort newest first
       list.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
       
-      // Cache locally as fallback
-      localStorage.setItem('sm_cached_cloud_backups', JSON.stringify(list.slice(0, 15)));
+      // Cache locally as fallback: METADATA ONLY (omit heavy payloadJson), capped to last 20
+      try {
+        const metaOnlyList = list.slice(0, 20).map(item => {
+          const { payloadJson, ...meta } = item;
+          return meta as CloudBackupItem;
+        });
+        localStorage.setItem('sm_cached_cloud_backups', JSON.stringify(metaOnlyList));
+      } catch {}
       
       const duration = Math.round(performance.now() - startTime);
       this.logPerformance('Backup:GetList', duration, 'SUCCESS');
@@ -445,10 +451,13 @@ class CloudService {
         await setDoc(backupRef, backup);
       }
 
-      // Also cache in local list
-      const localCached = this.getLocalCachedBackups();
-      localCached.unshift(backup);
-      localStorage.setItem('sm_cached_cloud_backups', JSON.stringify(localCached.slice(0, 15)));
+      // Cache locally as metadata ONLY, capped at last 20 items
+      try {
+        const localCached = this.getLocalCachedBackups();
+        const { payloadJson, ...metaOnly } = backup;
+        localCached.unshift(metaOnly as CloudBackupItem);
+        localStorage.setItem('sm_cached_cloud_backups', JSON.stringify(localCached.slice(0, 20)));
+      } catch {}
 
       const duration = Math.round(performance.now() - startTime);
       this.logPerformance('Backup:CreateManual', duration, 'SUCCESS');
@@ -522,7 +531,9 @@ class CloudService {
         await deleteDoc(backupRef);
       }
       const localCached = this.getLocalCachedBackups().filter(b => b.id !== backupId);
-      localStorage.setItem('sm_cached_cloud_backups', JSON.stringify(localCached));
+      try {
+        localStorage.setItem('sm_cached_cloud_backups', JSON.stringify(localCached.slice(0, 20)));
+      } catch {}
       return true;
     } catch {
       return false;
@@ -551,7 +562,9 @@ class CloudService {
       linkTab,
     };
     alerts.unshift(newAlert);
-    localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_ALERTS, JSON.stringify(alerts.slice(0, 30)));
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_ALERTS, JSON.stringify(alerts.slice(0, 100)));
+    } catch {}
     this.notifyListeners();
 
     // Async push to Cloud if online
@@ -563,40 +576,46 @@ class CloudService {
 
   public markAlertAsRead(alertId: string): void {
     const alerts = this.getAlerts().map(a => a.id === alertId ? { ...a, read: true } : a);
-    localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_ALERTS, JSON.stringify(alerts));
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_ALERTS, JSON.stringify(alerts.slice(0, 100)));
+    } catch {}
     this.notifyListeners();
   }
 
   public clearAllAlerts(): void {
-    localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_ALERTS, JSON.stringify([]));
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_ALERTS, JSON.stringify([]));
+    } catch {}
     this.notifyListeners();
   }
 
   private initDefaultAlerts() {
-    if (!localStorage.getItem(LOCAL_STORAGE_KEYS.LOCAL_ALERTS)) {
-      const initial: CloudAlert[] = [
-        {
-          id: 'alert-welcome',
-          title: 'جاهزية الكلود والتشغيل السحابي',
-          body: 'تم تفعيل الاتصال بالكلود بنجاح لمشروع abkrino-ai. بياناتك محفوظة محلياً وعلى الكلود.',
-          type: 'SYSTEM',
-          timestamp: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
-          read: false,
-          priority: 'NORMAL',
-        },
-        {
-          id: 'alert-dairy-fridge',
-          title: 'مراقبة تبريد قسم الألبان',
-          body: 'جميع منتجات الجبن والألبان الطازجة تحت المراقبة وتواريخ الصلاحية مطابقة.',
-          type: 'EXPIRY',
-          timestamp: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
-          read: false,
-          priority: 'NORMAL',
-          linkTab: 'inventory',
-        }
-      ];
-      localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_ALERTS, JSON.stringify(initial));
-    }
+    try {
+      if (!localStorage.getItem(LOCAL_STORAGE_KEYS.LOCAL_ALERTS)) {
+        const initial: CloudAlert[] = [
+          {
+            id: 'alert-welcome',
+            title: 'جاهزية الكلود والتشغيل السحابي',
+            body: 'تم تفعيل الاتصال بالكلود بنجاح لمشروع abkrino-ai. بياناتك محفوظة محلياً وعلى الكلود.',
+            type: 'SYSTEM',
+            timestamp: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+            read: false,
+            priority: 'NORMAL',
+          },
+          {
+            id: 'alert-dairy-fridge',
+            title: 'مراقبة تبريد قسم الألبان',
+            body: 'جميع منتجات الجبن والألبان الطازجة تحت المراقبة وتواريخ الصلاحية مطابقة.',
+            type: 'EXPIRY',
+            timestamp: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+            read: false,
+            priority: 'NORMAL',
+            linkTab: 'inventory',
+          }
+        ];
+        localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_ALERTS, JSON.stringify(initial));
+      }
+    } catch {}
   }
 
   // --- CRASHLYTICS ("Crashlytics") ---
@@ -621,7 +640,9 @@ class CloudService {
       offlineOccurred: !this.isOnline(),
     };
     crashes.unshift(newCrash);
-    localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_CRASHES, JSON.stringify(crashes.slice(0, 30)));
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_CRASHES, JSON.stringify(crashes.slice(0, 100)));
+    } catch {}
     this.notifyListeners();
 
     if (this.isOnline()) {
@@ -632,7 +653,9 @@ class CloudService {
 
   public resolveCrash(crashId: string): void {
     const crashes = this.getCrashReports().map(c => c.id === crashId ? { ...c, resolved: true } : c);
-    localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_CRASHES, JSON.stringify(crashes));
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_CRASHES, JSON.stringify(crashes.slice(0, 100)));
+    } catch {}
     this.notifyListeners();
   }
 
@@ -656,7 +679,9 @@ class CloudService {
       networkOnline: this.isOnline(),
     };
     metrics.unshift(newMetric);
-    localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_PERF, JSON.stringify(metrics.slice(0, 40)));
+    try {
+      localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_PERF, JSON.stringify(metrics.slice(0, 100)));
+    } catch {}
     this.notifyListeners();
 
     if (this.isOnline() && metrics.length % 5 === 0) {

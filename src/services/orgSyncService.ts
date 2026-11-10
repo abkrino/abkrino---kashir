@@ -120,35 +120,81 @@ class OrgSyncService {
   private rescheduleSummaryTimer: ReturnType<typeof setTimeout> | null = null;
   private permissionRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private isSubPaused: boolean = false;
+  private isRunning: boolean = false;
+  private cleanupFns: (() => void)[] = [];
 
   constructor() {
+    // Timers and network listeners do NOT auto-start in constructor
+    // They start exclusively via startService() after winning the single-tab lock and storage.init()
+  }
+
+  public isServiceRunning(): boolean {
+    return this.isRunning;
+  }
+
+  public startService(): void {
+    if (this.isRunning) return;
+    this.isRunning = true;
     this.initListeners();
+    if (typeof navigator !== 'undefined' && navigator.onLine) {
+      this.sendHeartbeat().catch(() => {});
+    }
+  }
+
+  public stopService(): void {
+    this.isRunning = false;
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    if (this.rescheduleSummaryTimer) {
+      clearTimeout(this.rescheduleSummaryTimer);
+      this.rescheduleSummaryTimer = null;
+    }
+    if (this.permissionRetryTimer) {
+      clearTimeout(this.permissionRetryTimer);
+      this.permissionRetryTimer = null;
+    }
+    this.cleanupFns.forEach(fn => {
+      try { fn(); } catch {}
+    });
+    this.cleanupFns = [];
   }
 
   private initListeners() {
     if (typeof window === 'undefined') return;
 
     // Network reconnect listener
-    window.addEventListener('online', () => {
+    const onOnline = () => {
       if (this.syncState === 'offline') {
         this.syncState = 'idle';
         this.notifyListeners();
       }
       this.sendHeartbeat().catch(() => {});
       this.pushDailySummary(false).catch(() => {});
-    });
+    };
+    window.addEventListener('online', onOnline);
+    this.cleanupFns.push(() => window.removeEventListener('online', onOnline));
 
-    window.addEventListener('offline', () => {
+    const onOffline = () => {
       this.syncState = 'offline';
       this.notifyListeners();
-    });
+    };
+    window.addEventListener('offline', onOffline);
+    this.cleanupFns.push(() => window.removeEventListener('offline', onOffline));
 
     // Page visibility change
-    document.addEventListener('visibilitychange', () => {
+    const onVisibility = () => {
       if (document.visibilityState === 'visible' && navigator.onLine) {
         this.sendHeartbeat().catch(() => {});
       }
-    });
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    this.cleanupFns.push(() => document.removeEventListener('visibilitychange', onVisibility));
 
     // 15-minute periodic heartbeat timer
     this.heartbeatTimer = setInterval(() => {
@@ -158,12 +204,13 @@ class OrgSyncService {
     }, 15 * 60 * 1000);
 
     // Storage action listener for daily summary update (debounced 2 minutes)
-    storage.onAction(() => {
+    const unsubStorage = storage.onAction(() => {
       this.scheduleDebouncedDailySummary();
     });
+    this.cleanupFns.push(unsubStorage);
 
     // License change listener: resets subscription pause and retries
-    licenseService.subscribe(() => {
+    const unsubLicense = licenseService.subscribe(() => {
       if (this.isSubPaused) {
         this.resetSubscriptionPause();
         if (typeof navigator !== 'undefined' && navigator.onLine) {
@@ -174,6 +221,7 @@ class OrgSyncService {
         this.notifyListeners();
       }
     });
+    this.cleanupFns.push(unsubLicense);
   }
 
   // -------------------------------------------------------------------------
@@ -293,6 +341,7 @@ class OrgSyncService {
   // -------------------------------------------------------------------------
   public async sendHeartbeat(): Promise<{ success: boolean; error?: string }> {
     if (this.isSubPaused) return { success: false, error: 'subscription-paused' };
+    if (!storage.isStorageReady()) return { success: false, error: 'storage-not-ready' };
 
     const context = this.getContext();
     if (!context) {
@@ -384,6 +433,7 @@ class OrgSyncService {
   }
 
   public async pushDailySummary(forceImmediate: boolean = false): Promise<{ success: boolean; error?: string }> {
+    if (!storage.isStorageReady()) return { success: false, error: 'storage-not-ready' };
     if (this.isSubPaused) return { success: false, error: 'subscription-paused' };
 
     const context = this.getContext();
@@ -431,6 +481,13 @@ class OrgSyncService {
     }
 
     try {
+      // Requirement 4: Reject if storage is not ready or data not loaded and all numbers zero
+      if (!storage.isStorageReady()) {
+        this.syncState = 'idle';
+        this.notifyListeners();
+        return { success: false, error: 'storage-not-ready' };
+      }
+
       this.syncState = 'syncing';
       this.notifyListeners();
 
@@ -445,6 +502,21 @@ class OrgSyncService {
         cashInDrawer: storage.calculateCurrentCashInDrawer(),
         cairoDateStr,
       });
+
+      const isAllZeros =
+        summaryPayload.salesTotal === 0 &&
+        summaryPayload.invoiceCount === 0 &&
+        summaryPayload.purchasesTotal === 0 &&
+        summaryPayload.customerDebt === 0 &&
+        summaryPayload.supplierDue === 0 &&
+        summaryPayload.lowStockCount === 0 &&
+        summaryPayload.cashInDrawer === 0;
+
+      if (isAllZeros && !storage.hasLoadedData()) {
+        this.syncState = 'idle';
+        this.notifyListeners();
+        return { success: false, error: 'data-not-loaded-or-all-zeros' };
+      }
 
       const summaryRef = doc(
         db,

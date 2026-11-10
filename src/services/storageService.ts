@@ -7,8 +7,9 @@ import {
   INITIAL_EXPENSES, INITIAL_CASH_MOVEMENTS, INITIAL_INVOICES, INITIAL_USERS
 } from '../data/initialData';
 import { licenseService } from './licenseService';
+import { idb, type KVRecord } from './idbStore';
 
-const STORAGE_KEYS = {
+export const STORAGE_KEYS = {
   PRODUCTS: 'sm_products_v3',
   CUSTOMERS: 'sm_customers_v3',
   SUPPLIERS: 'sm_suppliers_v3',
@@ -20,11 +21,39 @@ const STORAGE_KEYS = {
   STOCK_ADJUSTMENTS: 'sm_stock_adjustments_v3',
   SHIFT: 'sm_current_shift_v3',
   USERS: 'sm_users_v3',
-  ACTIVE_USER_ID: 'sm_active_user_id_v3',
+  ACTIVE_USER_ID: 'pos_active_user_id',
   PARKED_CARTS: 'sm_parked_carts_v3',
 };
 
+export const BUSINESS_KEYS = [
+  STORAGE_KEYS.PRODUCTS,
+  STORAGE_KEYS.CUSTOMERS,
+  STORAGE_KEYS.SUPPLIERS,
+  STORAGE_KEYS.INVOICES,
+  STORAGE_KEYS.PURCHASES,
+  STORAGE_KEYS.CASH_MOVEMENTS,
+  STORAGE_KEYS.EXPENSES,
+  STORAGE_KEYS.AUDIT_LOGS,
+  STORAGE_KEYS.STOCK_ADJUSTMENTS,
+  STORAGE_KEYS.SHIFT,
+  STORAGE_KEYS.USERS,
+  STORAGE_KEYS.ACTIVE_USER_ID,
+  STORAGE_KEYS.PARKED_CARTS,
+];
+
 class StorageService {
+  private cache: Map<string, any> = new Map();
+  private pendingWrites: Map<string, any> = new Map();
+  private batchTimer: any = null;
+  private activeCommitPromise: Promise<any> | null = null;
+  private writeError: string | null = null;
+  private writeErrorListeners: ((error: string | null) => void)[] = [];
+  private migrationWarning: string | null = null;
+  private isPersisted: boolean = false;
+  private isFallback: boolean = false;
+  private isReady: boolean = false;
+  private migrationRecoveryRequired: boolean = false;
+  private legacyBackupTimestamp: number = 0;
   private onActionCallbacks: ((actionName: string) => void)[] = [];
 
   public onAction(cb: (actionName: string) => void): () => void {
@@ -44,31 +73,456 @@ class StorageService {
     });
   }
 
-  private getItem<T>(key: string, defaultValue: T): T {
+  public getWriteError(): string | null {
+    return this.writeError;
+  }
+
+  public setWriteError(error: string | null): void {
+    this.writeError = error;
+    this.writeErrorListeners.forEach(listener => {
+      try { listener(error); } catch {}
+    });
+  }
+
+  public onWriteError(cb: (error: string | null) => void): () => void {
+    this.writeErrorListeners.push(cb);
+    return () => {
+      this.writeErrorListeners = this.writeErrorListeners.filter(l => l !== cb);
+    };
+  }
+
+  public getMigrationWarning(): string | null {
+    return this.migrationWarning;
+  }
+
+  public isStorageFallback(): boolean {
+    return this.isFallback;
+  }
+
+  public isStoragePersisted(): boolean {
+    return this.isPersisted;
+  }
+
+  public isStorageReady(): boolean {
+    return this.isReady;
+  }
+
+  public hasLoadedData(): boolean {
+    return this.cache.size > 0;
+  }
+
+  public isMigrationRecoveryRequired(): boolean {
+    return this.migrationRecoveryRequired;
+  }
+
+  public getLegacyBackupTimestamp(): number {
+    return this.legacyBackupTimestamp;
+  }
+
+  public getItem<T>(key: string, defaultValue: T): T {
+    if (this.cache.has(key)) {
+      return this.cache.get(key) as T;
+    }
+    if (typeof localStorage !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          this.cache.set(key, parsed);
+          return parsed as T;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return defaultValue;
+  }
+
+  public setItem<T>(key: string, value: T): void {
+    // 1. Synchronously update in-memory cache
+    this.cache.set(key, value);
+
+    // 2. Synchronous write to localStorage if fallback mode is active
+    if (this.isFallback && typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+      } catch (err: any) {
+        this.setWriteError('فشل التخزين في localStorage: ' + (err?.message || 'مساحة ممتلئة'));
+      }
+    }
+
+    // 3. Queue asynchronous write-through to IndexedDB
+    this.pendingWrites.set(key, value);
+    this.scheduleBatchWrite();
+  }
+
+  private scheduleBatchWrite(): void {
+    if (this.batchTimer !== null) return;
+    this.batchTimer = setTimeout(() => {
+      this.batchTimer = null;
+      this.commitPendingWrites().catch(err => {
+        console.error('Error committing pending writes to IDB:', err);
+      });
+    }, 15);
+  }
+
+  private async commitPendingWrites(): Promise<void> {
+    if (this.pendingWrites.size === 0) return;
+
+    const entries = Array.from(this.pendingWrites.entries());
+    this.pendingWrites.clear();
+    if (this.batchTimer !== null) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
+
+    const records: KVRecord[] = entries.map(([key, value]) => ({
+      key,
+      value,
+      updatedAt: Date.now(),
+    }));
+
+    if (typeof indexedDB === 'undefined' || this.isFallback) {
+      if (typeof localStorage !== 'undefined') {
+        try {
+          for (const rec of records) {
+            localStorage.setItem(rec.key, JSON.stringify(rec.value));
+          }
+        } catch {
+          // ignore
+        }
+      }
+      return;
+    }
+
     try {
-      const data = localStorage.getItem(key);
-      if (!data) return defaultValue;
-      return JSON.parse(data);
-    } catch {
-      return defaultValue;
+      this.activeCommitPromise = idb.kv.bulkPut(records);
+      await this.activeCommitPromise;
+    } catch (err: any) {
+      console.error('IndexedDB write failure:', err);
+      this.setWriteError(err?.message || 'تعذر حفظ البيانات في IndexedDB');
+      // Emergency write to localStorage so data isn't lost from this session
+      if (typeof localStorage !== 'undefined') {
+        try {
+          for (const rec of records) {
+            localStorage.setItem(rec.key, JSON.stringify(rec.value));
+          }
+        } catch {
+          // ignore
+        }
+      }
+    } finally {
+      this.activeCommitPromise = null;
     }
   }
 
-  private setItem<T>(key: string, value: T): void {
-    localStorage.setItem(key, JSON.stringify(value));
+  public async flush(): Promise<void> {
+    if (this.pendingWrites.size > 0) {
+      await this.commitPendingWrites();
+    }
+    if (this.activeCommitPromise) {
+      await this.activeCommitPromise;
+    }
+  }
+
+  public async init(): Promise<void> {
+    try {
+      if (typeof indexedDB === 'undefined') {
+        this.isFallback = true;
+        this.migrationWarning = 'قاعدة بيانات IndexedDB غير متوفرة في هذا المتصفح، يعمل النظام عبر localStorage';
+        this.loadFromLocalStorageIntoCache();
+        this.initDatabase();
+        this.isReady = true;
+        return;
+      }
+
+      let idbCount = 0;
+      let idbAvailable = true;
+
+      try {
+        idbCount = await idb.kv.count();
+      } catch (err) {
+        console.warn('IndexedDB not available or failed to open:', err);
+        idbAvailable = false;
+      }
+
+      if (!idbAvailable) {
+        this.isFallback = true;
+        this.migrationWarning = 'قاعدة بيانات IndexedDB غير متوفرة في هذا المتصفح، يعمل النظام عبر localStorage';
+        this.loadFromLocalStorageIntoCache();
+        this.initDatabase();
+        this.isReady = true;
+        return;
+      }
+
+      let hasLocalStorageData = false;
+      let migratedAtTimestamp: number | null = null;
+      let migratedKeysCount = BUSINESS_KEYS.length;
+      if (typeof localStorage !== 'undefined') {
+        try {
+          hasLocalStorageData = Boolean(localStorage.getItem(STORAGE_KEYS.PRODUCTS));
+          const rawMigratedAt = localStorage.getItem('idb_migrated_at');
+          if (rawMigratedAt) {
+            migratedAtTimestamp = Number(rawMigratedAt);
+          }
+          const rawCount = localStorage.getItem('idb_migrated_keys_count');
+          if (rawCount) {
+            migratedKeysCount = Number(rawCount);
+          }
+        } catch {
+          hasLocalStorageData = false;
+        }
+      }
+
+      // REQUIREMENT 2: Anti-Regression Migration Protection
+      // If idb_migrated_at is found AND IndexedDB is empty or incomplete (< migratedKeysCount),
+      // DO NOT automatically copy from localStorage! Show explicit recovery alert screen.
+      if (migratedAtTimestamp && (idbCount === 0 || idbCount < migratedKeysCount)) {
+        this.migrationRecoveryRequired = true;
+        this.legacyBackupTimestamp = migratedAtTimestamp;
+        this.isReady = false;
+        return;
+      }
+
+      // CASE 1: IndexedDB is empty, no previous migration recorded, and business data exists in localStorage -> ONE-TIME INITIAL MIGRATION
+      if (idbCount === 0 && hasLocalStorageData && !migratedAtTimestamp) {
+        const toMigrate: KVRecord[] = [];
+        for (const key of BUSINESS_KEYS) {
+          try {
+            const raw = localStorage.getItem(key);
+            if (raw !== null) {
+              const val = JSON.parse(raw);
+              toMigrate.push({
+                key,
+                value: val,
+                updatedAt: Date.now(),
+              });
+            }
+          } catch (e) {
+            console.error(`Failed to read/parse ${key} from localStorage:`, e);
+          }
+        }
+
+        if (toMigrate.length > 0) {
+          try {
+            await idb.kv.bulkPut(toMigrate);
+
+            // Verification of record counts and integrity
+            let verificationPassed = true;
+            for (const rec of toMigrate) {
+              const saved = await idb.kv.get(rec.key);
+              if (!saved) {
+                verificationPassed = false;
+                break;
+              }
+              if (Array.isArray(rec.value)) {
+                if (!Array.isArray(saved.value) || saved.value.length !== rec.value.length) {
+                  verificationPassed = false;
+                  break;
+                }
+              }
+            }
+
+            if (verificationPassed) {
+              try {
+                localStorage.setItem('idb_migrated_at', String(Date.now()));
+                localStorage.setItem('idb_migrated_keys_count', String(toMigrate.length));
+              } catch {}
+              for (const rec of toMigrate) {
+                this.cache.set(rec.key, rec.value);
+              }
+              this.isFallback = false;
+            } else {
+              // Verification failed! Fall back to localStorage with warning
+              this.isFallback = true;
+              this.migrationWarning = 'فشل التحقق من تطابق نقل البيانات إلى IndexedDB، يعمل النظام الآن من التخزين المحلي (localStorage)';
+              this.loadFromLocalStorageIntoCache();
+            }
+          } catch (err: any) {
+            console.error('Migration to IDB failed:', err);
+            this.isFallback = true;
+            this.migrationWarning = 'تعذر نسخ البيانات إلى IndexedDB، يعمل النظام الآن من التخزين المحلي (localStorage)';
+            this.loadFromLocalStorageIntoCache();
+          }
+        } else {
+          this.initDatabase();
+        }
+      } else if (idbCount > 0) {
+        // CASE 2: IndexedDB has records -> Read all into in-memory cache
+        const allRecords = await idb.kv.toArray();
+        for (const rec of allRecords) {
+          this.cache.set(rec.key, rec.value);
+        }
+        this.isFallback = false;
+
+        // Clean up old localStorage business data ONLY after 30 days of documented successful migration
+        if (typeof localStorage !== 'undefined') {
+          try {
+            const migratedAt = Number(localStorage.getItem('idb_migrated_at'));
+            if (migratedAt && (Date.now() - migratedAt >= 30 * 24 * 60 * 60 * 1000)) {
+              for (const k of BUSINESS_KEYS) {
+                localStorage.removeItem(k);
+              }
+            }
+          } catch {
+            // ignore
+          }
+        }
+      } else {
+        // CASE 3: Both empty -> Seed database
+        this.initDatabase();
+        await this.flush();
+      }
+
+      // Check and request persistence
+      if (typeof navigator !== 'undefined' && navigator.storage) {
+        try {
+          if (navigator.storage.persist) {
+            this.isPersisted = await navigator.storage.persist();
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      this.isReady = true;
+    } catch (err: any) {
+      console.error('storage.init() critical error:', err);
+      throw err;
+    }
+  }
+
+  private loadFromLocalStorageIntoCache(): void {
+    if (typeof localStorage === 'undefined') return;
+    for (const key of BUSINESS_KEYS) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw !== null) {
+          this.cache.set(key, JSON.parse(raw));
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  public async restoreFromLegacyLocalStorage(): Promise<{ success: boolean; error?: string }> {
+    const toMigrate: KVRecord[] = [];
+    if (typeof localStorage === 'undefined') {
+      return { success: false, error: 'التخزين المحلي غير متاح في هذا المتصفح' };
+    }
+
+    for (const key of BUSINESS_KEYS) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw !== null) {
+          const val = JSON.parse(raw);
+          toMigrate.push({
+            key,
+            value: val,
+            updatedAt: Date.now(),
+          });
+        }
+      } catch (e) {
+        console.error(`Failed to read/parse ${key} from localStorage:`, e);
+      }
+    }
+
+    if (toMigrate.length === 0) {
+      return { success: false, error: 'لا توجد بيانات صالحة في النسخة القديمة للتخزين المحلي' };
+    }
+
+    try {
+      if (typeof indexedDB !== 'undefined') {
+        await idb.kv.bulkPut(toMigrate);
+      }
+      for (const rec of toMigrate) {
+        this.cache.set(rec.key, rec.value);
+      }
+      try {
+        localStorage.setItem('idb_migrated_at', String(Date.now()));
+        localStorage.setItem('idb_migrated_keys_count', String(toMigrate.length));
+      } catch {}
+
+      this.migrationRecoveryRequired = false;
+      this.isReady = true;
+      this.isFallback = false;
+      await this.flush();
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'فشلت عملية الاستعادة إلى IndexedDB' };
+    }
+  }
+
+  public async getStorageStatus(): Promise<{
+    persisted: boolean;
+    usageBytes: number;
+    quotaBytes: number;
+    migrationDate: string | null;
+    isFallback: boolean;
+    migrationWarning: string | null;
+  }> {
+    let persisted = this.isPersisted;
+    let usageBytes = 0;
+    let quotaBytes = 0;
+
+    if (typeof navigator !== 'undefined' && navigator.storage) {
+      try {
+        if (navigator.storage.persisted) {
+          persisted = await navigator.storage.persisted();
+          this.isPersisted = persisted;
+        }
+        if (navigator.storage.estimate) {
+          const est = await navigator.storage.estimate();
+          usageBytes = est.usage || 0;
+          quotaBytes = est.quota || 0;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    let migrationDate: string | null = null;
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem('idb_migrated_at');
+      if (raw) {
+        migrationDate = new Date(Number(raw)).toLocaleString('ar-EG');
+      }
+    }
+
+    return {
+      persisted,
+      usageBytes,
+      quotaBytes,
+      migrationDate,
+      isFallback: this.isFallback,
+      migrationWarning: this.migrationWarning,
+    };
+  }
+
+  public async requestPersistence(): Promise<boolean> {
+    if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.persist) {
+      try {
+        this.isPersisted = await navigator.storage.persist();
+        return this.isPersisted;
+      } catch {
+        return false;
+      }
+    }
+    return false;
   }
 
   // --- INITIALIZATION ---
   public initDatabase(): void {
-    if (!localStorage.getItem(STORAGE_KEYS.PRODUCTS)) {
-      this.setItem(STORAGE_KEYS.PRODUCTS, INITIAL_PRODUCTS);
-      this.setItem(STORAGE_KEYS.CUSTOMERS, INITIAL_CUSTOMERS);
-      this.setItem(STORAGE_KEYS.SUPPLIERS, INITIAL_SUPPLIERS);
-      this.setItem(STORAGE_KEYS.INVOICES, INITIAL_INVOICES);
+    if (!this.cache.has(STORAGE_KEYS.PRODUCTS)) {
+      this.setItem(STORAGE_KEYS.PRODUCTS, JSON.parse(JSON.stringify(INITIAL_PRODUCTS)));
+      this.setItem(STORAGE_KEYS.CUSTOMERS, JSON.parse(JSON.stringify(INITIAL_CUSTOMERS)));
+      this.setItem(STORAGE_KEYS.SUPPLIERS, JSON.parse(JSON.stringify(INITIAL_SUPPLIERS)));
+      this.setItem(STORAGE_KEYS.INVOICES, JSON.parse(JSON.stringify(INITIAL_INVOICES)));
       this.setItem(STORAGE_KEYS.PURCHASES, []);
-      this.setItem(STORAGE_KEYS.CASH_MOVEMENTS, INITIAL_CASH_MOVEMENTS);
-      this.setItem(STORAGE_KEYS.EXPENSES, INITIAL_EXPENSES);
-      this.setItem(STORAGE_KEYS.SHIFT, INITIAL_SHIFT);
+      this.setItem(STORAGE_KEYS.CASH_MOVEMENTS, JSON.parse(JSON.stringify(INITIAL_CASH_MOVEMENTS)));
+      this.setItem(STORAGE_KEYS.EXPENSES, JSON.parse(JSON.stringify(INITIAL_EXPENSES)));
+      this.setItem(STORAGE_KEYS.SHIFT, JSON.parse(JSON.stringify(INITIAL_SHIFT)));
       this.setItem(STORAGE_KEYS.USERS, []);
       this.setItem(STORAGE_KEYS.PARKED_CARTS, []);
       this.addAuditLog('SYSTEM', 'إعداد النظام', 'النظام', 'sys-0', 'تمت تهيئة نظام كاشير ومبيعات السوبر ماركت وقسم الألبان');
@@ -104,14 +558,29 @@ class StorageService {
   public getActiveUser(): User | null {
     const users = this.getUsers();
     if (!users || users.length === 0) return null;
-    const activeId = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER_ID);
+    let activeId: string | null = null;
+    if (typeof localStorage !== 'undefined') {
+      const storedActive = localStorage.getItem(STORAGE_KEYS.ACTIVE_USER_ID);
+      if (!storedActive) {
+        this.cache.delete(STORAGE_KEYS.ACTIVE_USER_ID);
+        return null;
+      }
+      activeId = storedActive;
+    } else {
+      activeId = this.getItem<string>(STORAGE_KEYS.ACTIVE_USER_ID, '');
+    }
     if (!activeId) return null;
     const found = users.find(u => u.id === activeId);
     return found || null;
   }
 
   public setActiveUser(userId: string): void {
-    localStorage.setItem(STORAGE_KEYS.ACTIVE_USER_ID, userId);
+    this.setItem(STORAGE_KEYS.ACTIVE_USER_ID, userId);
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(STORAGE_KEYS.ACTIVE_USER_ID, userId);
+      } catch {}
+    }
   }
 
   public saveUser(user: User): { success: boolean; error?: string } {
@@ -1092,6 +1561,14 @@ class StorageService {
 
       this.addAuditLog('RESTORE', 'استعادة نسخة احتياطية', 'النظام', 'restore', 'تمت استعادة قاعدة البيانات بنجاح من ملف خارجي');
 
+      // Asynchronously flush writes to IndexedDB
+      this.flush().catch(err => {
+        console.error('Error flushing restored backup to IDB:', err);
+      });
+
+      this.migrationRecoveryRequired = false;
+      this.isReady = true;
+
       return { success: true };
     } catch {
       return { success: false, error: 'فشل في قراءة ملف النسخة الاحتياطية' };
@@ -1099,9 +1576,34 @@ class StorageService {
   }
 
   public resetToFactoryDefault(): void {
-    localStorage.clear();
+    this.cache.clear();
+    this.pendingWrites.clear();
+    if (this.batchTimer !== null) {
+      clearTimeout(this.batchTimer);
+      this.batchTimer = null;
+    }
+    idb.kv.clear().catch(e => console.error('Failed to clear IDB:', e));
+    if (typeof localStorage !== 'undefined') {
+      for (const k of BUSINESS_KEYS) {
+        try { localStorage.removeItem(k); } catch {}
+      }
+      try { localStorage.removeItem('idb_migrated_at'); } catch {}
+    }
     this.initDatabase();
+    this.flush().catch(err => console.error('Error flushing default seeds to IDB:', err));
   }
 }
 
 export const storage = new StorageService();
+
+// Requirement 3: Automatically flush pending writes on visibilitychange (hidden) and pagehide
+if (typeof window !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+      storage.flush().catch(() => {});
+    }
+  });
+  window.addEventListener('pagehide', () => {
+    storage.flush().catch(() => {});
+  });
+}

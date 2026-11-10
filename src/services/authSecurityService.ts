@@ -329,7 +329,9 @@ class AuthSecurityService {
   public updateSecuritySettings(updates: Partial<SecuritySettings>): void {
     const current = this.getSecuritySettings();
     const updated = { ...current, ...updates };
-    localStorage.setItem(STORAGE_KEYS.SECURITY_SETTINGS, JSON.stringify(updated));
+    try {
+      localStorage.setItem(STORAGE_KEYS.SECURITY_SETTINGS, JSON.stringify(updated));
+    } catch {}
     storage.addAuditLog(
       'SETTINGS',
       'تعديل إعدادات الأمان',

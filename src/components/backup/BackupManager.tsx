@@ -11,6 +11,35 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [migrationStatus, setMigrationStatus] = useState<string | null>(null);
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [storageStatus, setStorageStatus] = useState<{
+    persisted: boolean;
+    usageBytes: number;
+    quotaBytes: number;
+    migrationDate: string | null;
+    isFallback: boolean;
+    migrationWarning: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    storage.getStorageStatus().then(status => setStorageStatus(status)).catch(() => {});
+  }, []);
+
+  const handleRequestPersistence = async () => {
+    const success = await storage.requestPersistence();
+    const updated = await storage.getStorageStatus();
+    setStorageStatus(updated);
+    if (success) {
+      setStatusMessage({
+        type: 'success',
+        text: 'تم تفعيل الحفظ الدائم (Persistent Storage) بنجاح لحماية البيانات من الحذف التلقائي!',
+      });
+    } else {
+      setStatusMessage({
+        type: 'error',
+        text: 'لم يتمكن المتصفح من منح إذن الحفظ الدائم، تأكد من إعدادات المتصفح.',
+      });
+    }
+  };
 
   // Export Backup
   const handleExportBackup = () => {
@@ -148,6 +177,84 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
           <button onClick={() => setStatusMessage(null)} className="cursor-pointer text-xs opacity-75 hover:opacity-100">✕</button>
         </div>
       )}
+
+      {/* IndexedDB & Persistent Storage Status Card (Requirement 6) */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xs transition-colors space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-500">
+              <Database className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                <span>محرك التخزين المحلي الآمن (IndexedDB - kashir)</span>
+                {storageStatus?.isFallback ? (
+                  <span className="text-[10px] bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-full font-bold">
+                    وضع التوافق (localStorage)
+                  </span>
+                ) : (
+                  <span className="text-[10px] bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
+                    نشط ومُرحّل ✓
+                  </span>
+                )}
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                تُحفظ كافة العمليات في قاعدة بيانات IndexedDB سريعة بدون حدود سعة التخزين القديمة (5MB).
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {!storageStatus?.persisted && (
+              <button
+                type="button"
+                onClick={handleRequestPersistence}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-lg cursor-pointer transition shadow-sm"
+              >
+                طلب الحفظ الدائم
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-xs border-t border-slate-100 dark:border-slate-800">
+          <div className="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl space-y-1">
+            <span className="text-slate-500 dark:text-slate-400 block text-[11px]">حالة الحفظ الدائم (Persisted):</span>
+            <span className="font-bold flex items-center gap-1.5 text-slate-800 dark:text-slate-200">
+              {storageStatus?.persisted ? (
+                <>
+                  <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                  <span className="text-emerald-600 dark:text-emerald-400 font-bold">مفعّل (محمي من الحذف التلقائي)</span>
+                </>
+              ) : (
+                <>
+                  <AlertTriangle className="w-4 h-4 text-amber-500" />
+                  <span className="text-amber-600 dark:text-amber-400">غير مفعّل (عرضة للحذف عند امتلاء القرص)</span>
+                </>
+              )}
+            </span>
+          </div>
+
+          <div className="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl space-y-1">
+            <span className="text-slate-500 dark:text-slate-400 block text-[11px]">حجم الاستخدام التقريبي:</span>
+            <span className="font-mono font-bold text-slate-800 dark:text-slate-200 block text-xs">
+              {storageStatus?.usageBytes !== undefined
+                ? `${(storageStatus.usageBytes / (1024 * 1024)).toFixed(2)} ميجابايت`
+                : 'جاري الحساب...'}
+              {storageStatus?.quotaBytes
+                ? ` من إجمالي ${(storageStatus.quotaBytes / (1024 * 1024 * 1024)).toFixed(1)} جيجابايت متاح`
+                : ''}
+            </span>
+          </div>
+
+          <div className="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl space-y-1">
+            <span className="text-slate-500 dark:text-slate-400 block text-[11px]">تاريخ ترحيل البيانات:</span>
+            <span className="font-bold text-slate-800 dark:text-slate-200 block text-xs">
+              {storageStatus?.migrationDate ? storageStatus.migrationDate : 'قاعدة بيانات جديدة أو سابقة'}
+            </span>
+          </div>
+        </div>
+      </div>
 
       {/* Grid: Backup vs Restore vs Migration */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">

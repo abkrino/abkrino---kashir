@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { User } from '../../types';
+import { storage } from '../../services/storageService';
 import { authSecurityService, isKnownDefaultPin } from '../../services/authSecurityService';
 import { 
   ShieldCheck, 
@@ -66,6 +67,12 @@ export const AdminSetupModal: React.FC<AdminSetupModalProps> = ({ onAdminCreated
         password: cleanPassword,
         phone: phone.trim(),
       });
+      await storage.flush();
+      if (storage.getWriteError()) {
+        setError(`تعذر تأكيد حفظ بيانات المدير في التخزين الدائم: ${storage.getWriteError()}`);
+        setIsLoading(false);
+        return;
+      }
       onAdminCreated(admin);
     } catch (err: any) {
       setError(err?.message || 'حدث خطأ أثناء حفظ بيانات المدير');

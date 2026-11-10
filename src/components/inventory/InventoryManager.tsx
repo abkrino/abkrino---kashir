@@ -316,7 +316,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
     setIsAdjustmentModalOpen(true);
   };
 
-  const handleStockAdjustmentSubmit = (e: React.FormEvent) => {
+  const handleStockAdjustmentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const prod = products.find(p => p.id === adjustmentProductId);
     if (!prod) return;
@@ -346,6 +346,18 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
       notes: adjustmentNotes,
       performedBy: currentUser.fullName,
     });
+
+    // Requirement 3: Immediate flush to persistent storage before closing modal
+    try {
+      await storage.flush();
+      if (storage.getWriteError()) {
+        alert(`تعذر تأكيد تسوية المخزون في التخزين الدائم: ${storage.getWriteError()}`);
+        return;
+      }
+    } catch (err: any) {
+      alert(`تعذر تأكيد تسوية المخزون في التخزين الدائم: ${err?.message || 'خطأ'}`);
+      return;
+    }
 
     setProducts(storage.getProducts());
     setIsAdjustmentModalOpen(false);

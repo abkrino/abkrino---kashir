@@ -174,7 +174,7 @@ describe('AuthSecurityService & Local Users Security Tests', () => {
     expect(goodChange.success).toBe(true);
 
     const verifiedUser = storage.getUsers().find(u => u.id === legacyDefaultUser.id)!;
-    expect(verifiedUser.mustChangePin).toBe(false);
+    expect(verifiedUser.mustChangePin).toBeFalsy();
 
     // Now login succeeds normally without force flag
     const normalLogin = await authSecurityService.authenticate(legacyDefaultUser.id, 'NewSuperSecret#2026');

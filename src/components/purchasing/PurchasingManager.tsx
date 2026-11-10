@@ -217,7 +217,7 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
   };
 
   // Submit & Save Purchase Invoice
-  const handleSubmitPurchase = (e: React.FormEvent) => {
+  const handleSubmitPurchase = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
@@ -269,6 +269,18 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
     const res = storage.postPurchaseInvoice(newPurchase);
     if (!res.success) {
       setFormError(res.error || 'فشل في حفظ فاتورة الشراء');
+      return;
+    }
+
+    // Requirement 3: Immediate flush to persistent storage
+    try {
+      await storage.flush();
+      if (storage.getWriteError()) {
+        setFormError(`تعذر تأكيد حفظ فاتورة الشراء في التخزين الدائم: ${storage.getWriteError()}`);
+        return;
+      }
+    } catch (flushErr: any) {
+      setFormError(`تعذر تأكيد حفظ فاتورة الشراء في التخزين الدائم: ${flushErr?.message || 'خطأ في التخزين'}`);
       return;
     }
 

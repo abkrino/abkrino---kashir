@@ -38,7 +38,7 @@ export const CashManager: React.FC<CashManagerProps> = ({
     OTHER: 'نثريات ومصروفات أخرى',
   };
 
-  const handleExpenseSubmit = (e: React.FormEvent) => {
+  const handleExpenseSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (expenseAmount <= 0) return;
 
@@ -53,6 +53,19 @@ export const CashManager: React.FC<CashManagerProps> = ({
     };
 
     storage.recordExpense(newExpense);
+
+    // Requirement 3: Immediate flush to persistent storage
+    try {
+      await storage.flush();
+      if (storage.getWriteError()) {
+        setStatusMessage(`تعذر تأكيد تسجيل المصروف في التخزين الدائم: ${storage.getWriteError()}`);
+        return;
+      }
+    } catch (err: any) {
+      setStatusMessage(`تعذر تأكيد تسجيل المصروف في التخزين الدائم: ${err?.message || 'خطأ'}`);
+      return;
+    }
+
     setExpenses(storage.getExpenses());
     setMovements(storage.getCashMovements());
     setCurrentCash(storage.calculateCurrentCashInDrawer());
@@ -62,7 +75,7 @@ export const CashManager: React.FC<CashManagerProps> = ({
   };
 
   // Drawer Reconciliation Submit
-  const handleCloseShiftSubmit = (e: React.FormEvent) => {
+  const handleCloseShiftSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const diff = physicalCashCounted - currentCash;
 
@@ -76,6 +89,19 @@ export const CashManager: React.FC<CashManagerProps> = ({
     };
 
     storage.saveCurrentShift(updatedShift);
+
+    // Requirement 3: Immediate flush to persistent storage before showing success
+    try {
+      await storage.flush();
+      if (storage.getWriteError()) {
+        setStatusMessage(`تعذر تأكيد إغلاق الوردية في التخزين الدائم: ${storage.getWriteError()}`);
+        return;
+      }
+    } catch (err: any) {
+      setStatusMessage(`تعذر تأكيد إغلاق الوردية في التخزين الدائم: ${err?.message || 'خطأ'}`);
+      return;
+    }
+
     setCurrentShift(updatedShift);
     setIsCloseShiftOpen(false);
 
