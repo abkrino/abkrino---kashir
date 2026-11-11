@@ -28,6 +28,7 @@ import { licenseService } from './services/licenseService';
 import { authSecurityService } from './services/authSecurityService';
 import { tabLockService } from './services/tabLockService';
 import { orgSyncService } from './services/orgSyncService';
+import { snapshotService } from './services/snapshotService';
 import { LayoutDashboard, ShoppingCart, Receipt, Boxes, Menu } from 'lucide-react';
 
 export default function App() {
@@ -61,35 +62,36 @@ export default function App() {
   const [licenseState, setLicenseState] = useState(() => licenseService.getLicenseState());
   const [isStoreActivated, setIsStoreActivated] = useState<boolean>(() => licenseService.isStoreActivated());
 
+  // 7-Day Manual Backup Reminder State (Requirement ثانياً: 4)
+  const [backupReminder, setBackupReminder] = useState<{ needsReminder: boolean; daysSinceLastBackup: number } | null>(null);
+  // Snapshot Drop Alert State (Requirement 1)
+  const [dropAlert, setDropAlert] = useState<string | null>(() => snapshotService.getDropAlert());
+
   // Sync Data
-  const refreshAll = () => {
+  const refreshAll = React.useCallback(() => {
     const active = storage.getActiveUser();
     const allUsers = storage.getUsers();
     setCurrentUser(active);
     setUsers(allUsers);
     setCurrentCash(storage.calculateCurrentCashInDrawer());
-  };
+  }, []);
 
-  useEffect(() => {
-    let isMounted = true;
+  // Single, Idempotent Bootstrap Function (Requirement أولاً: ب)
+  const bootstrapPromiseRef = React.useRef<Promise<boolean> | null>(null);
 
-    // Initialize Theme & Accessibility System on load
-    themeService.init();
+  const bootstrap = React.useCallback(async (): Promise<boolean> => {
+    // If a bootstrap is already in-flight, return the shared promise
+    if (bootstrapPromiseRef.current) {
+      return bootstrapPromiseRef.current;
+    }
 
-    // Subscribe to storage write errors (Requirement 7)
-    const unsubWriteError = storage.onWriteError((err) => {
-      setWriteError(err);
-    });
-
-    // Initial App Bootstrapping and Single-Tab Lock with Retries (Fix 1, 2, 3)
-    const startApp = async () => {
+    const task = (async (): Promise<boolean> => {
       setTabLockState('checking');
       const result = await tabLockService.requestLock();
-      if (!isMounted) return;
 
       if (!result.acquired) {
         setTabLockState('denied');
-        return;
+        return false;
       }
 
       setTabLockState('acquired');
@@ -97,7 +99,6 @@ export default function App() {
       // Load all data from IndexedDB into memory before rendering
       try {
         await storage.init();
-        if (!isMounted) return;
 
         // Check if migration recovery is required (idb_migrated_at exists but IDB is empty)
         if (storage.isMigrationRecoveryRequired()) {
@@ -105,7 +106,7 @@ export default function App() {
           const dateStr = ts ? new Date(ts).toLocaleString('ar-EG') : 'غير محدد';
           setLegacyBackupDate(dateStr);
           setIsMigrationRecoveryRequired(true);
-          return;
+          return true;
         }
 
         refreshAll();
@@ -118,14 +119,46 @@ export default function App() {
 
         // Start background sync & heartbeats ONLY after lock is acquired and storage.init() succeeds
         orgSyncService.startService();
+
+        // 1) Trigger daily internal snapshot if not taken today (Requirement ثانياً: 1)
+        snapshotService.checkAndCreateDailySnapshot().catch(err => {
+          console.warn('Daily snapshot error:', err);
+        });
+
+        // 4) Check backup reminder (7 days without manual export) (Requirement ثانياً: 4)
+        const reminder = snapshotService.getReminderStatus();
+        if (reminder.needsReminder) {
+          setBackupReminder(reminder);
+        }
+
+        return true;
       } catch (err: any) {
-        if (!isMounted) return;
         console.error('Storage initialization failed:', err);
         setStorageInitError(err?.message || 'تعذر تشغيل قاعدة البيانات المحلية');
+        return false;
       }
-    };
+    })();
 
-    startApp();
+    bootstrapPromiseRef.current = task.finally(() => {
+      bootstrapPromiseRef.current = null;
+    });
+
+    return bootstrapPromiseRef.current;
+  }, [refreshAll]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    // Initialize Theme & Accessibility System on load
+    themeService.init();
+
+    // Subscribe to storage write errors (Requirement 7)
+    const unsubWriteError = storage.onWriteError((err) => {
+      setWriteError(err);
+    });
+
+    // Execute unified bootstrap
+    bootstrap();
 
     // Subscribe to license changes
     const unsubLicense = licenseService.subscribe(() => {
@@ -135,6 +168,11 @@ export default function App() {
 
     const unsubAction = storage.onAction((actionName) => {
       cloudService.triggerAutoSyncOnAction(actionName);
+      if (actionName === 'SHIFT_CLOSED') {
+        snapshotService.createSnapshot('shift_close').catch(err => {
+          console.warn('Shift close snapshot error:', err);
+        });
+      }
     });
 
     // Global keyboard shortcuts (F1 -> POS, F2 -> Invoices, F3 -> Customers, F4 -> Cash)
@@ -155,6 +193,10 @@ export default function App() {
       }
     };
 
+    const unsubDropAlert = snapshotService.onDropAlertChange((alert) => {
+      setDropAlert(alert);
+    });
+
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       isMounted = false;
@@ -162,44 +204,24 @@ export default function App() {
       unsubLicense();
       unsubAction();
       unsubWriteError();
+      unsubDropAlert();
       orgSyncService.stopService();
       // Requirement 2: Do NOT call tabLockService.releaseLock() in useEffect cleanup.
       // The lock is released by the browser on window/tab close.
     };
-  }, []);
+  }, [bootstrap]);
 
-  // Requirement 4: Automatic retry every 3 seconds while on the rejection screen
+  // Automatic retry every 3 seconds while on the rejection screen using unified bootstrap()
   useEffect(() => {
     if (tabLockState !== 'denied') return;
-    const interval = setInterval(async () => {
-      const result = await tabLockService.requestLock();
-      if (result.acquired) {
-        setTabLockState('acquired');
-        try {
-          await storage.init();
-          if (storage.isMigrationRecoveryRequired()) {
-            const ts = storage.getLegacyBackupTimestamp();
-            const dateStr = ts ? new Date(ts).toLocaleString('ar-EG') : 'غير محدد';
-            setLegacyBackupDate(dateStr);
-            setIsMigrationRecoveryRequired(true);
-            return;
-          }
-          refreshAll();
-          setIsStorageReady(true);
-          setIsInitialized(true);
-          setMigrationWarning(storage.getMigrationWarning());
-          licenseService.initLicense().catch(() => {});
-          orgSyncService.startService();
-        } catch (err: any) {
-          setStorageInitError(err?.message || 'تعذر تشغيل قاعدة البيانات المحلية');
-        }
-      }
+    const interval = setInterval(() => {
+      bootstrap();
     }, 3000);
 
     return () => clearInterval(interval);
-  }, [tabLockState]);
+  }, [tabLockState, bootstrap]);
 
-  // Inactivity Auto-Lock (Requirement 8 - default 10 minutes, configurable)
+  // Inactivity Auto-Lock (default 10 minutes, configurable)
   const lastActivityRef = React.useRef<number>(Date.now());
   const hasAdmin = users.some(u => u.role === 'ADMIN' && u.isActive !== false);
 
@@ -240,32 +262,39 @@ export default function App() {
     refreshAll();
   };
 
-  const handleManualRetry = async () => {
-    setTabLockState('checking');
-    const result = await tabLockService.requestLock();
-    if (!result.acquired) {
-      setTabLockState('denied');
-      return;
-    }
-    setTabLockState('acquired');
+  const handleManualRetry = () => {
+    bootstrap();
+  };
+
+  // Banner Backup Export Handler
+  const handleExportNowFromBanner = async () => {
     try {
-      await storage.init();
-      if (storage.isMigrationRecoveryRequired()) {
-        const ts = storage.getLegacyBackupTimestamp();
-        const dateStr = ts ? new Date(ts).toLocaleString('ar-EG') : 'غير محدد';
-        setLegacyBackupDate(dateStr);
-        setIsMigrationRecoveryRequired(true);
-        return;
-      }
-      refreshAll();
-      setIsStorageReady(true);
-      setIsInitialized(true);
-      setMigrationWarning(storage.getMigrationWarning());
-      licenseService.initLicense().catch(() => {});
-      orgSyncService.startService();
-    } catch (err: any) {
-      setStorageInitError(err?.message || 'تعذر تشغيل قاعدة البيانات المحلية');
+      const pkg = await snapshotService.generateExportPackage();
+      const jsonString = JSON.stringify(pkg, null, 2);
+      const blob = new Blob([jsonString], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      a.href = url;
+      a.download = `Kashir_Backup_v${pkg.schemaVersion}_${timestamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setBackupReminder(null);
+    } catch (err) {
+      console.error('Export from banner failed:', err);
     }
+  };
+
+  const handleSnoozeBackupReminder = () => {
+    snapshotService.snoozeReminderOneDay();
+    setBackupReminder(null);
+  };
+
+  const handleForceCreateSnapshot = async () => {
+    await snapshotService.createSnapshot('manual', undefined, undefined, { force: true, status: 'suspicious' });
+    setDropAlert(null);
   };
 
   // -2. Single-Tab Lock Checking Screen (Requirement 3)
@@ -602,6 +631,57 @@ export default function App() {
         <div className="bg-amber-600 text-white font-semibold px-4 py-2 flex items-center justify-between text-xs" role="alert">
           <span>⚠️ {migrationWarning}</span>
           <button onClick={() => setMigrationWarning(null)} className="cursor-pointer text-xs underline font-bold">إغلاق</button>
+        </div>
+      )}
+
+      {/* 7-Day Manual Backup Reminder Banner (Requirement ثانياً: 4) */}
+      {backupReminder?.needsReminder && !writeError && (
+        <div className="bg-amber-500 text-slate-950 font-bold px-4 py-2 flex flex-wrap items-center justify-between gap-3 shadow-md z-40 text-xs sm:text-sm" role="alert">
+          <div className="flex items-center gap-2">
+            <span className="text-base">⚠️</span>
+            <span>لم تُصدّر نسخة احتياطية إلى ملف منذ {backupReminder.daysSinceLastBackup} أيام</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleExportNowFromBanner}
+              className="bg-slate-950 hover:bg-slate-900 text-amber-300 px-3 py-1 rounded-lg text-xs font-black shadow cursor-pointer transition"
+            >
+              تصدير الآن
+            </button>
+            <button
+              onClick={handleSnoozeBackupReminder}
+              className="bg-amber-600/30 hover:bg-amber-600/50 text-slate-950 px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer transition border border-amber-600/40"
+            >
+              تأجيل يوماً واحداً
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Snapshot Drop Alert Banner (Requirement 1) */}
+      {dropAlert && !writeError && (
+        <div className="bg-amber-500 text-slate-950 font-bold px-4 py-2 flex flex-wrap items-center justify-between gap-3 shadow-md z-40 text-xs sm:text-sm" role="alert">
+          <div className="flex items-center gap-2">
+            <span className="text-base">⚠️</span>
+            <span>{dropAlert}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleForceCreateSnapshot}
+              className="bg-slate-950 hover:bg-slate-900 text-amber-300 px-3 py-1 rounded-lg text-xs font-black shadow cursor-pointer transition"
+            >
+              إنشاء لقطة على أي حال
+            </button>
+            <button
+              onClick={() => {
+                snapshotService.clearDropAlert();
+                setDropAlert(null);
+              }}
+              className="bg-amber-600/30 hover:bg-amber-600/50 text-slate-950 px-2.5 py-1 rounded-lg text-xs font-semibold cursor-pointer transition border border-amber-600/40"
+            >
+              تجاهل
+            </button>
+          </div>
         </div>
       )}
 

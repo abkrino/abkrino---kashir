@@ -35,17 +35,12 @@ class TabLockService {
     if (typeof window !== 'undefined') {
       const handleExit = () => {
         this.abortController.abort();
-        if (this.lockReleaseFn) {
-          this.lockReleaseFn();
-          this.lockReleaseFn = null;
-        }
         if (this.fallbackChannel) {
           try { this.fallbackChannel.close(); } catch {}
           this.fallbackChannel = null;
         }
       };
 
-      window.addEventListener('beforeunload', handleExit, { once: true });
       window.addEventListener('pagehide', handleExit, { once: true });
     }
   }

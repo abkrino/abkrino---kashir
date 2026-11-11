@@ -55,6 +55,7 @@ class StorageService {
   private migrationRecoveryRequired: boolean = false;
   private legacyBackupTimestamp: number = 0;
   private onActionCallbacks: ((actionName: string) => void)[] = [];
+  private initPromise: Promise<void> | null = null;
 
   public onAction(cb: (actionName: string) => void): () => void {
     this.onActionCallbacks.push(cb);
@@ -225,7 +226,20 @@ class StorageService {
     }
   }
 
-  public async init(): Promise<void> {
+  public init(): Promise<void> {
+    if (this.isReady) {
+      return Promise.resolve();
+    }
+    if (this.initPromise) {
+      return this.initPromise;
+    }
+    this.initPromise = this.internalInit().finally(() => {
+      this.initPromise = null;
+    });
+    return this.initPromise;
+  }
+
+  private async internalInit(): Promise<void> {
     try {
       if (typeof indexedDB === 'undefined') {
         this.isFallback = true;
@@ -778,6 +792,9 @@ class StorageService {
 
   public saveCurrentShift(shift: SystemShift): void {
     this.setItem(STORAGE_KEYS.SHIFT, shift);
+    if (shift.status === 'CLOSED') {
+      this.notifyAction('SHIFT_CLOSED');
+    }
   }
 
   public calculateCurrentCashInDrawer(): number {
@@ -1575,9 +1592,32 @@ class StorageService {
     }
   }
 
+  /**
+   * Updates memory cache with transactional restored payload without re-queueing IDB writes
+   */
+  public applyRestoredMemoryPayload(data: Record<string, any>): void {
+    if (data.products !== undefined) this.cache.set(STORAGE_KEYS.PRODUCTS, data.products);
+    if (data.customers !== undefined) this.cache.set(STORAGE_KEYS.CUSTOMERS, data.customers);
+    if (data.suppliers !== undefined) this.cache.set(STORAGE_KEYS.SUPPLIERS, data.suppliers);
+    if (data.invoices !== undefined) this.cache.set(STORAGE_KEYS.INVOICES, data.invoices);
+    if (data.purchases !== undefined) this.cache.set(STORAGE_KEYS.PURCHASES, data.purchases);
+    if (data.cashMovements !== undefined) this.cache.set(STORAGE_KEYS.CASH_MOVEMENTS, data.cashMovements);
+    if (data.expenses !== undefined) this.cache.set(STORAGE_KEYS.EXPENSES, data.expenses);
+    if (data.auditLogs !== undefined) this.cache.set(STORAGE_KEYS.AUDIT_LOGS, data.auditLogs);
+    if (data.stockAdjustments !== undefined) this.cache.set(STORAGE_KEYS.STOCK_ADJUSTMENTS, data.stockAdjustments);
+    if (data.users !== undefined) this.cache.set(STORAGE_KEYS.USERS, data.users);
+    if (data.currentShift !== undefined) this.cache.set(STORAGE_KEYS.SHIFT, data.currentShift);
+    if (data.parkedCarts !== undefined) this.cache.set(STORAGE_KEYS.PARKED_CARTS, data.parkedCarts);
+
+    this.pendingWrites.clear();
+    this.migrationRecoveryRequired = false;
+    this.isReady = true;
+  }
+
   public resetToFactoryDefault(): void {
     this.cache.clear();
     this.pendingWrites.clear();
+    this.initPromise = null;
     if (this.batchTimer !== null) {
       clearTimeout(this.batchTimer);
       this.batchTimer = null;

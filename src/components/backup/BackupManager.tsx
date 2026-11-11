@@ -1,10 +1,25 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { storage } from '../../services/storageService';
 import { cloudService } from '../../services/cloudService';
-import { Database, Download, Upload, RefreshCw, AlertTriangle, CheckCircle, ShieldCheck, FileSpreadsheet, RotateCcw, X, Cloud, CloudCheck } from 'lucide-react';
+import { snapshotService, BackupPreview } from '../../services/snapshotService';
+import { SnapshotRecord } from '../../services/idbStore';
+import {
+  Database, Download, Upload, RefreshCw, AlertTriangle, CheckCircle,
+  ShieldCheck, FileSpreadsheet, RotateCcw, X, Cloud, CloudCheck,
+  History, Clock, CheckSquare, Square, HardDrive
+} from 'lucide-react';
 
 interface BackupManagerProps {
   onRefreshData: () => void;
+}
+
+interface PendingRestore {
+  type: 'file' | 'snapshot';
+  sourceName: string;
+  preview: BackupPreview;
+  warning?: string;
+  data: Record<string, any>;
+  snapshotId?: string;
 }
 
 export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) => {
@@ -20,9 +35,36 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
     migrationWarning: string | null;
   } | null>(null);
 
+  // Snapshots state
+  const [snapshots, setSnapshots] = useState<SnapshotRecord[]>([]);
+  const [isLoadingSnapshots, setIsLoadingSnapshots] = useState(false);
+  const [isTakingSnapshot, setIsTakingSnapshot] = useState(false);
+  const [dropAlert, setDropAlert] = useState<string | null>(() => snapshotService.getDropAlert());
+  const [quotaWarning, setQuotaWarning] = useState<string | null>(() => snapshotService.getQuotaWarning());
+
+  // Double-confirmation restore preview modal state
+  const [pendingRestore, setPendingRestore] = useState<PendingRestore | null>(null);
+  const [isDoubleConfirmed, setIsDoubleConfirmed] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
+
+  const loadSnapshots = useCallback(async () => {
+    setIsLoadingSnapshots(true);
+    try {
+      const list = await snapshotService.getAllSnapshots();
+      setSnapshots(list);
+      setDropAlert(snapshotService.getDropAlert());
+      setQuotaWarning(snapshotService.getQuotaWarning());
+    } catch (err) {
+      console.warn('Failed to load snapshots:', err);
+    } finally {
+      setIsLoadingSnapshots(false);
+    }
+  }, []);
+
   useEffect(() => {
     storage.getStorageStatus().then(status => setStorageStatus(status)).catch(() => {});
-  }, []);
+    loadSnapshots();
+  }, [loadSnapshots]);
 
   const handleRequestPersistence = async () => {
     const success = await storage.requestPersistence();
@@ -41,16 +83,17 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
     }
   };
 
-  // Export Backup
-  const handleExportBackup = () => {
+  // Export Backup with SHA-256 Checksum and Schema Metadata (Requirement ثانياً: 2)
+  const handleExportBackup = async () => {
     try {
-      const backupJson = storage.exportFullBackupJson();
-      const blob = new Blob([backupJson], { type: 'application/json' });
+      const pkg = await snapshotService.generateExportPackage();
+      const jsonString = JSON.stringify(pkg, null, 2);
+      const blob = new Blob([jsonString], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
       a.href = url;
-      a.download = `Wholesale_Distribution_Backup_${timestamp}.json`;
+      a.download = `Kashir_Backup_v${pkg.schemaVersion}_${timestamp}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -58,7 +101,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
 
       setStatusMessage({
         type: 'success',
-        text: 'تم استخراج وحفظ ملف النسخة الاحتياطية بنجاح على جهاز الكمبيوتر.',
+        text: `تم تصدير ملف النسخة الاحتياطية بنجاح ومزود بالبصمة الرقمية SHA-256 (${pkg.recordCounts.products} صنف، ${pkg.recordCounts.invoices} فاتورة).`,
       });
     } catch {
       setStatusMessage({
@@ -68,29 +111,139 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
     }
   };
 
-  // Restore Backup
+  // Manual internal snapshot
+  const handleCreateManualSnapshot = async () => {
+    setIsTakingSnapshot(true);
+    try {
+      const res = await snapshotService.createSnapshot('manual');
+      if (res) {
+        setStatusMessage({
+          type: 'success',
+          text: `تم إنشاء لقطة نظام داخلية بنجاح بحجم ${(res.metadata.approxSizeBytes / 1024).toFixed(1)} ك.ب.`,
+        });
+        await loadSnapshots();
+      } else {
+        setStatusMessage({
+          type: 'error',
+          text: 'تعذر إنشاء اللقطة الداخلية.',
+        });
+      }
+    } finally {
+      setIsTakingSnapshot(false);
+    }
+  };
+
+  const handleForceCreateSnapshot = async () => {
+    setIsTakingSnapshot(true);
+    try {
+      const res = await snapshotService.createSnapshot('manual', undefined, undefined, {
+        force: true,
+        status: 'suspicious',
+      });
+      if (res) {
+        setStatusMessage({
+          type: 'success',
+          text: 'تم إنشاء اللقطة الاستثنائية بنجاح وتصنيفها كمشبوهة (Suspicious) للاحتياط.',
+        });
+        await loadSnapshots();
+      }
+    } finally {
+      setIsTakingSnapshot(false);
+    }
+  };
+
+  // Select Snapshot for Restore (Requirement ثانياً: 1)
+  const handleSelectSnapshotForRestore = (snapshot: SnapshotRecord) => {
+    const typeLabel =
+      snapshot.type === 'daily'
+        ? 'لقطة يومية تلقائية'
+        : snapshot.type === 'shift_close'
+        ? 'إغلاق وردية'
+        : snapshot.type === 'pre_restore'
+        ? 'لقطة أمان قبل استعادة سابقة'
+        : 'لقطة يدوية';
+
+    const dateFormatted = `${snapshot.dateStr} - ${new Date(snapshot.timestamp).toLocaleTimeString('ar-EG', {
+      hour: '2-digit',
+      minute: '2-digit',
+    })}`;
+
+    const preview: BackupPreview = {
+      timestamp: new Date(snapshot.timestamp).toISOString(),
+      dateFormatted: `${dateFormatted} (${typeLabel})`,
+      schemaVersion: snapshot.metadata.schemaVersion,
+      appVersion: snapshot.metadata.appVersion,
+      hasChecksum: Boolean(snapshot.metadata.checksum),
+      isLegacy: false,
+      counts: snapshot.metadata.recordCounts as any,
+    };
+
+    setPendingRestore({
+      type: 'snapshot',
+      sourceName: `اللقطة الداخلية: ${snapshot.id}`,
+      preview,
+      data: snapshot.data,
+      snapshotId: snapshot.id,
+    });
+    setIsDoubleConfirmed(false);
+  };
+
+  // File Select & Validation (Requirement ثانياً: 3)
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const content = event.target?.result as string;
-      const res = storage.restoreBackupJson(content);
+      const validation = await snapshotService.validateBackup(content);
+
+      if (!validation.valid) {
+        setStatusMessage({
+          type: 'error',
+          text: validation.error || 'الملف غير صالح أو تالف ولا يمكن استعادته.',
+        });
+        return;
+      }
+
+      setPendingRestore({
+        type: 'file',
+        sourceName: file.name,
+        preview: validation.preview!,
+        warning: validation.warning,
+        data: validation.validatedData!,
+      });
+      setIsDoubleConfirmed(false);
+    };
+    reader.readAsText(file);
+    // Reset file input so user can choose the same file again if desired
+    e.target.value = '';
+  };
+
+  // Confirm Restore Execution (Dual confirmation + pre_restore snapshot)
+  const handleExecuteRestore = async () => {
+    if (!pendingRestore || !isDoubleConfirmed) return;
+    setIsRestoring(true);
+
+    try {
+      const res = await snapshotService.restoreData(pendingRestore.data, pendingRestore.sourceName);
       if (res.success) {
         setStatusMessage({
           type: 'success',
-          text: 'تمت استعادة قاعدة البيانات بنجاح! تم إنشاء نسخة أمان احتياطية قبل الاستعادة تلقائياً.',
+          text: 'تمت استعادة البيانات بنجاح! تم أخذ لقطة أمان تلقائية للبيانات السابقة قبل البدء.',
         });
+        setPendingRestore(null);
         onRefreshData();
+        await loadSnapshots();
       } else {
         setStatusMessage({
           type: 'error',
-          text: res.error || 'فشلت عملية الاستعادة. الملف غير متوافق.',
+          text: res.error || 'فشلت عملية استعادة البيانات.',
         });
       }
-    };
-    reader.readAsText(file);
+    } finally {
+      setIsRestoring(false);
+    }
   };
 
   // Dry-Run Migration Simulation
@@ -113,16 +266,60 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
     });
   };
 
+  const getSnapshotBadge = (type: SnapshotRecord['type']) => {
+    switch (type) {
+      case 'daily':
+        return (
+          <span className="text-[10px] bg-blue-100 dark:bg-blue-950/80 text-blue-700 dark:text-blue-300 border border-blue-300 dark:border-blue-800 px-2 py-0.5 rounded font-bold">
+            لقطة يومية
+          </span>
+        );
+      case 'shift_close':
+        return (
+          <span className="text-[10px] bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800 px-2 py-0.5 rounded font-bold">
+            إغلاق وردية
+          </span>
+        );
+      case 'pre_restore':
+        return (
+          <span className="text-[10px] bg-purple-100 dark:bg-purple-950/80 text-purple-700 dark:text-purple-300 border border-purple-300 dark:border-purple-800 px-2 py-0.5 rounded font-bold">
+            أمان قبل استعادة
+          </span>
+        );
+      default:
+        return (
+          <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 px-2 py-0.5 rounded font-bold">
+            يدوية
+          </span>
+        );
+    }
+  };
+
+  const getSnapshotStatusBadge = (status?: SnapshotRecord['status']) => {
+    if (status === 'suspicious') {
+      return (
+        <span className="text-[10px] bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800 px-2 py-0.5 rounded font-bold">
+          مشبوهة ⚠️
+        </span>
+      );
+    }
+    return (
+      <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 px-2 py-0.5 rounded font-bold">
+        سليمة ✓
+      </span>
+    );
+  };
+
   return (
     <div className="space-y-6" dir="rtl">
       {/* Header */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-sm transition-colors">
         <h2 className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">
           <Database className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-          <span>إدارة النسخ الاحتياطي السحابي (الكلود) وترحيل البيانات</span>
+          <span>إدارة النسخ الاحتياطي واللقطات والترحيل</span>
         </h2>
         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-medium">
-          حماية بيانات السوبر ماركت والألبان من التلف أو انقطاع الكهرباء، حفظ نسخة سحابية على الكلود ونسخة محلية على الجهاز.
+          حفظ لقطات داخلية تلقائية يومية وعند إغلاق الوردية، وتصدير واستيراد ملفات مؤمنة بتوقيع رقمي SHA-256.
         </p>
       </div>
 
@@ -148,12 +345,12 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
             if (res.success) {
               setStatusMessage({
                 type: 'success',
-                text: 'تم حفظ نسخة سحابية متكاملة على الكلود بنجاح!'
+                text: 'تم حفظ نسخة سحابية متكاملة على الكلود بنجاح!',
               });
             } else {
               setStatusMessage({
                 type: 'error',
-                text: res.error || 'فشل حفظ النسخة على الكلود.'
+                text: res.error || 'فشل حفظ النسخة على الكلود.',
               });
             }
           }}
@@ -178,7 +375,178 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
         </div>
       )}
 
-      {/* IndexedDB & Persistent Storage Status Card (Requirement 6) */}
+      {/* Internal Snapshots Section (Requirement ثانياً: 1) */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xs transition-colors space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+              <History className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                <span>اللقطات الداخلية لقاعدة البيانات (آخر 7 لقطات)</span>
+                <span className="text-[10px] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded-full font-bold">
+                  {snapshots.length} / 7
+                </span>
+              </h3>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                تُؤخذ تلقائياً مرة يومياً عند أول فتح، وبعد إغلاق كل وردية، وقبل أي عملية استعادة. يُحذف الأقدم تلقائياً.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={isTakingSnapshot}
+              onClick={handleCreateManualSnapshot}
+              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl cursor-pointer transition shadow-xs flex items-center gap-1.5"
+            >
+              <Clock className="w-3.5 h-3.5" />
+              <span>{isTakingSnapshot ? 'جاري الحفظ...' : 'أخذ لقطة الآن'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={loadSnapshots}
+              className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 text-xs transition cursor-pointer"
+              title="تحديث قائمة اللقطات"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingSnapshots ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* Drop Alert in Snapshots Section (Requirement 1) */}
+        {dropAlert && (
+          <div className="bg-amber-500/15 border border-amber-500/40 text-amber-900 dark:text-amber-200 p-3.5 rounded-xl text-xs flex flex-wrap items-center justify-between gap-3 font-bold">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0" />
+              <span>{dropAlert}</span>
+            </div>
+            <button
+              type="button"
+              onClick={handleForceCreateSnapshot}
+              disabled={isTakingSnapshot}
+              className="bg-amber-600 hover:bg-amber-500 text-white font-black text-xs px-3 py-1.5 rounded-lg cursor-pointer transition shadow-xs"
+            >
+              إنشاء لقطة على أي حال
+            </button>
+          </div>
+        )}
+
+        {/* Quota Warning (Requirement 3) */}
+        {quotaWarning && (
+          <div className="bg-rose-500/15 border border-rose-500/40 text-rose-900 dark:text-rose-200 p-3.5 rounded-xl text-xs flex items-center gap-2 font-bold">
+            <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+            <span>{quotaWarning}</span>
+          </div>
+        )}
+
+        {snapshots.length === 0 ? (
+          <div className="text-center py-6 border border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
+            <HardDrive className="w-8 h-8 text-slate-400 mx-auto mb-2 opacity-50" />
+            <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+              لا توجد لقطات داخلية حتى الآن. ستُنشأ تلقائياً عند أول فتح يومي أو إغلاق الوردية، أو يمكنك الضغط على "أخذ لقطة الآن".
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-right text-xs">
+              <thead>
+                <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-500 dark:text-slate-400">
+                  <th className="py-2.5 px-3 font-bold">النوع</th>
+                  <th className="py-2.5 px-3 font-bold">الحالة</th>
+                  <th className="py-2.5 px-3 font-bold">التاريخ والوقت</th>
+                  <th className="py-2.5 px-3 font-bold">الحجم التقريبي</th>
+                  <th className="py-2.5 px-3 font-bold">الأصناف</th>
+                  <th className="py-2.5 px-3 font-bold">الفواتير</th>
+                  <th className="py-2.5 px-3 font-bold">العملاء</th>
+                  <th className="py-2.5 px-3 font-bold text-center">الإجراء</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-medium">
+                {snapshots.map((snap) => {
+                  const sizeKb = (snap.metadata.approxSizeBytes / 1024).toFixed(1);
+                  const dateStr = `${snap.dateStr} - ${new Date(snap.timestamp).toLocaleTimeString('ar-EG', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}`;
+
+                  return (
+                    <tr key={snap.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition">
+                      <td className="py-2.5 px-3">{getSnapshotBadge(snap.type)}</td>
+                      <td className="py-2.5 px-3">{getSnapshotStatusBadge(snap.status)}</td>
+                      <td className="py-2.5 px-3 font-mono font-bold text-slate-800 dark:text-slate-200">{dateStr}</td>
+                      <td className="py-2.5 px-3 text-slate-600 dark:text-slate-300">{sizeKb} ك.ب</td>
+                      <td className="py-2.5 px-3 text-slate-700 dark:text-slate-300">{snap.metadata.recordCounts.products || 0}</td>
+                      <td className="py-2.5 px-3 text-slate-700 dark:text-slate-300">{snap.metadata.recordCounts.invoices || 0}</td>
+                      <td className="py-2.5 px-3 text-slate-700 dark:text-slate-300">{snap.metadata.recordCounts.customers || 0}</td>
+                      <td className="py-2.5 px-3 text-center">
+                        <button
+                          type="button"
+                          onClick={() => handleSelectSnapshotForRestore(snap)}
+                          className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1 rounded-lg text-[11px] cursor-pointer transition shadow-xs"
+                        >
+                          استعادة هذه اللقطة
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Grid: Backup vs Restore */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        {/* Box 1: Create Backup (File) */}
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xs space-y-3 transition-colors">
+          <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-sm">
+            <Download className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+            <span>تصدير ملف النسخة الاحتياطية (SHA-256)</span>
+          </div>
+          <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
+            يُصدّر ملف JSON مشفّر بتوقيع رقمي موثق مع فهرس كامل بعدد السجلات وإصدار المخطط لحمايته من أي عبث خارجي.
+          </p>
+          <div className="pt-2">
+            <button
+              onClick={handleExportBackup}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-2 shadow-md shadow-emerald-950/20 cursor-pointer transition-colors"
+            >
+              <Download className="w-4 h-4" />
+              <span>تحميل ملف النسخة الاحتياطية الآن</span>
+            </button>
+          </div>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            * يُنصح بحفظ هذا الملف أسبوعياً على فلاشة USB خارجية أو سحابة آمنة.
+          </p>
+        </div>
+
+        {/* Box 2: Restore Backup (File) */}
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xs space-y-3 transition-colors">
+          <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-sm">
+            <Upload className="w-4 h-4 text-amber-500 dark:text-amber-400" />
+            <span>استعادة من ملف خارجي (معاينة وفحص التوقيع)</span>
+          </div>
+          <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
+            يفحص صحة التوقيع الرقمي (SHA-256) وتوافق المخطط، ويعرض معاينة قبل الاستبدال مع لقطة أمان تلقائية للرجوع.
+          </p>
+          <div className="pt-2">
+            <label className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl inline-flex items-center gap-2 shadow-md shadow-amber-950/20 cursor-pointer transition-colors">
+              <Upload className="w-4 h-4" />
+              <span>اختيار ملف النسخة الاحتياطية (.json)</span>
+              <input type="file" accept=".json" onChange={handleFileSelect} className="hidden" />
+            </label>
+          </div>
+          <p className="text-[11px] text-amber-600 dark:text-amber-400/90 font-medium">
+            * تُقبل الملفات القديمة السليمة مع تحذير، وتُرفض الملفات الفاسدة أو المعدلة يدوياً تلقائياً.
+          </p>
+        </div>
+      </div>
+
+      {/* IndexedDB & Persistent Storage Status Card */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xs transition-colors space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
@@ -256,53 +624,6 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
         </div>
       </div>
 
-      {/* Grid: Backup vs Restore vs Migration */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        {/* Box 1: Create Backup */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xs space-y-3 transition-colors">
-          <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-sm">
-            <Download className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <span>إنشاء نسخة احتياطية محلية (Backup)</span>
-          </div>
-          <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
-            يقوم بتصدير لقطة متكاملة من قاعدة بيانات SQLite تشمل الأصناف، الأرصدة، الفواتير، وحسابات العملاء والموردين.
-          </p>
-          <div className="pt-2">
-            <button
-              onClick={handleExportBackup}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-2 shadow-md shadow-emerald-950/20 cursor-pointer transition-colors"
-            >
-              <Download className="w-4 h-4" />
-              <span>تحميل ملف النسخة الاحتياطية الآن</span>
-            </button>
-          </div>
-          <p className="text-[11px] text-slate-500 dark:text-slate-400">
-            * يُنصح بنسخ هذا الملف يومياً على فلاشة USB خارجية لحماية بيانات المحل.
-          </p>
-        </div>
-
-        {/* Box 2: Restore Backup */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xs space-y-3 transition-colors">
-          <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-sm">
-            <Upload className="w-4 h-4 text-amber-500 dark:text-amber-400" />
-            <span>استعادة قاعدة بيانات سابقة (Safe Restore)</span>
-          </div>
-          <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
-            استرجاع البيانات من ملف سابق مع حماية تلقائية تنشئ نسخة أمان مؤقتة قبل الاستبدال لتفادي فقدان البيانات.
-          </p>
-          <div className="pt-2">
-            <label className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl inline-flex items-center gap-2 shadow-md shadow-amber-950/20 cursor-pointer transition-colors">
-              <Upload className="w-4 h-4" />
-              <span>اختيار ملف النسخة الاحتياطية (.json)</span>
-              <input type="file" accept=".json" onChange={handleFileSelect} className="hidden" />
-            </label>
-          </div>
-          <p className="text-[11px] text-amber-600 dark:text-amber-400/90 font-medium">
-            * تنبيه: عملية الاستعادة تستبدل البيانات الحالية ببيانات الملف المختار.
-          </p>
-        </div>
-      </div>
-
       {/* Legacy Software Migration Assistant */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xs space-y-4 transition-colors">
         <div className="flex items-center justify-between flex-wrap gap-2">
@@ -351,6 +672,125 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
           إعادة ضبط المصنع
         </button>
       </div>
+
+      {/* Double Confirmation Preview & Restore Modal (Requirement ثانياً: 3) */}
+      {pendingRestore && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 max-w-lg w-full shadow-2xl text-right space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-500/10 text-amber-500 rounded-xl">
+                  <Upload className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-black text-sm text-slate-900 dark:text-white">معاينة وتأكيد استعادة النسخة</h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 font-mono truncate max-w-xs">{pendingRestore.sourceName}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={isRestoring}
+                onClick={() => setPendingRestore(null)}
+                className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Warning if legacy or specific note */}
+            {pendingRestore.warning && (
+              <div className="bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200 p-3 rounded-xl text-xs flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{pendingRestore.warning}</span>
+              </div>
+            )}
+
+            {/* Checksum Badge & Clarification Note (Requirement 5) */}
+            <div className="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl text-xs space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600 dark:text-slate-300 font-bold">حالة البصمة الرقمية:</span>
+                {pendingRestore.preview.hasChecksum ? (
+                  <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-bold">
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>توقيع رقمي SHA-256 مطابق وموثق</span>
+                  </span>
+                ) : (
+                  <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-bold">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>نسخة قديمة بدون توقيع رقمي</span>
+                  </span>
+                )}
+              </div>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed font-normal">
+                * توضيح أمان: البصمة الرقمية (SHA-256) تكشف التلف العرضي أو النقص في الملف أثناء الحفظ أو النقل، ولا تمنع التعديل المتعمد في حال تم إعادة حساب الهاش يدوياً.
+              </p>
+            </div>
+
+            {/* Content Preview Table */}
+            <div className="space-y-2">
+              <div className="text-xs font-bold text-slate-700 dark:text-slate-300">محتويات النسخة المطلوب تطبيقها:</div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs">
+                <div className="bg-slate-50 dark:bg-slate-800/80 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800">
+                  <div className="text-slate-400 text-[10px]">المنتجات</div>
+                  <div className="font-black text-slate-800 dark:text-slate-100 text-sm mt-0.5">{pendingRestore.preview.counts.products}</div>
+                </div>
+                <div className="bg-slate-50 dark:bg-slate-800/80 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800">
+                  <div className="text-slate-400 text-[10px]">الفواتير</div>
+                  <div className="font-black text-slate-800 dark:text-slate-100 text-sm mt-0.5">{pendingRestore.preview.counts.invoices}</div>
+                </div>
+                <div className="bg-slate-50 dark:bg-slate-800/80 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800">
+                  <div className="text-slate-400 text-[10px]">العملاء</div>
+                  <div className="font-black text-slate-800 dark:text-slate-100 text-sm mt-0.5">{pendingRestore.preview.counts.customers}</div>
+                </div>
+                <div className="bg-slate-50 dark:bg-slate-800/80 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800">
+                  <div className="text-slate-400 text-[10px]">الموردون</div>
+                  <div className="font-black text-slate-800 dark:text-slate-100 text-sm mt-0.5">{pendingRestore.preview.counts.suppliers}</div>
+                </div>
+              </div>
+              <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono text-left px-1" dir="ltr">
+                تاريخ النسخة: {pendingRestore.preview.dateFormatted} | إصدار المخطط: v{pendingRestore.preview.schemaVersion}
+              </div>
+            </div>
+
+            {/* Safety Guarantee */}
+            <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/50 p-3 rounded-xl text-xs text-emerald-800 dark:text-emerald-300 leading-relaxed font-medium">
+              🛡️ <strong>حماية تلقائية:</strong> سيقوم النظام تلقائياً بإنشاء لقطة أمان كاملة (قبل الاستعادة) لبياناتك الحالية قبل تطبيق هذه النسخة، لتتمكن من العودة إليها في أي وقت.
+            </div>
+
+            {/* Double Confirmation Checkbox */}
+            <label className="flex items-start gap-2.5 bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl cursor-pointer hover:bg-slate-100/60 transition">
+              <input
+                type="checkbox"
+                checked={isDoubleConfirmed}
+                onChange={(e) => setIsDoubleConfirmed(e.target.checked)}
+                className="mt-0.5 rounded text-amber-600 focus:ring-amber-500 cursor-pointer"
+              />
+              <span className="text-xs text-slate-800 dark:text-slate-200 font-bold leading-relaxed">
+                أؤكد موافقتي على استبدال قاعدة البيانات الحالية بهذه النسخة، وأعلم أنه سيتم تطبيق كافة الأصناف والفواتير المسجلة فيها.
+              </span>
+            </label>
+
+            <div className="pt-2 flex justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={isRestoring}
+                onClick={() => setPendingRestore(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-xs font-bold cursor-pointer transition"
+              >
+                إلغاء وتراجع
+              </button>
+              <button
+                type="button"
+                disabled={!isDoubleConfirmed || isRestoring}
+                onClick={handleExecuteRestore}
+                className="px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black text-xs cursor-pointer shadow-md transition flex items-center gap-1.5"
+              >
+                {isRestoring ? 'جاري الاستعادة وتأمين اللقطة...' : 'تأكيد الاستعادة الآن'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Factory Reset Modal */}
       {isResetModalOpen && (
