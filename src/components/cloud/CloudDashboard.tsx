@@ -370,7 +370,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
             <tab.icon className="w-4 h-4" />
             <span>{tab.label}</span>
             {tab.badge && (
-              <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${
                 activeSubTab === tab.id ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-800 dark:text-slate-200'
               }`}>
                 {tab.badge}
@@ -639,7 +639,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                         <span className="font-bold text-xs sm:text-sm text-slate-900 dark:text-white">
                           نسخة: {backup.dateStr} - {backup.timeStr}
                         </span>
-                        <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 px-2 py-0.2 rounded-full font-mono font-bold">
+                        <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 px-2 py-0.5 rounded-full font-mono font-bold">
                           الكلود ✓
                         </span>
                       </div>

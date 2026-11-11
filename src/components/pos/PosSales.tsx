@@ -814,7 +814,7 @@ export const PosSales: React.FC<PosSalesProps> = ({
         >
           <Package className="w-4 h-4" />
           <span>أصناف الماركت</span>
-          <span className="text-[10px] bg-white/20 px-1.5 py-0.2 rounded-full font-mono">{filteredCatalogProducts.length}</span>
+          <span className="text-[10px] bg-white/20 px-1.5 py-0.5 rounded-full font-mono">{filteredCatalogProducts.length}</span>
         </button>
         <button
           type="button"
@@ -825,7 +825,7 @@ export const PosSales: React.FC<PosSalesProps> = ({
         >
           <Receipt className="w-4 h-4" />
           <span>الفاتورة والحساب</span>
-          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-black ${
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono font-black ${
             items.length > 0 ? 'bg-amber-400 text-amber-950' : 'bg-slate-300 dark:bg-slate-700 text-slate-800 dark:text-slate-200'
           }`}>
             {items.length} | {total.toFixed(2)} ج
@@ -1032,18 +1032,18 @@ export const PosSales: React.FC<PosSalesProps> = ({
                       <div className="flex items-center justify-between gap-1 w-full">
                         <div className="flex items-center gap-1 flex-wrap">
                           {isPopular ? (
-                            <span className={`${cardSize === 'COMPACT' ? 'text-[8px] px-1 py-0.2' : 'text-[9px] px-1.5 py-0.5'} bg-amber-500 text-white font-black rounded-md flex items-center gap-0.5 shadow-2xs`}>
+                            <span className={`${cardSize === 'COMPACT' ? 'text-[8px] px-1 py-0.5' : 'text-[9px] px-1.5 py-0.5'} bg-amber-500 text-white font-black rounded-md flex items-center gap-0.5 shadow-2xs`}>
                               <Star className="w-2.5 h-2.5 fill-white" />
                               <span>شائع</span>
                             </span>
                           ) : isDairy ? (
-                            <span className={`${cardSize === 'COMPACT' ? 'text-[8px] px-1 py-0.2' : 'text-[9px] px-1.5 py-0.5'} bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 font-bold rounded-md`}>
+                            <span className={`${cardSize === 'COMPACT' ? 'text-[8px] px-1 py-0.5' : 'text-[9px] px-1.5 py-0.5'} bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 font-bold rounded-md`}>
                               ❄️ ألبان
                             </span>
                           ) : null}
 
                           {isWeighed && (
-                            <span className={`${cardSize === 'COMPACT' ? 'text-[8px] px-1 py-0.2' : 'text-[9px] px-1.5 py-0.5'} bg-indigo-600 text-white rounded-md font-bold flex items-center gap-0.5`}>
+                            <span className={`${cardSize === 'COMPACT' ? 'text-[8px] px-1 py-0.5' : 'text-[9px] px-1.5 py-0.5'} bg-indigo-600 text-white rounded-md font-bold flex items-center gap-0.5`}>
                               <Scale className="w-2.5 h-2.5" />
                               <span>ميزان</span>
                             </span>

@@ -587,7 +587,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                             (إجمالي: {prod.stockPieces} {prod.baseUnit})
                           </span>
                           {isBelowZero && (
-                            <span className="text-[10px] bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 px-1.5 py-0.2 rounded font-bold">
+                            <span className="text-[10px] bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 px-1.5 py-0.5 rounded font-bold">
                               رصيد سالب
                             </span>
                           )}

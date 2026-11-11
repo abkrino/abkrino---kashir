@@ -282,7 +282,7 @@ export const InvoicesManager: React.FC<InvoicesManagerProps> = ({
                     <td className="py-3 px-3 font-mono font-bold text-emerald-600 dark:text-emerald-400">
                       <div>{inv.invoiceNumber}</div>
                       {inv.status === 'MODIFIED' && (
-                        <span className="text-[9px] bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 px-1 py-0.2 rounded border border-amber-300 dark:border-amber-800 font-sans">
+                        <span className="text-[9px] bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 px-1 py-0.5 rounded border border-amber-300 dark:border-amber-800 font-sans">
                           معدلة
                         </span>
                       )}

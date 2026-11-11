@@ -1,6 +1,6 @@
-@import "tailwindcss";
-
-@custom-variant dark (&:where(.dark, .dark *));
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 :root {
   --app-font-scale: 1.0;
@@ -120,8 +120,5 @@ body {
     background: white !important;
     color: black !important;
     font-size: 12pt !important;
-  }
-  .print\\:hidden {
-    display: none !important;
   }
 }
