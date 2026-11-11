@@ -148,13 +148,23 @@ describe('Local Snapshots, SHA-256 Checksum, Restore Safety & Bootstrap Idempote
     expect(badChecksumResult.valid).toBe(false);
     expect(badChecksumResult.error).toContain('SHA-256');
 
-    // 4. Legacy file without checksum is accepted with a visible warning
+    // 4. Legacy file without checksum is accepted with a visible warning (if all 12 collections present)
     const legacyPkg = {
       version: '2.0',
       timestamp: new Date().toISOString(),
       data: {
         products: [{ id: 'p-legacy-1', name: 'لبن بلدي' }],
         customers: [{ id: 'c-legacy-1', name: 'عميل قديم' }],
+        suppliers: [],
+        invoices: [],
+        purchases: [],
+        cashMovements: [],
+        expenses: [],
+        auditLogs: [],
+        stockAdjustments: [],
+        users: [],
+        parkedCarts: [],
+        currentShift: null,
       },
     };
     const legacyResult = await snapshotService.validateBackup(legacyPkg);
@@ -206,6 +216,10 @@ describe('Local Snapshots, SHA-256 Checksum, Restore Safety & Bootstrap Idempote
       cashMovements: [],
       expenses: [],
       auditLogs: [],
+      stockAdjustments: [],
+      users: [],
+      parkedCarts: [],
+      currentShift: null,
     };
 
     const restoreRes = await snapshotService.restoreData(newPayload, 'ملف تجريبي');
@@ -509,6 +523,10 @@ describe('Local Snapshots, SHA-256 Checksum, Restore Safety & Bootstrap Idempote
       cashMovements: [],
       expenses: [],
       auditLogs: [],
+      stockAdjustments: [],
+      users: [],
+      parkedCarts: [],
+      currentShift: null,
     };
 
     // Attempt restore with simulated failure in the middle of the transaction
@@ -532,5 +550,214 @@ describe('Local Snapshots, SHA-256 Checksum, Restore Safety & Bootstrap Idempote
     // Staging table must be empty or cleaned up
     const stagingRecords = await idb.restore_staging.toArray();
     expect(stagingRecords.length).toBe(0);
+  });
+
+  // 12. ملف ناقص مجموعة يُرفض ولا يغيّر البيانات
+  it('(12) ملف ناقص أي مجموعة من الـ 12 يُرفض في المعاينة والاستعادة ولا يغيّر البيانات الحالية', async () => {
+    // Seed original data
+    const safeProduct: Product = {
+      id: 'p-safe-collection-check',
+      name: 'منتج أمان 100% محفوظ',
+      category: 'safe',
+      salePrice: 200,
+      purchaseCost: 150,
+      stock: 10,
+      unit: 'قطعة',
+    } as unknown as Product;
+    storage.saveProduct(safeProduct);
+    await storage.flush();
+
+    const originalCount = storage.getProducts().length;
+
+    // Incomplete payload: missing 'parkedCarts'
+    const incompletePayloadMissingParked = {
+      products: [{ id: 'p-incom-1', name: 'منتج غير مكتمل' }],
+      customers: [],
+      suppliers: [],
+      invoices: [],
+      purchases: [],
+      cashMovements: [],
+      expenses: [],
+      auditLogs: [],
+      stockAdjustments: [],
+      users: [],
+      // parkedCarts is missing!
+      currentShift: null,
+    };
+
+    // 1. Validation must fail with clear error mentioning missing collection
+    const valResult1 = await snapshotService.validateBackup(incompletePayloadMissingParked);
+    expect(valResult1.valid).toBe(false);
+    expect(valResult1.error).toContain('مفقودة');
+    expect(valResult1.error).toContain('parkedCarts');
+
+    // 2. Incomplete payload: missing 'currentShift'
+    const incompletePayloadMissingShift = {
+      products: [{ id: 'p-incom-2', name: 'منتج بدون وردية' }],
+      customers: [],
+      suppliers: [],
+      invoices: [],
+      purchases: [],
+      cashMovements: [],
+      expenses: [],
+      auditLogs: [],
+      stockAdjustments: [],
+      users: [],
+      parkedCarts: [],
+      // currentShift is missing!
+    };
+    const valResult2 = await snapshotService.validateBackup(incompletePayloadMissingShift);
+    expect(valResult2.valid).toBe(false);
+    expect(valResult2.error).toContain('currentShift');
+
+    // 3. Direct restoreData call with missing collection must be rejected before touching anything!
+    const restoreResult = await snapshotService.restoreData(incompletePayloadMissingParked, 'ملف ناقص');
+    expect(restoreResult.success).toBe(false);
+    expect(restoreResult.error).toContain('مفقودة');
+
+    // Existing data is 100% untouched
+    expect(storage.getProducts().length).toBe(originalCount);
+    expect(storage.getProducts().find(p => p.id === 'p-safe-collection-check')?.name).toBe('منتج أمان 100% محفوظ');
+  });
+
+  // 13. عدم تطابق العدد المسجل في recordCounts يُرفض
+  it('(13) عدم تطابق العدد المسجل في recordCounts يُرفض في validateBackup بسبب واضح', async () => {
+    const validPkg = await snapshotService.generateExportPackage();
+
+    // 1. Mismatch products count
+    const pkgMismatchProducts = JSON.parse(JSON.stringify(validPkg));
+    pkgMismatchProducts.recordCounts.products = validPkg.data.products.length + 5;
+    const res1 = await snapshotService.validateBackup(pkgMismatchProducts);
+    expect(res1.valid).toBe(false);
+    expect(res1.error).toContain('لا يطابق الفهرس المسجل');
+    expect(res1.error).toContain('المنتجات');
+
+    // 2. Mismatch invoices count
+    const pkgMismatchInvoices = JSON.parse(JSON.stringify(validPkg));
+    pkgMismatchInvoices.recordCounts.invoices = 999;
+    const res2 = await snapshotService.validateBackup(pkgMismatchInvoices);
+    expect(res2.valid).toBe(false);
+    expect(res2.error).toContain('لا يطابق الفهرس المسجل');
+    expect(res2.error).toContain('الفواتير');
+  });
+
+  // 14. فشل لقطة الأمان التلقائية pre_restore يوقف الاستعادة تماماً ولا يُطبّق أي بيانات
+  it('(14) فشل لقطة الأمان التلقائية يوقف الاستعادة بالكامل ولا يُطبّق أي بيانات على النظام', async () => {
+    // Ensure current data is non-empty
+    const testProd: Product = {
+      id: 'p-prerestore-must-exist',
+      name: 'منتج أصلي قبل محاولة الاستعادة',
+      category: 'test',
+      salePrice: 50,
+      purchaseCost: 30,
+      stock: 10,
+      unit: 'قطعة',
+    } as unknown as Product;
+    storage.saveProduct(testProd);
+    await storage.flush();
+
+    const countBefore = storage.getProducts().length;
+
+    const validNewPayload = {
+      products: [{ id: 'p-new-unapplied', name: 'منتج جديد لن يُطبّق' }],
+      customers: [],
+      suppliers: [],
+      invoices: [],
+      purchases: [],
+      cashMovements: [],
+      expenses: [],
+      auditLogs: [],
+      stockAdjustments: [],
+      users: [],
+      parkedCarts: [],
+      currentShift: null,
+    };
+
+    // Simulate pre_restore snapshot failure
+    const res = await snapshotService.restoreData(validNewPayload, 'ملف تجريبي', {
+      simulatePreRestoreFailure: true,
+    });
+
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('تعذر إنشاء لقطة الأمان التلقائية');
+
+    // Existing data is pristine
+    expect(storage.getProducts().length).toBe(countBefore);
+    expect(storage.getProducts().find(p => p.id === 'p-prerestore-must-exist')?.name).toBe('منتج أصلي قبل محاولة الاستعادة');
+    expect(storage.getProducts().find(p => p.id === 'p-new-unapplied')).toBeUndefined();
+
+    // Staging table is clean
+    const stagingRecords = await idb.restore_staging.toArray();
+    expect(stagingRecords.length).toBe(0);
+  });
+
+  // 15. لقطات pre_restore لا تُحتسب ضمن حد الـ 7، لها حصة مستقلة (آخر 3)، ولا تطرد اللقطات السليمة
+  it('(15) لقطات pre_restore لها حصة مستقلة (آخر 3 فقط)، ولا تُعتبر healthy ولا تطرد اللقطات السليمة', async () => {
+    await idb.snapshots.clear();
+
+    // Seed 7 healthy standard snapshots
+    for (let i = 1; i <= 7; i++) {
+      await idb.snapshots.put({
+        id: `snap_healthy_std_${i}`,
+        dateStr: `2026-11-${String(i).padStart(2, '0')}`,
+        type: 'daily',
+        status: 'healthy',
+        timestamp: 10000 + i * 1000,
+        data: { products: [{ id: `p-${i}`, name: `منتج ${i}` }] },
+        metadata: {
+          approxSizeBytes: 300,
+          recordCounts: { products: 1, invoices: 0, customers: 0, suppliers: 0, purchases: 0, cashMovements: 0, expenses: 0, auditLogs: 0, stockAdjustments: 0, users: 1, parkedCarts: 0 },
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          appVersion: '1.0.0',
+          checksum: `chk_${i}`,
+        },
+      });
+    }
+
+    expect(await idb.snapshots.count()).toBe(7);
+
+    // Now insert 5 pre_restore snapshots
+    for (let i = 1; i <= 5; i++) {
+      await idb.snapshots.put({
+        id: `snap_pre_restore_${i}`,
+        dateStr: `2026-11-20`,
+        type: 'pre_restore',
+        status: 'suspicious', // pre_restore is never healthy
+        timestamp: 20000 + i * 1000,
+        data: { products: [] },
+        metadata: {
+          approxSizeBytes: 300,
+          recordCounts: { products: 0, invoices: 0, customers: 0, suppliers: 0, purchases: 0, cashMovements: 0, expenses: 0, auditLogs: 0, stockAdjustments: 0, users: 1, parkedCarts: 0 },
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+          appVersion: '1.0.0',
+          checksum: `pre_chk_${i}`,
+        },
+      });
+    }
+
+    expect(await idb.snapshots.count()).toBe(12);
+
+    // Prune snapshots with target count 7
+    await snapshotService.pruneOldSnapshots(7);
+
+    const allRemaining = await idb.snapshots.toArray();
+    const remainingIds = allRemaining.map(s => s.id);
+
+    // 1. ALL 7 healthy standard snapshots MUST still exist! (pre_restore did NOT evict any of them)
+    for (let i = 1; i <= 7; i++) {
+      expect(remainingIds).toContain(`snap_healthy_std_${i}`);
+    }
+
+    // 2. pre_restore snapshots were pruned to exactly 3 (newest 3 remain: 3, 4, 5; 1 and 2 were pruned)
+    const remainingPreRestore = allRemaining.filter(s => s.type === 'pre_restore');
+    expect(remainingPreRestore.length).toBe(3);
+    expect(remainingIds).not.toContain('snap_pre_restore_1');
+    expect(remainingIds).not.toContain('snap_pre_restore_2');
+    expect(remainingIds).toContain('snap_pre_restore_3');
+    expect(remainingIds).toContain('snap_pre_restore_4');
+    expect(remainingIds).toContain('snap_pre_restore_5');
+
+    // Total in database is 7 standard + 3 pre_restore = 10
+    expect(allRemaining.length).toBe(10);
   });
 });

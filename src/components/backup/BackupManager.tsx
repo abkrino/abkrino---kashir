@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { storage } from '../../services/storageService';
 import { cloudService } from '../../services/cloudService';
-import { snapshotService, BackupPreview } from '../../services/snapshotService';
+import { snapshotService, BackupPreview, REQUIRED_COLLECTIONS } from '../../services/snapshotService';
 import { SnapshotRecord } from '../../services/idbStore';
 import {
   Database, Download, Upload, RefreshCw, AlertTriangle, CheckCircle,
@@ -154,6 +154,17 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
 
   // Select Snapshot for Restore (Requirement ثانياً: 1)
   const handleSelectSnapshotForRestore = (snapshot: SnapshotRecord) => {
+    // Validate snapshot contains all 12 collections before setting preview
+    for (const col of REQUIRED_COLLECTIONS) {
+      if (!snapshot.data || !(col.key in snapshot.data)) {
+        setStatusMessage({
+          type: 'error',
+          text: `تعذر اختيار اللقطة: مجموعة [${col.label}] (${col.key}) مفقودة من اللقطة. لا يمكن استعادة بيانات ناقصة.`,
+        });
+        return;
+      }
+    }
+
     const typeLabel =
       snapshot.type === 'daily'
         ? 'لقطة يومية تلقائية'

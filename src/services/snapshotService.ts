@@ -4,6 +4,21 @@ import { storage, STORAGE_KEYS } from './storageService';
 export const CURRENT_SCHEMA_VERSION = 1;
 export const APP_VERSION = '1.0.0';
 
+export const REQUIRED_COLLECTIONS: { key: string; label: string; isArray: boolean }[] = [
+  { key: 'products', label: 'المنتجات', isArray: true },
+  { key: 'customers', label: 'العملاء', isArray: true },
+  { key: 'suppliers', label: 'الموردين', isArray: true },
+  { key: 'invoices', label: 'الفواتير', isArray: true },
+  { key: 'purchases', label: 'المشتريات', isArray: true },
+  { key: 'cashMovements', label: 'حركات الخزينة', isArray: true },
+  { key: 'expenses', label: 'المصروفات', isArray: true },
+  { key: 'auditLogs', label: 'سجل العمليات', isArray: true },
+  { key: 'stockAdjustments', label: 'تسويات المخزون', isArray: true },
+  { key: 'users', label: 'المستخدمين', isArray: true },
+  { key: 'parkedCarts', label: 'السلات المعلقة', isArray: true },
+  { key: 'currentShift', label: 'الوردية الحالية', isArray: false },
+];
+
 export interface ExportBackupPackage {
   schemaVersion: number;
   appVersion: string;
@@ -16,7 +31,10 @@ export interface ExportBackupPackage {
     purchases: number;
     cashMovements: number;
     expenses: number;
+    auditLogs: number;
+    stockAdjustments: number;
     users: number;
+    parkedCarts: number;
     [key: string]: number;
   };
   checksum: string;
@@ -39,7 +57,10 @@ export interface BackupPreview {
     purchases: number;
     cashMovements: number;
     expenses: number;
+    auditLogs: number;
+    stockAdjustments: number;
     users: number;
+    parkedCarts: number;
   };
 }
 
@@ -176,8 +197,8 @@ class SnapshotService {
 
     try {
       const all = await this.getAllSnapshots();
-      // Find the newest healthy snapshot
-      const lastHealthy = all.find(s => s.status === 'healthy');
+      // Find the newest healthy snapshot (strictly excluding pre_restore)
+      const lastHealthy = all.find(s => s.status === 'healthy' && s.type !== 'pre_restore');
 
       if (lastHealthy && lastHealthy.metadata?.recordCounts) {
         const oldProd = lastHealthy.metadata.recordCounts.products || 0;
@@ -325,8 +346,9 @@ class SnapshotService {
       const checksum = await computeDataChecksum(data);
       const approxSizeBytes = new TextEncoder().encode(JSON.stringify(data)).length;
 
-      // Status assignment: healthy by default, suspicious if specified or created under drop warning
-      const status: SnapshotStatus = options?.status || 'healthy';
+      // Status assignment: healthy by default, suspicious if specified or created under drop warning.
+      // Pre_restore snapshots are NEVER healthy and do not enter healthy protection (Requirement 3).
+      const status: SnapshotStatus = type === 'pre_restore' ? 'suspicious' : (options?.status || 'healthy');
 
       const metadata: SnapshotMetadata = {
         approxSizeBytes,
@@ -338,7 +360,10 @@ class SnapshotService {
           purchases: data.purchases?.length || 0,
           cashMovements: data.cashMovements?.length || 0,
           expenses: data.expenses?.length || 0,
+          auditLogs: data.auditLogs?.length || 0,
+          stockAdjustments: data.stockAdjustments?.length || 0,
           users: data.users?.length || 0,
+          parkedCarts: data.parkedCarts?.length || 0,
         },
         schemaVersion: CURRENT_SCHEMA_VERSION,
         appVersion: APP_VERSION,
@@ -380,42 +405,62 @@ class SnapshotService {
 
   /**
    * Prune snapshots (Requirement 2 & 3):
-   * Keeps target count (7 normal, 3 on quota alert).
-   * RULE: NEVER delete the newest 2 'healthy' snapshots, even if count exceeds the limit.
+   * - pre_restore has its own separate quota: keep newest 3 only (never evicts healthy, never protected as healthy).
+   * - standard snapshots keep target count (7 normal, 3 on quota alert).
+   * RULE: NEVER delete the newest 2 'healthy' standard snapshots, even if count exceeds the limit.
    */
   public async pruneOldSnapshots(targetKeepCount: number = 7): Promise<number> {
     try {
       if (typeof indexedDB === 'undefined') return 0;
       const all = await idb.snapshots.orderBy('timestamp').toArray();
-      if (all.length <= targetKeepCount) return 0;
+      let totalDeleted = 0;
 
-      // Identify the 2 newest healthy snapshots to protect
-      const healthySnapshots = all
-        .filter(s => s.status === 'healthy')
-        .sort((a, b) => a.timestamp - b.timestamp);
-
-      const lastTwoHealthy = healthySnapshots.slice(-2);
-      const protectedIds = new Set(lastTwoHealthy.map(s => s.id));
-
-      // Candidates to delete: sort from oldest to newest
-      const candidates = [...all].sort((a, b) => a.timestamp - b.timestamp);
-      const toDelete: string[] = [];
-
-      let remainingCount = all.length;
-      for (const snap of candidates) {
-        if (remainingCount <= targetKeepCount) break;
-        // NEVER delete protected healthy snapshots
-        if (!protectedIds.has(snap.id)) {
-          toDelete.push(snap.id);
-          remainingCount--;
+      // 1. Separate independent quota for pre_restore snapshots: keep newest 3 only (Requirement 3)
+      const preRestoreSnapshots = all.filter(s => s.type === 'pre_restore');
+      if (preRestoreSnapshots.length > 3) {
+        const excessCount = preRestoreSnapshots.length - 3;
+        const toDeletePreRestore = preRestoreSnapshots
+          .sort((a, b) => a.timestamp - b.timestamp)
+          .slice(0, excessCount)
+          .map(s => s.id);
+        if (toDeletePreRestore.length > 0) {
+          await idb.snapshots.bulkDelete(toDeletePreRestore);
+          totalDeleted += toDeletePreRestore.length;
         }
       }
 
-      if (toDelete.length > 0) {
-        await idb.snapshots.bulkDelete(toDelete);
-        return toDelete.length;
+      // 2. Standard snapshots (strictly excluding pre_restore from the 7 target count)
+      const standardSnapshots = all.filter(s => s.type !== 'pre_restore');
+      if (standardSnapshots.length > targetKeepCount) {
+        // Identify the 2 newest healthy snapshots to protect (strictly excluding pre_restore)
+        const healthySnapshots = standardSnapshots
+          .filter(s => s.status === 'healthy' && s.type !== 'pre_restore')
+          .sort((a, b) => a.timestamp - b.timestamp);
+
+        const lastTwoHealthy = healthySnapshots.slice(-2);
+        const protectedIds = new Set(lastTwoHealthy.map(s => s.id));
+
+        // Candidates to delete: sort from oldest to newest
+        const candidates = [...standardSnapshots].sort((a, b) => a.timestamp - b.timestamp);
+        const toDeleteStandard: string[] = [];
+
+        let remainingCount = standardSnapshots.length;
+        for (const snap of candidates) {
+          if (remainingCount <= targetKeepCount) break;
+          // NEVER delete protected healthy snapshots
+          if (!protectedIds.has(snap.id)) {
+            toDeleteStandard.push(snap.id);
+            remainingCount--;
+          }
+        }
+
+        if (toDeleteStandard.length > 0) {
+          await idb.snapshots.bulkDelete(toDeleteStandard);
+          totalDeleted += toDeleteStandard.length;
+        }
       }
-      return 0;
+
+      return totalDeleted;
     } catch (err) {
       console.warn('Failed to prune snapshots:', err);
       return 0;
@@ -469,7 +514,10 @@ class SnapshotService {
         purchases: data.purchases?.length || 0,
         cashMovements: data.cashMovements?.length || 0,
         expenses: data.expenses?.length || 0,
+        auditLogs: data.auditLogs?.length || 0,
+        stockAdjustments: data.stockAdjustments?.length || 0,
         users: data.users?.length || 0,
+        parkedCarts: data.parkedCarts?.length || 0,
       },
       checksum,
       data,
@@ -477,7 +525,7 @@ class SnapshotService {
   }
 
   /**
-   * Validates a backup file/object (checksum, schema version, record counts) and returns a preview
+   * Validates a backup file/object (checksum, schema version, 12 collections, record counts) and returns a preview
    */
   public async validateBackup(content: string | Record<string, any>): Promise<{
     valid: boolean;
@@ -498,11 +546,38 @@ class SnapshotService {
     }
 
     const data = parsed.data || parsed;
-    if (!data || typeof data !== 'object' || !Array.isArray(data.products) || !Array.isArray(data.customers)) {
-      return { valid: false, error: 'الملف لا يحتوي على جداول البيانات الأساسية (المنتجات والعملاء)' };
+    if (!data || typeof data !== 'object') {
+      return { valid: false, error: 'هيكل بيانات النسخة الاحتياطية فارغ أو تالف' };
     }
 
-    // 1. Schema version check
+    // 1. Mandatory check for all 12 collections (Requirement 1)
+    for (const col of REQUIRED_COLLECTIONS) {
+      if (!(col.key in data)) {
+        return {
+          valid: false,
+          error: `ملف النسخة الاحتياطية ناقص: مجموعة [${col.label}] (${col.key}) مفقودة من الملف. لا يمكن الاستعادة من ملف غير مكتمل.`,
+        };
+      }
+
+      if (col.isArray) {
+        if (!Array.isArray(data[col.key])) {
+          return {
+            valid: false,
+            error: `ملف النسخة الاحتياطية غير صالح: مجموعة [${col.label}] (${col.key}) ليست مصفوفة.`,
+          };
+        }
+      } else {
+        const shiftVal = data[col.key];
+        if (shiftVal !== null && (typeof shiftVal !== 'object' || Array.isArray(shiftVal))) {
+          return {
+            valid: false,
+            error: `ملف النسخة الاحتياطية غير صالح: حقل [${col.label}] (${col.key}) يجب أن يكون كائناً أو فارغاً (null).`,
+          };
+        }
+      }
+    }
+
+    // 2. Schema version check
     if (parsed.schemaVersion && parsed.schemaVersion > CURRENT_SCHEMA_VERSION) {
       return {
         valid: false,
@@ -510,7 +585,7 @@ class SnapshotService {
       };
     }
 
-    // 2. Checksum verification
+    // 3. Checksum verification (SHA-256)
     let isLegacy = false;
     let warning: string | undefined;
 
@@ -524,24 +599,22 @@ class SnapshotService {
       }
     } else {
       isLegacy = true;
-      warning = 'تنبيه: ملف نسخة احتياطية قديم بدون توقيع رقمي، تم التحقق من سلامة البنية الداخلية.';
+      warning = 'تنبيه: ملف نسخة احتياطية قديم بدون توقيع رقمي، تم التحقق من سلامة البنية الداخلية واكتمال كافة المجموعات الاثنتي عشرة.';
     }
 
-    // 3. Record count verification if provided
+    // 4. Record count verification if provided (Requirement 1)
     if (parsed.recordCounts && typeof parsed.recordCounts === 'object') {
-      const expectedProducts = parsed.recordCounts.products;
-      const expectedInvoices = parsed.recordCounts.invoices;
-      if (typeof expectedProducts === 'number' && data.products.length !== expectedProducts) {
-        return {
-          valid: false,
-          error: `عدد المنتجات في الملف (${data.products.length}) لا يطابق الفهرس المسجل (${expectedProducts})، الملف غير مكتمل.`,
-        };
-      }
-      if (typeof expectedInvoices === 'number' && data.invoices.length !== expectedInvoices) {
-        return {
-          valid: false,
-          error: `عدد الفواتير في الملف (${data.invoices.length}) لا يطابق الفهرس المسجل (${expectedInvoices})، الملف غير مكتمل.`,
-        };
+      for (const col of REQUIRED_COLLECTIONS) {
+        if (col.isArray && typeof parsed.recordCounts[col.key] === 'number') {
+          const expected = parsed.recordCounts[col.key];
+          const actual = data[col.key].length;
+          if (actual !== expected) {
+            return {
+              valid: false,
+              error: `عدد سجلات ${col.label} في الملف (${actual}) لا يطابق الفهرس المسجل (${expected})، الملف غير مكتمل أو تالف.`,
+            };
+          }
+        }
       }
     }
 
@@ -560,14 +633,17 @@ class SnapshotService {
       isLegacy,
       warning,
       counts: {
-        products: data.products?.length || 0,
-        invoices: data.invoices?.length || 0,
-        customers: data.customers?.length || 0,
-        suppliers: data.suppliers?.length || 0,
-        purchases: data.purchases?.length || 0,
-        cashMovements: data.cashMovements?.length || 0,
-        expenses: data.expenses?.length || 0,
-        users: data.users?.length || 0,
+        products: data.products.length,
+        invoices: data.invoices.length,
+        customers: data.customers.length,
+        suppliers: data.suppliers.length,
+        purchases: data.purchases.length,
+        cashMovements: data.cashMovements.length,
+        expenses: data.expenses.length,
+        auditLogs: data.auditLogs.length,
+        stockAdjustments: data.stockAdjustments.length,
+        users: data.users.length,
+        parkedCarts: data.parkedCarts.length,
       },
     };
 
@@ -580,10 +656,11 @@ class SnapshotService {
   }
 
   /**
-   * Transactional Restore (Requirement 4):
-   * 1. Takes an automatic "pre_restore" snapshot of current state
-   * 2. Writes new data to staging table `restore_staging` first
-   * 3. Verifies staging completeness
+   * Transactional Restore (Requirements 1, 2 & 4):
+   * 1. Validates all 12 collections exist in data (no || [] fallback)
+   * 2. If current data is non-empty, creates a pre_restore snapshot.
+   *    If pre_restore snapshot fails (null, error, or ongoing process), restores is ABORTED completely.
+   * 3. Writes new data to staging table `restore_staging` first
    * 4. Swaps into `kv` table in a single atomic Dexie transaction
    * 5. ONLY after the transaction succeeds, updates in-memory cache
    * If any step fails, current data remains 100% intact!
@@ -591,39 +668,105 @@ class SnapshotService {
   public async restoreData(
     data: Record<string, any>,
     sourceLabel: string = 'ملف خارجي',
-    options?: { simulateFailureInTransaction?: boolean }
+    options?: {
+      simulateFailureInTransaction?: boolean;
+      simulatePreRestoreFailure?: boolean;
+    }
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      // Step 1: Automatic pre-restore snapshot
-      await this.createSnapshot('pre_restore');
+      // Step 0: Validate that data contains all 12 collections before touching anything!
+      for (const col of REQUIRED_COLLECTIONS) {
+        if (!(col.key in data)) {
+          return {
+            success: false,
+            error: `بيانات الاستعادة ناقصة: مجموعة [${col.label}] (${col.key}) مفقودة من البيانات. تم إيقاف الاستعادة.`,
+          };
+        }
+        if (col.isArray) {
+          if (!Array.isArray(data[col.key])) {
+            return {
+              success: false,
+              error: `بيانات الاستعادة غير صالحة: مجموعة [${col.label}] (${col.key}) ليست مصفوفة.`,
+            };
+          }
+        } else {
+          const shiftVal = data[col.key];
+          if (shiftVal !== null && (typeof shiftVal !== 'object' || Array.isArray(shiftVal))) {
+            return {
+              success: false,
+              error: `بيانات الاستعادة غير صالحة: حقل [${col.label}] (${col.key}) غير صالح.`,
+            };
+          }
+        }
+      }
 
+      // Step 1: Pre-restore snapshot check (Requirement 2)
+      // If current business data is NOT empty, a pre_restore snapshot MUST be taken.
+      // If pre_restore snapshot fails (null, error, or isProcessingSnapshot), abort restore completely.
+      const currentData = this.getCurrentBusinessData();
+      const isCurrentDataEmpty =
+        (!currentData.products || currentData.products.length === 0) &&
+        (!currentData.invoices || currentData.invoices.length === 0) &&
+        (!currentData.customers || currentData.customers.length === 0) &&
+        (!currentData.suppliers || currentData.suppliers.length === 0) &&
+        (!currentData.purchases || currentData.purchases.length === 0) &&
+        (!currentData.cashMovements || currentData.cashMovements.length === 0) &&
+        (!currentData.expenses || currentData.expenses.length === 0);
+
+      if (!isCurrentDataEmpty) {
+        if (this.isProcessingSnapshot || options?.simulatePreRestoreFailure) {
+          return {
+            success: false,
+            error: 'تعذر إنشاء لقطة الأمان التلقائية (قبل الاستعادة) نظراً لوجود عملية جارية أو فشل في حفظ اللقطة. تم إيقاف الاستعادة بالكامل لحماية بياناتك الحالية.',
+          };
+        }
+
+        let preRestoreSnap: SnapshotRecord | null = null;
+        try {
+          preRestoreSnap = await this.createSnapshot('pre_restore');
+        } catch (err: any) {
+          return {
+            success: false,
+            error: 'فشل إنشاء لقطة الأمان التلقائية (قبل الاستعادة): ' + (err?.message || 'خطأ غير معروف') + '. تم إيقاف الاستعادة بالكامل لحماية بياناتك الحالية.',
+          };
+        }
+
+        if (!preRestoreSnap) {
+          return {
+            success: false,
+            error: 'تعذر إنشاء لقطة الأمان التلقائية (قبل الاستعادة). تم إيقاف الاستعادة بالكامل ولا يمكن الكتابة فوق بياناتك الحالية.',
+          };
+        }
+      }
+
+      // Step 2: Build staging records directly from data without '|| []' (Requirement 1)
       const stageRecords: KVRecord[] = [
-        { key: STORAGE_KEYS.PRODUCTS, value: data.products || [], updatedAt: Date.now() },
-        { key: STORAGE_KEYS.CUSTOMERS, value: data.customers || [], updatedAt: Date.now() },
-        { key: STORAGE_KEYS.SUPPLIERS, value: data.suppliers || [], updatedAt: Date.now() },
-        { key: STORAGE_KEYS.INVOICES, value: data.invoices || [], updatedAt: Date.now() },
-        { key: STORAGE_KEYS.PURCHASES, value: data.purchases || [], updatedAt: Date.now() },
-        { key: STORAGE_KEYS.CASH_MOVEMENTS, value: data.cashMovements || [], updatedAt: Date.now() },
-        { key: STORAGE_KEYS.EXPENSES, value: data.expenses || [], updatedAt: Date.now() },
-        { key: STORAGE_KEYS.AUDIT_LOGS, value: data.auditLogs || [], updatedAt: Date.now() },
-        { key: STORAGE_KEYS.STOCK_ADJUSTMENTS, value: data.stockAdjustments || [], updatedAt: Date.now() },
-        { key: STORAGE_KEYS.USERS, value: data.users || [], updatedAt: Date.now() },
-        { key: STORAGE_KEYS.SHIFT, value: data.currentShift || null, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.PARKED_CARTS, value: data.parkedCarts || [], updatedAt: Date.now() },
+        { key: STORAGE_KEYS.PRODUCTS, value: data.products, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.CUSTOMERS, value: data.customers, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.SUPPLIERS, value: data.suppliers, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.INVOICES, value: data.invoices, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.PURCHASES, value: data.purchases, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.CASH_MOVEMENTS, value: data.cashMovements, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.EXPENSES, value: data.expenses, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.AUDIT_LOGS, value: data.auditLogs, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.STOCK_ADJUSTMENTS, value: data.stockAdjustments, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.USERS, value: data.users, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.SHIFT, value: data.currentShift, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.PARKED_CARTS, value: data.parkedCarts, updatedAt: Date.now() },
       ];
 
       if (typeof indexedDB !== 'undefined' && idb.restore_staging) {
-        // Step 2: Write to staging table first
+        // Step 3: Write to staging table first
         await idb.restore_staging.clear();
         await idb.restore_staging.bulkPut(stageRecords);
 
-        // Step 3: Verify staging count
+        // Step 4: Verify staging count
         const stagedCount = await idb.restore_staging.count();
         if (stagedCount < stageRecords.length) {
           throw new Error('فشل التحقق من اكتمال مرحلة التجهيز المؤقتة للاستعادة');
         }
 
-        // Step 4: Atomic swap within a single Dexie transaction
+        // Step 5: Atomic swap within a single Dexie transaction
         await idb.transaction('rw', [idb.kv, idb.restore_staging], async () => {
           if (options?.simulateFailureInTransaction) {
             throw new Error('فشل محاكى في منتصف المعاملة: تم إلغاء الاستعادة والتراجع عن كل التغييرات');
@@ -634,7 +777,7 @@ class SnapshotService {
         });
       }
 
-      // Step 5: ONLY AFTER the transaction completes, update in-memory cache!
+      // Step 6: ONLY AFTER the transaction completes, update in-memory cache!
       storage.applyRestoredMemoryPayload(data);
 
       storage.addAuditLog(
@@ -642,7 +785,8 @@ class SnapshotService {
         'استعادة قاعدة البيانات',
         'النسخ الاحتياطي',
         'admin',
-        `تمت استعادة البيانات بنجاح وبشكل معاملاتي آمن من ${sourceLabel}، وتم حفظ لقطة أمان تلقائية قبل الاستعادة`
+        `تمت استعادة البيانات بنجاح وبشكل معاملاتي آمن من ${sourceLabel}` +
+        (!isCurrentDataEmpty ? '، وتم حفظ لقطة أمان تلقائية قبل الاستعادة' : ' (بيانات حالية فارغة)')
       );
 
       return { success: true };
