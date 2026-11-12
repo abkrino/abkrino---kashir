@@ -46,6 +46,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
   currentUser,
 }) => {
   const isAdmin = currentUser?.role === 'ADMIN' || currentUser?.permissions?.canViewProfits;
+  const storeProfile = storage.getStoreProfile();
 
   // Filter Mode: 'TODAY' | 'MONTH' | 'CUSTOM'
   const [filterMode, setFilterMode] = useState<'TODAY' | 'MONTH' | 'CUSTOM'>('TODAY');
@@ -122,13 +123,15 @@ export const Dashboard: React.FC<DashboardProps> = ({
       <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 p-6 rounded-2xl shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4 transition-colors">
         <div>
           <h2 className="text-2xl md:text-3xl font-black text-slate-900 dark:text-white flex items-center gap-3">
-            <span>لوحة إدارة السوبر ماركت وقسم الألبان</span>
+            <span>لوحة إدارة {storeProfile.name || 'المحل'}</span>
             <span className="text-xs bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700 px-3 py-1 rounded-full font-bold">
               كاشير الوردية مفتوح ✓
             </span>
           </h2>
           <p className="text-base text-slate-600 dark:text-slate-300 mt-1 font-medium">
-            متابعة فورية لمبيعات القطاعي، نقدية الدرج، رصيد قسم الألبان والجبن، وتواريخ الصلاحية والتبريد.
+            {storeProfile.modules.dairy 
+              ? 'متابعة فورية لمبيعات القطاعي، نقدية الدرج، رصيد قسم الألبان والجبن، وتواريخ الصلاحية والتبريد.'
+              : 'متابعة فورية لمبيعات المحل، نقدية الدرج، أرصدة المخزون، وحركة الفواتير والتحصيل.'}
           </p>
         </div>
 
@@ -301,84 +304,98 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
       </div>
 
-      {/* SUPERMARKET & DAIRY DEPARTMENT INTELLIGENCE ROW */}
-      <div className="bg-gradient-to-l from-blue-50/70 via-emerald-50/40 to-slate-50 dark:from-blue-950/30 dark:via-emerald-950/20 dark:to-slate-900 border border-blue-200 dark:border-blue-900/60 rounded-2xl p-5 shadow-sm space-y-3">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-2 border-b border-blue-200/60 dark:border-blue-800/40">
-          <div className="flex items-center gap-2">
-            <span className="text-xl">🥛</span>
-            <div>
-              <h3 className="font-black text-sm sm:text-base text-slate-900 dark:text-white">
-                مؤشرات قسم الألبان والأجبان والميزان
-              </h3>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                متابعة حركة الثلاجة، أصناف الوزن، ومتوسط سلة مشتريات الزبون
-              </p>
+      {/* DEPARTMENT INTELLIGENCE ROW (Only when dairy or weighing scale is enabled) */}
+      {(storeProfile.modules.dairy || storeProfile.modules.weighingScale) && (
+        <div className="bg-gradient-to-l from-blue-50/70 via-emerald-50/40 to-slate-50 dark:from-blue-950/30 dark:via-emerald-950/20 dark:to-slate-900 border border-blue-200 dark:border-blue-900/60 rounded-2xl p-5 shadow-sm space-y-3">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-2 border-b border-blue-200/60 dark:border-blue-800/40">
+            <div className="flex items-center gap-2">
+              <span className="text-xl">🥛</span>
+              <div>
+                <h3 className="font-black text-sm sm:text-base text-slate-900 dark:text-white">
+                  {storeProfile.modules.dairy && storeProfile.modules.weighingScale
+                    ? 'مؤشرات قسم الألبان والأجبان والميزان'
+                    : storeProfile.modules.dairy
+                    ? 'مؤشرات قسم الألبان والأجبان'
+                    : 'مؤشرات أصناف الميزان والوزن'}
+                </h3>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  {storeProfile.modules.dairy
+                    ? 'متابعة حركة الثلاجة، أصناف الوزن، ومتوسط سلة مشتريات الزبون'
+                    : 'متابعة حركة أصناف الوزن ومتوسط سلة مشتريات الزبون'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => onNavigate('inventory')}
+              className="text-xs font-black text-blue-700 dark:text-blue-300 hover:underline flex items-center gap-1 cursor-pointer"
+            >
+              <span>عرض كل الأصناف والمخزون ←</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            {/* Dairy items count */}
+            {storeProfile.modules.dairy && (
+              <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-blue-200 dark:border-blue-800/60">
+                <span className="text-slate-500 dark:text-slate-400 block font-bold text-[11px] mb-1">أصناف الألبان والأجبان:</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-2xl font-black text-blue-700 dark:text-blue-400 font-mono">
+                    {dairyProducts.length}
+                  </span>
+                  <span className="text-[10px] bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 px-2 py-0.5 rounded-full font-bold">
+                    حليب وأجبان
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Weighing Scale items */}
+            {storeProfile.modules.weighingScale && (
+              <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-blue-200 dark:border-blue-800/60">
+                <span className="text-slate-500 dark:text-slate-400 block font-bold text-[11px] mb-1">أصناف بالميزان (كجم):</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-2xl font-black text-emerald-700 dark:text-emerald-400 font-mono">
+                    {weighingProducts.length}
+                  </span>
+                  <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 px-2 py-0.5 rounded-full font-bold">
+                    ميزان إلكتروني
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Chilled storage */}
+            {storeProfile.modules.dairy && (
+              <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-blue-200 dark:border-blue-800/60">
+                <span className="text-slate-500 dark:text-slate-400 block font-bold text-[11px] mb-1">ثلاجات التبريد 4°C:</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-2xl font-black text-cyan-700 dark:text-cyan-400 font-mono">
+                    {chilledProducts.length}
+                  </span>
+                  <span className="text-[10px] bg-cyan-100 dark:bg-cyan-950 text-cyan-800 dark:text-cyan-300 px-2 py-0.5 rounded-full font-bold">
+                    تبريد طازج ❄️
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Average Ticket */}
+            <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-blue-200 dark:border-blue-800/60">
+              <span className="text-slate-500 dark:text-slate-400 block font-bold text-[11px] mb-1">متوسط بون الكاشير:</span>
+              <div className="flex items-center justify-between">
+                <span className="text-2xl font-black text-purple-700 dark:text-purple-400 font-mono">
+                  {Math.round(avgTicket)}
+                  <span className="text-xs mr-1 font-sans">{storeProfile.currency === 'EGP' ? 'ج' : storeProfile.currency}</span>
+                </span>
+                <span className="text-[10px] bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-300 px-2 py-0.5 rounded-full font-bold">
+                  للفاتورة
+                </span>
+              </div>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={() => onNavigate('inventory')}
-            className="text-xs font-black text-blue-700 dark:text-blue-300 hover:underline flex items-center gap-1 cursor-pointer"
-          >
-            <span>عرض كل منتجات الألبان والأصناف ←</span>
-          </button>
         </div>
-
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
-          {/* Dairy items count */}
-          <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-blue-200 dark:border-blue-800/60">
-            <span className="text-slate-500 dark:text-slate-400 block font-bold text-[11px] mb-1">أصناف الألبان والأجبان:</span>
-            <div className="flex items-center justify-between">
-              <span className="text-2xl font-black text-blue-700 dark:text-blue-400 font-mono">
-                {dairyProducts.length}
-              </span>
-              <span className="text-[10px] bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 px-2 py-0.5 rounded-full font-bold">
-                حليب وأجبان
-              </span>
-            </div>
-          </div>
-
-          {/* Weighing Scale items */}
-          <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-blue-200 dark:border-blue-800/60">
-            <span className="text-slate-500 dark:text-slate-400 block font-bold text-[11px] mb-1">أصناف بالميزان (كجم):</span>
-            <div className="flex items-center justify-between">
-              <span className="text-2xl font-black text-emerald-700 dark:text-emerald-400 font-mono">
-                {weighingProducts.length}
-              </span>
-              <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 px-2 py-0.5 rounded-full font-bold">
-                ميزان إلكتروني
-              </span>
-            </div>
-          </div>
-
-          {/* Chilled storage */}
-          <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-blue-200 dark:border-blue-800/60">
-            <span className="text-slate-500 dark:text-slate-400 block font-bold text-[11px] mb-1">ثلاجات التبريد 4°C:</span>
-            <div className="flex items-center justify-between">
-              <span className="text-2xl font-black text-cyan-700 dark:text-cyan-400 font-mono">
-                {chilledProducts.length}
-              </span>
-              <span className="text-[10px] bg-cyan-100 dark:bg-cyan-950 text-cyan-800 dark:text-cyan-300 px-2 py-0.5 rounded-full font-bold">
-                تبريد طازج ❄️
-              </span>
-            </div>
-          </div>
-
-          {/* Average Ticket */}
-          <div className="bg-white dark:bg-slate-900 p-3 rounded-xl border border-blue-200 dark:border-blue-800/60">
-            <span className="text-slate-500 dark:text-slate-400 block font-bold text-[11px] mb-1">متوسط بون الكاشير:</span>
-            <div className="flex items-center justify-between">
-              <span className="text-2xl font-black text-purple-700 dark:text-purple-400 font-mono">
-                {Math.round(avgTicket)}
-                <span className="text-xs mr-1 font-sans">ج</span>
-              </span>
-              <span className="text-[10px] bg-purple-100 dark:bg-purple-950 text-purple-800 dark:text-purple-300 px-2 py-0.5 rounded-full font-bold">
-                للفاتورة
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
+      )}
 
       {/* MANAGER ONLY: Executive Profit & Valuation Dashboard */}
       {isAdmin && (

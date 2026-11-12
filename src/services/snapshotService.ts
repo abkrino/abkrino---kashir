@@ -1,5 +1,6 @@
 import { idb, SnapshotRecord, SnapshotMetadata, SnapshotStatus, KVRecord } from './idbStore';
 import { storage, STORAGE_KEYS } from './storageService';
+import { DEFAULT_STORE_PROFILE, LEGACY_STORE_PROFILE } from '../types';
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const APP_VERSION = '1.0.0';
@@ -171,6 +172,7 @@ class SnapshotService {
       currentShift: storage.getCurrentShift(),
       users: storage.getUsers(),
       parkedCarts: storage.getParkedCarts(),
+      storeProfile: storage.getStoreProfile(),
     };
   }
 
@@ -674,23 +676,28 @@ class SnapshotService {
     }
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      // Step 0: Validate that data contains all 12 collections before touching anything!
+      // Step 0: Support both enveloped { data: { ... } } and raw payload { products: ... }
+      const payload = (data && typeof data === 'object' && data.data && typeof data.data === 'object' && !Array.isArray(data.data))
+        ? data.data
+        : data;
+
+      // Validate that payload contains all 12 collections before touching anything!
       for (const col of REQUIRED_COLLECTIONS) {
-        if (!(col.key in data)) {
+        if (!(col.key in payload)) {
           return {
             success: false,
             error: `بيانات الاستعادة ناقصة: مجموعة [${col.label}] (${col.key}) مفقودة من البيانات. تم إيقاف الاستعادة.`,
           };
         }
         if (col.isArray) {
-          if (!Array.isArray(data[col.key])) {
+          if (!Array.isArray(payload[col.key])) {
             return {
               success: false,
               error: `بيانات الاستعادة غير صالحة: مجموعة [${col.label}] (${col.key}) ليست مصفوفة.`,
             };
           }
         } else {
-          const shiftVal = data[col.key];
+          const shiftVal = payload[col.key];
           if (shiftVal !== null && (typeof shiftVal !== 'object' || Array.isArray(shiftVal))) {
             return {
               success: false,
@@ -739,20 +746,25 @@ class SnapshotService {
         }
       }
 
-      // Step 2: Build staging records directly from data without '|| []' (Requirement 1)
+      // Step 2: Build staging records directly from payload without '|| []' (Requirement 1)
       const stageRecords: KVRecord[] = [
-        { key: STORAGE_KEYS.PRODUCTS, value: data.products, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.CUSTOMERS, value: data.customers, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.SUPPLIERS, value: data.suppliers, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.INVOICES, value: data.invoices, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.PURCHASES, value: data.purchases, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.CASH_MOVEMENTS, value: data.cashMovements, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.EXPENSES, value: data.expenses, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.AUDIT_LOGS, value: data.auditLogs, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.STOCK_ADJUSTMENTS, value: data.stockAdjustments, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.USERS, value: data.users, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.SHIFT, value: data.currentShift, updatedAt: Date.now() },
-        { key: STORAGE_KEYS.PARKED_CARTS, value: data.parkedCarts, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.PRODUCTS, value: payload.products, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.CUSTOMERS, value: payload.customers, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.SUPPLIERS, value: payload.suppliers, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.INVOICES, value: payload.invoices, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.PURCHASES, value: payload.purchases, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.CASH_MOVEMENTS, value: payload.cashMovements, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.EXPENSES, value: payload.expenses, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.AUDIT_LOGS, value: payload.auditLogs, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.STOCK_ADJUSTMENTS, value: payload.stockAdjustments, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.USERS, value: payload.users, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.SHIFT, value: payload.currentShift, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.PARKED_CARTS, value: payload.parkedCarts, updatedAt: Date.now() },
+        {
+          key: STORAGE_KEYS.STORE_PROFILE,
+          value: payload.storeProfile || (Array.isArray(payload.products) && payload.products.length > 0 ? LEGACY_STORE_PROFILE : DEFAULT_STORE_PROFILE),
+          updatedAt: Date.now()
+        },
       ];
 
       if (typeof indexedDB !== 'undefined' && idb.restore_staging) {
@@ -778,7 +790,7 @@ class SnapshotService {
       }
 
       // Step 6: ONLY AFTER the transaction completes, update in-memory cache!
-      storage.applyRestoredMemoryPayload(data);
+      storage.applyRestoredMemoryPayload(payload);
 
       storage.addAuditLog(
         'RESTORE',

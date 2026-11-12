@@ -1,6 +1,7 @@
 import {
   Product, Customer, Supplier, SalesInvoice, PurchaseInvoice,
-  CashMovement, Expense, AuditLog, SystemShift, User, StockAdjustment, ParkedCart
+  CashMovement, Expense, AuditLog, SystemShift, User, StockAdjustment, ParkedCart,
+  StoreProfile, DEFAULT_STORE_PROFILE, LEGACY_STORE_PROFILE
 } from '../types';
 import {
   INITIAL_PRODUCTS, INITIAL_CUSTOMERS, INITIAL_SUPPLIERS, INITIAL_SHIFT,
@@ -23,6 +24,8 @@ export const STORAGE_KEYS = {
   USERS: 'sm_users_v3',
   ACTIVE_USER_ID: 'pos_active_user_id',
   PARKED_CARTS: 'sm_parked_carts_v3',
+  STORE_PROFILE: 'sm_store_profile_v1',
+  STORE_PROFILE_REVIEWED: 'sm_store_profile_reviewed',
 };
 
 export const BUSINESS_KEYS = [
@@ -39,6 +42,7 @@ export const BUSINESS_KEYS = [
   STORAGE_KEYS.USERS,
   STORAGE_KEYS.ACTIVE_USER_ID,
   STORAGE_KEYS.PARKED_CARTS,
+  STORAGE_KEYS.STORE_PROFILE,
 ];
 
 class StorageService {
@@ -527,20 +531,111 @@ class StorageService {
   }
 
   // --- INITIALIZATION ---
-  public initDatabase(): void {
+  public initDatabase(seedDemoData: boolean = false): void {
     if (!this.cache.has(STORAGE_KEYS.PRODUCTS)) {
-      this.setItem(STORAGE_KEYS.PRODUCTS, JSON.parse(JSON.stringify(INITIAL_PRODUCTS)));
-      this.setItem(STORAGE_KEYS.CUSTOMERS, JSON.parse(JSON.stringify(INITIAL_CUSTOMERS)));
-      this.setItem(STORAGE_KEYS.SUPPLIERS, JSON.parse(JSON.stringify(INITIAL_SUPPLIERS)));
-      this.setItem(STORAGE_KEYS.INVOICES, JSON.parse(JSON.stringify(INITIAL_INVOICES)));
+      this.setItem(STORAGE_KEYS.PRODUCTS, seedDemoData ? JSON.parse(JSON.stringify(INITIAL_PRODUCTS)) : []);
+      this.setItem(STORAGE_KEYS.CUSTOMERS, seedDemoData ? JSON.parse(JSON.stringify(INITIAL_CUSTOMERS)) : []);
+      this.setItem(STORAGE_KEYS.SUPPLIERS, seedDemoData ? JSON.parse(JSON.stringify(INITIAL_SUPPLIERS)) : []);
+      this.setItem(STORAGE_KEYS.INVOICES, seedDemoData ? JSON.parse(JSON.stringify(INITIAL_INVOICES)) : []);
       this.setItem(STORAGE_KEYS.PURCHASES, []);
-      this.setItem(STORAGE_KEYS.CASH_MOVEMENTS, JSON.parse(JSON.stringify(INITIAL_CASH_MOVEMENTS)));
-      this.setItem(STORAGE_KEYS.EXPENSES, JSON.parse(JSON.stringify(INITIAL_EXPENSES)));
-      this.setItem(STORAGE_KEYS.SHIFT, JSON.parse(JSON.stringify(INITIAL_SHIFT)));
+      this.setItem(STORAGE_KEYS.CASH_MOVEMENTS, seedDemoData ? JSON.parse(JSON.stringify(INITIAL_CASH_MOVEMENTS)) : []);
+      this.setItem(STORAGE_KEYS.EXPENSES, seedDemoData ? JSON.parse(JSON.stringify(INITIAL_EXPENSES)) : []);
+      this.setItem(STORAGE_KEYS.SHIFT, seedDemoData ? JSON.parse(JSON.stringify(INITIAL_SHIFT)) : null);
       this.setItem(STORAGE_KEYS.USERS, []);
       this.setItem(STORAGE_KEYS.PARKED_CARTS, []);
-      this.addAuditLog('SYSTEM', 'إعداد النظام', 'النظام', 'sys-0', 'تمت تهيئة نظام كاشير ومبيعات السوبر ماركت وقسم الألبان');
+      this.setItem(STORAGE_KEYS.AUDIT_LOGS, []);
+      this.setItem(STORAGE_KEYS.STOCK_ADJUSTMENTS, []);
+      this.setItem(STORAGE_KEYS.STORE_PROFILE, seedDemoData ? JSON.parse(JSON.stringify(LEGACY_STORE_PROFILE)) : JSON.parse(JSON.stringify(DEFAULT_STORE_PROFILE)));
+      this.addAuditLog('SYSTEM', 'إعداد النظام', 'النظام', 'sys-0', 'تمت تهيئة نظام الكاشير وإدارة المبيعات');
     }
+  }
+
+  public loadDemoData(): void {
+    this.setItem(STORAGE_KEYS.PRODUCTS, JSON.parse(JSON.stringify(INITIAL_PRODUCTS)));
+    this.setItem(STORAGE_KEYS.CUSTOMERS, JSON.parse(JSON.stringify(INITIAL_CUSTOMERS)));
+    this.setItem(STORAGE_KEYS.SUPPLIERS, JSON.parse(JSON.stringify(INITIAL_SUPPLIERS)));
+    this.addAuditLog('SYSTEM', 'تحميل بيانات تجريبية', 'النظام', 'sys-demo', 'تم استيراد الأصناف والعملاء والموردين التجريبيين');
+    this.notifyAction('تحميل بيانات تجريبية');
+  }
+
+  // --- STORE PROFILE MANAGEMENT ---
+  public getStoreProfile(): StoreProfile {
+    if (this.cache.has(STORAGE_KEYS.STORE_PROFILE)) {
+      const cached = this.cache.get(STORAGE_KEYS.STORE_PROFILE);
+      if (cached && typeof cached === 'object' && cached.name) {
+        return cached as StoreProfile;
+      }
+    }
+
+    // Check if we have an existing installation with business data
+    const existingProducts = this.getItem<Product[]>(STORAGE_KEYS.PRODUCTS, []);
+    const existingInvoices = this.getItem<SalesInvoice[]>(STORAGE_KEYS.INVOICES, []);
+    const existingUsers = this.getItem<User[]>(STORAGE_KEYS.USERS, []);
+
+    const hasLegacyData = (Array.isArray(existingProducts) && existingProducts.length > 0) ||
+                          (Array.isArray(existingInvoices) && existingInvoices.length > 0) ||
+                          (Array.isArray(existingUsers) && existingUsers.length > 0);
+
+    if (hasLegacyData) {
+      // Auto-create from legacy defaults with dairy & weighingScale enabled
+      const legacyProfile: StoreProfile = JSON.parse(JSON.stringify(LEGACY_STORE_PROFILE));
+      this.setItem(STORAGE_KEYS.STORE_PROFILE, legacyProfile);
+      // Mark as not reviewed so non-blocking banner is shown
+      if (!this.cache.has(STORAGE_KEYS.STORE_PROFILE_REVIEWED)) {
+        this.setItem(STORAGE_KEYS.STORE_PROFILE_REVIEWED, false);
+      }
+      return legacyProfile;
+    }
+
+    // New installation: default store profile
+    const defaultProfile: StoreProfile = JSON.parse(JSON.stringify(DEFAULT_STORE_PROFILE));
+    return defaultProfile;
+  }
+
+  public saveStoreProfile(profile: StoreProfile): { success: boolean; error?: string } {
+    if (!profile.name || !profile.name.trim()) {
+      return { success: false, error: 'اسم المحل مطلوب' };
+    }
+
+    // Validate logo size (<= 100KB: 100 * 1024 bytes)
+    if (profile.logo) {
+      const approxBytes = Math.round((profile.logo.length * 3) / 4);
+      if (approxBytes > 105 * 1024) {
+        return { success: false, error: 'حجم اللوجو يتجاوز 100 كيلوبايت. يرجى اختيار صورة أصغر حجماً.' };
+      }
+    }
+
+    // Ensure currency has a default
+    if (!profile.currency || !profile.currency.trim()) {
+      profile.currency = 'EGP';
+    }
+
+    // Ensure modules object exists with booleans
+    profile.modules = {
+      dairy: Boolean(profile.modules?.dairy),
+      weighingScale: Boolean(profile.modules?.weighingScale),
+      delivery: Boolean(profile.modules?.delivery),
+    };
+
+    this.setItem(STORAGE_KEYS.STORE_PROFILE, profile);
+    this.setItem(STORAGE_KEYS.STORE_PROFILE_REVIEWED, true);
+    this.addAuditLog('SYSTEM', 'تعديل بيانات المحل', 'الإعدادات', 'admin', `تم تحديث بيانات المحل: ${profile.name}`);
+    this.notifyAction(`تحديث بيانات المحل: ${profile.name}`);
+    return { success: true };
+  }
+
+  public isStoreProfileReviewed(): boolean {
+    return this.getItem<boolean>(STORAGE_KEYS.STORE_PROFILE_REVIEWED, true);
+  }
+
+  public setStoreProfileReviewed(reviewed: boolean): void {
+    this.setItem(STORAGE_KEYS.STORE_PROFILE_REVIEWED, reviewed);
+  }
+
+  public hasConfiguredStoreProfile(): boolean {
+    if (!this.cache.has(STORAGE_KEYS.STORE_PROFILE)) return false;
+    const profile = this.cache.get(STORAGE_KEYS.STORE_PROFILE) as StoreProfile;
+    return Boolean(profile && profile.name && profile.name.trim() !== '' && profile.name !== 'اسم المحل');
   }
 
   // --- USERS & ROLES MANAGEMENT ---
@@ -659,10 +754,10 @@ class StorageService {
 
   // --- PRODUCTS (SINGLE WAREHOUSE) ---
   public getProducts(): Product[] {
-    let products = this.getItem<Product[]>(STORAGE_KEYS.PRODUCTS, INITIAL_PRODUCTS);
-    if (!products || !Array.isArray(products) || products.length === 0) {
-      products = INITIAL_PRODUCTS;
-      this.setItem(STORAGE_KEYS.PRODUCTS, INITIAL_PRODUCTS);
+    let products = this.getItem<Product[]>(STORAGE_KEYS.PRODUCTS, []);
+    if (!products || !Array.isArray(products)) {
+      products = [];
+      this.setItem(STORAGE_KEYS.PRODUCTS, products);
     }
     // Backward compatibility migration for single warehouse
     let migrated = false;
@@ -705,10 +800,10 @@ class StorageService {
 
   // --- CUSTOMERS & STATEMENTS ---
   public getCustomers(): Customer[] {
-    const custs = this.getItem<Customer[]>(STORAGE_KEYS.CUSTOMERS, INITIAL_CUSTOMERS);
-    if (!custs || !Array.isArray(custs) || custs.length === 0) {
-      this.setItem(STORAGE_KEYS.CUSTOMERS, INITIAL_CUSTOMERS);
-      return INITIAL_CUSTOMERS;
+    const custs = this.getItem<Customer[]>(STORAGE_KEYS.CUSTOMERS, []);
+    if (!custs || !Array.isArray(custs)) {
+      this.setItem(STORAGE_KEYS.CUSTOMERS, []);
+      return [];
     }
     return custs;
   }
@@ -759,7 +854,12 @@ class StorageService {
 
   // --- SUPPLIERS ---
   public getSuppliers(): Supplier[] {
-    return this.getItem<Supplier[]>(STORAGE_KEYS.SUPPLIERS, INITIAL_SUPPLIERS);
+    const suppliers = this.getItem<Supplier[]>(STORAGE_KEYS.SUPPLIERS, []);
+    if (!suppliers || !Array.isArray(suppliers)) {
+      this.setItem(STORAGE_KEYS.SUPPLIERS, []);
+      return [];
+    }
+    return suppliers;
   }
 
   public saveSupplier(supplier: Supplier): void {
@@ -1595,7 +1695,10 @@ class StorageService {
   /**
    * Updates memory cache with transactional restored payload without re-queueing IDB writes
    */
-  public applyRestoredMemoryPayload(data: Record<string, any>): void {
+  public applyRestoredMemoryPayload(rawInput: Record<string, any>): void {
+    const data = (rawInput && typeof rawInput === 'object' && rawInput.data && typeof rawInput.data === 'object' && !Array.isArray(rawInput.data))
+      ? rawInput.data
+      : rawInput;
     if (data.products !== undefined) this.cache.set(STORAGE_KEYS.PRODUCTS, data.products);
     if (data.customers !== undefined) this.cache.set(STORAGE_KEYS.CUSTOMERS, data.customers);
     if (data.suppliers !== undefined) this.cache.set(STORAGE_KEYS.SUPPLIERS, data.suppliers);
@@ -1608,6 +1711,17 @@ class StorageService {
     if (data.users !== undefined) this.cache.set(STORAGE_KEYS.USERS, data.users);
     if (data.currentShift !== undefined) this.cache.set(STORAGE_KEYS.SHIFT, data.currentShift);
     if (data.parkedCarts !== undefined) this.cache.set(STORAGE_KEYS.PARKED_CARTS, data.parkedCarts);
+
+    if (data.storeProfile !== undefined) {
+      this.cache.set(STORAGE_KEYS.STORE_PROFILE, data.storeProfile);
+      this.cache.set(STORAGE_KEYS.STORE_PROFILE_REVIEWED, true);
+    } else {
+      // Legacy backup without StoreProfile: determine appropriate profile
+      const hasProducts = Array.isArray(data.products) && data.products.length > 0;
+      const fallbackProfile = hasProducts ? JSON.parse(JSON.stringify(LEGACY_STORE_PROFILE)) : JSON.parse(JSON.stringify(DEFAULT_STORE_PROFILE));
+      this.cache.set(STORAGE_KEYS.STORE_PROFILE, fallbackProfile);
+      this.cache.set(STORAGE_KEYS.STORE_PROFILE_REVIEWED, false);
+    }
 
     this.pendingWrites.clear();
     this.migrationRecoveryRequired = false;

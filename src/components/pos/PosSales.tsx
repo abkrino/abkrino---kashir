@@ -58,6 +58,7 @@ export const PosSales: React.FC<PosSalesProps> = ({
   onCancelEdit,
 }) => {
   const isAdmin = currentUser.role === 'ADMIN' || currentUser.permissions?.canViewProfits;
+  const storeProfile = storage.getStoreProfile();
 
   // Safe default walk-in customer fallback
   const DEFAULT_WALKIN_CUSTOMER: Customer = {
@@ -766,20 +767,22 @@ export const PosSales: React.FC<PosSalesProps> = ({
           </button>
 
           {/* Quick Weighing Scale Modal Trigger */}
-          <button
-            type="button"
-            onClick={() => {
-              const firstWeighing = products.find(p => p.isWeighing) || null;
-              if (firstWeighing) {
-                setWeighingProduct(firstWeighing);
-                setWeighingGrams(250);
-              }
-            }}
-            className="min-h-[46px] px-3.5 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 dark:hover:bg-blue-900 border border-blue-300 dark:border-blue-700 text-blue-800 dark:text-blue-300 rounded-xl text-xs font-black flex items-center justify-center flex-1 md:flex-initial gap-1.5 cursor-pointer shadow-xs"
-          >
-            <Scale className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-            <span>ميزان الألبان والجبن</span>
-          </button>
+          {storeProfile.modules.weighingScale && (
+            <button
+              type="button"
+              onClick={() => {
+                const firstWeighing = products.find(p => p.isWeighing) || null;
+                if (firstWeighing) {
+                  setWeighingProduct(firstWeighing);
+                  setWeighingGrams(250);
+                }
+              }}
+              className="min-h-[46px] px-3.5 bg-blue-50 dark:bg-blue-950/60 hover:bg-blue-100 dark:hover:bg-blue-900 border border-blue-300 dark:border-blue-700 text-blue-800 dark:text-blue-300 rounded-xl text-xs font-black flex items-center justify-center flex-1 md:flex-initial gap-1.5 cursor-pointer shadow-xs"
+            >
+              <Scale className="w-4 h-4 text-blue-600 dark:text-blue-400" />
+              <span>ميزان الباركود والوزن</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -1036,13 +1039,13 @@ export const PosSales: React.FC<PosSalesProps> = ({
                               <Star className="w-2.5 h-2.5 fill-white" />
                               <span>شائع</span>
                             </span>
-                          ) : isDairy ? (
+                          ) : (storeProfile.modules.dairy && isDairy) ? (
                             <span className={`${cardSize === 'COMPACT' ? 'text-[8px] px-1 py-0.5' : 'text-[9px] px-1.5 py-0.5'} bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 font-bold rounded-md`}>
                               ❄️ ألبان
                             </span>
                           ) : null}
 
-                          {isWeighed && (
+                          {storeProfile.modules.weighingScale && isWeighed && (
                             <span className={`${cardSize === 'COMPACT' ? 'text-[8px] px-1 py-0.5' : 'text-[9px] px-1.5 py-0.5'} bg-indigo-600 text-white rounded-md font-bold flex items-center gap-0.5`}>
                               <Scale className="w-2.5 h-2.5" />
                               <span>ميزان</span>
@@ -1492,7 +1495,7 @@ export const PosSales: React.FC<PosSalesProps> = ({
               <div>
                 <span className="text-xs bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1">
                   <Scale className="w-3 h-3" />
-                  ميزان قسم الألبان والأجبان
+                  {storeProfile.modules.dairy ? 'ميزان قسم الألبان والأجبان' : 'ميزان الأصناف والوزن'}
                 </span>
                 <h3 className="text-base font-black text-slate-900 dark:text-white mt-1">
                   {weighingProduct.name}

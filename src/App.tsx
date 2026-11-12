@@ -21,11 +21,15 @@ import { PrintableInvoice } from './components/common/PrintableInvoice';
 import { EnvironmentBanner } from './components/common/EnvironmentBanner';
 import { LoginModal } from './components/auth/LoginModal';
 import { AdminSetupModal } from './components/auth/AdminSetupModal';
+import { InitialSetupWizard } from './components/auth/InitialSetupWizard';
+import { StoreProfileSettings } from './components/settings/StoreProfileSettings';
 import { LicenseGate } from './components/license/LicenseGate';
 import { CloudDashboard } from './components/cloud/CloudDashboard';
 import { cloudService } from './services/cloudService';
 import { licenseService } from './services/licenseService';
-import { authSecurityService } from './services/authSecurityService';
+import { canAccessTab, authSecurityService } from './services/authSecurityService';
+import { UnauthorizedState } from './components/common/FeedbackStates';
+import { UnifiedSettings, SettingsSubTab } from './components/settings/UnifiedSettings';
 import { tabLockService } from './services/tabLockService';
 import { orgSyncService } from './services/orgSyncService';
 import { snapshotService } from './services/snapshotService';
@@ -552,11 +556,11 @@ export default function App() {
     );
   }
 
-  // 3. Admin Setup Gatekeeper: First run after activation when no admin exists (Requirement 3)
+  // 3. First-Run Setup Gatekeeper (Store Profile & Admin Setup - Requirement 4)
   if (!hasAdmin) {
     return (
-      <AdminSetupModal
-        onAdminCreated={(newAdmin) => {
+      <InitialSetupWizard
+        onComplete={(newAdmin) => {
           refreshAll();
           setCurrentUser(newAdmin);
           setIsLocked(false);
@@ -571,7 +575,7 @@ export default function App() {
       <div className="min-h-screen bg-slate-900 text-white flex items-center justify-center font-sans" dir="rtl">
         <div className="text-center space-y-4">
           <div className="w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
-          <p className="text-lg font-bold text-slate-200">جاري تشغيل نظام كاشير السوبر ماركت وقسم الألبان...</p>
+          <p className="text-lg font-bold text-slate-200">جاري تشغيل نظام الكاشير وإدارة المبيعات...</p>
         </div>
       </div>
     );
@@ -609,6 +613,35 @@ export default function App() {
         onOpenLogin={() => setIsLoginOpen(true)}
         onToggleMobileMenu={() => setIsMobileMenuOpen(prev => !prev)}
       />
+
+      {/* Non-blocking banner: Review store profile for upgraded installation (Requirement 5) */}
+      {!storage.isStoreProfileReviewed() && currentUser?.role === 'ADMIN' && (
+        <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2.5 text-xs font-bold text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-between gap-2 shadow-xs">
+          <div className="flex items-center gap-2">
+            <span className="text-base">💡</span>
+            <span>يرجى مراجعة وتحديث بيانات المحل التجاري وعنوانه وأرقامه لتظهر في بونات الكاشير والفواتير والتقارير.</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCurrentTab('store-profile')}
+              className="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1 rounded-lg text-xs font-black cursor-pointer shadow-xs transition-colors"
+            >
+              راجع بيانات المحل
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                storage.setStoreProfileReviewed(true);
+                refreshAll();
+              }}
+              className="text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white px-2 py-1 text-xs cursor-pointer"
+            >
+              تجاهل الآن ✕
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Persistent Write Error Alert Banner (Requirement 7) */}
       {writeError && (
@@ -705,117 +738,126 @@ export default function App() {
         {/* Content Viewport with extra bottom padding on mobile/tablet */}
         <main className="flex-1 overflow-y-auto p-2.5 sm:p-4 md:p-6 pb-24 lg:pb-6 bg-slate-100/90 dark:bg-slate-950/90 transition-colors">
           <div className="max-w-7xl mx-auto">
-            {currentTab === 'dashboard' && (
-              <Dashboard
-                products={storage.getProducts()}
-                customers={storage.getCustomers()}
-                suppliers={storage.getSuppliers()}
-                invoices={storage.getSalesInvoices()}
-                cashMovements={storage.getCashMovements()}
-                currentCash={currentCash}
-                onNavigate={setCurrentTab}
-                onOpenTransferModal={() => setCurrentTab('inventory')}
-              />
-            )}
-
-            {currentTab === 'pos' && (
-              <PosSales
-                currentUser={currentUser}
-                editingInvoice={editingInvoice}
-                onCancelEdit={() => setEditingInvoice(null)}
-                onInvoiceCreated={(invoice, shouldPrint = true) => {
-                  setEditingInvoice(null);
-                  refreshAll();
-                  if (shouldPrint) {
-                    setActivePrintInvoice(invoice);
-                  }
-                }}
-                onOpenCustomerModal={() => setCurrentTab('customers')}
-              />
-            )}
-
-            {currentTab === 'invoices' && (
-              <InvoicesManager
-                currentUser={currentUser}
-                onNewInvoice={() => {
+            {/* RBAC Route Guard (Requirement 4) */}
+            {!canAccessTab(currentUser, currentTab) ? (
+              <UnauthorizedState
+                title="غير مصرح بالدخول"
+                message="ليس لديك الصلاحية المطلوبة للوصول إلى هذه الشاشة أو التقرير. يرجى مراجعة مدير النظام لمنحك الصلاحية اللازمة."
+                onNavigatePos={() => {
                   setEditingInvoice(null);
                   setCurrentTab('pos');
                 }}
-                onEditInvoice={(inv) => {
-                  setEditingInvoice(inv);
-                  setCurrentTab('pos');
-                }}
-                onPrintInvoice={(inv) => {
-                  setActivePrintInvoice(inv);
-                }}
-                onRefreshData={refreshAll}
+                onNavigateHome={() => setCurrentTab('dashboard')}
               />
-            )}
+            ) : (
+              <>
+                {currentTab === 'dashboard' && (
+                  <Dashboard
+                    products={storage.getProducts()}
+                    customers={storage.getCustomers()}
+                    suppliers={storage.getSuppliers()}
+                    invoices={storage.getSalesInvoices()}
+                    cashMovements={storage.getCashMovements()}
+                    currentCash={currentCash}
+                    onNavigate={setCurrentTab}
+                    onOpenTransferModal={() => setCurrentTab('inventory')}
+                  />
+                )}
 
-            {currentTab === 'inventory' && (
-              <InventoryManager
-                currentUser={currentUser}
-                onRefreshData={refreshAll}
-              />
-            )}
+                {currentTab === 'pos' && (
+                  <PosSales
+                    currentUser={currentUser}
+                    editingInvoice={editingInvoice}
+                    onCancelEdit={() => setEditingInvoice(null)}
+                    onInvoiceCreated={(invoice, shouldPrint = true) => {
+                      setEditingInvoice(null);
+                      refreshAll();
+                      if (shouldPrint) {
+                        setActivePrintInvoice(invoice);
+                      }
+                    }}
+                    onOpenCustomerModal={() => setCurrentTab('customers')}
+                  />
+                )}
 
-            {currentTab === 'purchasing' && (
-              <PurchasingManager
-                currentUser={currentUser}
-                onRefreshData={refreshAll}
-              />
-            )}
+                {currentTab === 'invoices' && (
+                  <InvoicesManager
+                    currentUser={currentUser}
+                    onNewInvoice={() => {
+                      setEditingInvoice(null);
+                      setCurrentTab('pos');
+                    }}
+                    onEditInvoice={(inv) => {
+                      setEditingInvoice(inv);
+                      setCurrentTab('pos');
+                    }}
+                    onPrintInvoice={(inv) => {
+                      setActivePrintInvoice(inv);
+                    }}
+                    onRefreshData={refreshAll}
+                  />
+                )}
 
-            {currentTab === 'customers' && (
-              <CustomerLedger
-                currentUser={currentUser}
-                onRefreshData={refreshAll}
-              />
-            )}
+                {currentTab === 'inventory' && (
+                  <InventoryManager
+                    currentUser={currentUser}
+                    onRefreshData={refreshAll}
+                  />
+                )}
 
-            {currentTab === 'suppliers' && (
-              <SupplierLedger
-                currentUser={currentUser}
-                onRefreshData={refreshAll}
-              />
-            )}
+                {currentTab === 'purchasing' && (
+                  <PurchasingManager
+                    currentUser={currentUser}
+                    onRefreshData={refreshAll}
+                  />
+                )}
 
-            {currentTab === 'cash' && (
-              <CashManager
-                currentUser={currentUser}
-                onRefreshData={refreshAll}
-              />
-            )}
+                {currentTab === 'customers' && (
+                  <CustomerLedger
+                    currentUser={currentUser}
+                    onRefreshData={refreshAll}
+                  />
+                )}
 
-            {currentTab === 'cloud' && (
-              <CloudDashboard
-                currentUser={currentUser}
-                onRefreshAll={refreshAll}
-                onNavigateTab={(tab) => setCurrentTab(tab as TabType)}
-              />
-            )}
+                {currentTab === 'suppliers' && (
+                  <SupplierLedger
+                    currentUser={currentUser}
+                    onRefreshData={refreshAll}
+                  />
+                )}
 
-            {currentTab === 'users' && (
-              <UsersManager
-                currentUser={currentUser}
-                onRefreshData={refreshAll}
-              />
-            )}
+                {currentTab === 'cash' && (
+                  <CashManager
+                    currentUser={currentUser}
+                    onRefreshData={refreshAll}
+                  />
+                )}
 
-            {currentTab === 'reports' && (
-              <ProfitReports currentUser={currentUser} />
-            )}
+                {currentTab === 'users' && (
+                  <UsersManager
+                    currentUser={currentUser}
+                    onRefreshData={refreshAll}
+                  />
+                )}
 
-            {currentTab === 'settings' && (
-              <ThemeAccessibilitySettings />
-            )}
+                {currentTab === 'reports' && (
+                  <ProfitReports currentUser={currentUser} />
+                )}
 
-            {currentTab === 'backup' && (
-              <BackupManager onRefreshData={refreshAll} />
-            )}
-
-            {currentTab === 'audit' && (
-              <AuditTrail />
+                {/* Unified Settings Screen: handles settings, store-profile, backup, cloud, and audit (Requirement 2) */}
+                {['settings', 'store-profile', 'backup', 'cloud', 'audit'].includes(currentTab) && (
+                  <UnifiedSettings
+                    currentUser={currentUser}
+                    initialSubTab={
+                      currentTab === 'settings'
+                        ? 'store-profile'
+                        : (currentTab as SettingsSubTab)
+                    }
+                    onRefreshAll={refreshAll}
+                    onNavigateTab={(tab) => setCurrentTab(tab)}
+                  />
+                )}
+              </>
             )}
           </div>
         </main>
@@ -840,7 +882,7 @@ export default function App() {
           }`}
         >
           <LayoutDashboard className={`w-5 h-5 ${currentTab === 'dashboard' ? 'stroke-[2.5]' : ''}`} />
-          <span className="text-[10px] mt-0.5">الرئيسية</span>
+          <span className="text-[10px] mt-0.5">لوحة التحكم</span>
         </button>
 
         {/* 2. POS (F1 - Hero Button) */}
@@ -858,7 +900,7 @@ export default function App() {
           }`}
         >
           <ShoppingCart className="w-5 h-5" />
-          <span className="text-[10px] mt-0.5">كاشير F1</span>
+          <span className="text-[10px] mt-0.5">الكاشير (F1)</span>
         </button>
 
         {/* 3. Invoices */}
@@ -875,7 +917,7 @@ export default function App() {
           }`}
         >
           <Receipt className={`w-5 h-5 ${currentTab === 'invoices' ? 'stroke-[2.5]' : ''}`} />
-          <span className="text-[10px] mt-0.5">الفواتير</span>
+          <span className="text-[10px] mt-0.5">فواتير المبيعات</span>
         </button>
 
         {/* 4. Inventory */}
@@ -892,7 +934,7 @@ export default function App() {
           }`}
         >
           <Boxes className={`w-5 h-5 ${currentTab === 'inventory' ? 'stroke-[2.5]' : ''}`} />
-          <span className="text-[10px] mt-0.5">المخزن</span>
+          <span className="text-[10px] mt-0.5">الأصناف</span>
         </button>
 
         {/* 5. More / Full Menu Drawer */}

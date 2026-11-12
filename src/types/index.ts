@@ -1,6 +1,23 @@
 export type Role = 'ADMIN' | 'SALES';
 export type StorageType = 'AMBIENT' | 'CHILLED' | 'FROZEN'; // عادي / تبريد ثلاجة (ألبان وأجبان) / مجمدات
 
+export type TabType = 
+  | 'dashboard'
+  | 'pos'
+  | 'invoices'
+  | 'inventory'
+  | 'purchasing'
+  | 'customers'
+  | 'suppliers'
+  | 'cash'
+  | 'cloud'
+  | 'users'
+  | 'reports'
+  | 'store-profile'
+  | 'settings'
+  | 'backup'
+  | 'audit';
+
 export interface UserPermissions {
   canEditPrice: boolean; // تعديل سعر بيع الوحدة في الفاتورة
   canGiveDiscount: boolean; // إعطاء خصم على الفاتورة
@@ -204,6 +221,8 @@ export interface PurchaseInvoice {
 
   isStockInserted: boolean; // هل تم إدراج البضاعة في المخزن
   notes?: string;
+  fundingDetails?: CashMovementFunding;
+  affectsDrawer?: boolean;
 }
 
 export interface StockAdjustment {
@@ -222,12 +241,62 @@ export interface StockAdjustment {
   performedBy: string;
 }
 
+export type AccountingMode = 'DAILY_DRAWER' | 'MONTHLY_POOL' | 'CAPITAL';
+
+export type FundingSourceType = 
+  | 'DRAWER'
+  | 'OWNER_LOAN'
+  | 'CUSTODY'
+  | 'EXTERNAL_FUNDING'
+  | 'DRAWER_NEGATIVE'
+  | 'OTHER';
+
+export interface FundingSource {
+  id: string;
+  type: FundingSourceType;
+  label: string;
+  note?: string;
+  isActive: boolean;
+  isSystemDefault?: boolean;
+}
+
+export interface CashMovementFunding {
+  type: FundingSourceType;
+  label: string;
+  note?: string;
+}
+
+export interface CashOutEvaluation {
+  allowed: boolean;
+  requiresFundingSource: boolean;
+  available: number;
+  mode: AccountingMode;
+  reason?: string;
+}
+
+export const DEFAULT_FUNDING_SOURCES: FundingSource[] = [
+  { id: 'fs-drawer', type: 'DRAWER', label: 'نقدية الدرج المباشرة', isActive: true, isSystemDefault: true },
+  { id: 'fs-owner-loan', type: 'OWNER_LOAN', label: 'سلفة / تمويل شخصي من صاحب العمل', isActive: true, isSystemDefault: true },
+  { id: 'fs-custody', type: 'CUSTODY', label: 'عهدة نقدية خارجية مستلمة', isActive: true, isSystemDefault: true },
+  { id: 'fs-external', type: 'EXTERNAL_FUNDING', label: 'تمويل خارجي مستقل', isActive: true, isSystemDefault: true },
+  { id: 'fs-drawer-neg', type: 'DRAWER_NEGATIVE', label: 'سحب مباشر بالسالب مع تسوية الوردية لاحقاً', isActive: true, isSystemDefault: true },
+  { id: 'fs-other', type: 'OTHER', label: 'أخرى (مصدر مخصص)', isActive: true, isSystemDefault: true },
+];
+
 export interface CashMovement {
   id: string;
   date: string;
   time: string;
   type: 'IN' | 'OUT';
-  category: 'SALES_CASH' | 'CUSTOMER_COLLECTION' | 'SUPPLIER_PAYMENT' | 'EXPENSE' | 'OPENING_BALANCE' | 'DRAWER_ADJUSTMENT' | 'INVOICE_REVERSAL';
+  category: 
+    | 'SALES_CASH' 
+    | 'CUSTOMER_COLLECTION' 
+    | 'SUPPLIER_PAYMENT' 
+    | 'EXPENSE' 
+    | 'OPENING_BALANCE' 
+    | 'DRAWER_ADJUSTMENT' 
+    | 'INVOICE_REVERSAL'
+    | 'CAPITAL_INJECTION';
   categoryLabelArabic: string;
   amount: number;
   referenceId?: string;
@@ -235,7 +304,9 @@ export interface CashMovement {
   performedBy: string;
   supplierId?: string;
   supplierName?: string;
-  fundingSource?: 'DRAWER' | 'PERSONAL_LOAN' | 'DRAWER_NEGATIVE' | 'OTHER';
+  fundingSource?: FundingSourceType | 'PERSONAL_LOAN' | 'DRAWER_NEGATIVE' | 'DRAWER' | 'OTHER';
+  fundingDetails?: CashMovementFunding;
+  affectsDrawer?: boolean; // الافتراضي true إذا لم يُحدد. في نظام CAPITAL يكون false للمصروفات والمشتريات
 }
 
 export interface Expense {
@@ -246,6 +317,8 @@ export interface Expense {
   amount: number;
   notes: string;
   recordedBy: string;
+  fundingDetails?: CashMovementFunding;
+  affectsDrawer?: boolean;
 }
 
 export interface AuditLog {
@@ -332,4 +405,55 @@ export interface CloudSettings {
   performanceMonitoringEnabled: boolean;
   lastCloudSyncTimestamp?: string;
 }
+
+export interface StoreProfileModules {
+  dairy: boolean; // قسم الألبان والجبن
+  weighingScale: boolean; // الميزان وقراءة الباركود الوزني
+  delivery: boolean; // خدمة التوصيل والدليفري
+}
+
+export interface StoreProfile {
+  name: string;
+  branchName?: string;
+  phone: string;
+  address: string;
+  logo?: string; // اختياري، صورة مضمنة Base64 <= 100KB
+  receiptHeader?: string;
+  receiptFooter?: string;
+  taxNumber?: string;
+  currency: string; // افتراضياً 'EGP'
+  modules: StoreProfileModules;
+}
+
+export const DEFAULT_STORE_PROFILE: StoreProfile = {
+  name: 'اسم المحل',
+  branchName: '',
+  phone: '',
+  address: '',
+  receiptHeader: '',
+  receiptFooter: '',
+  taxNumber: '',
+  currency: 'EGP',
+  modules: {
+    dairy: false,
+    weighingScale: false,
+    delivery: false,
+  },
+};
+
+export const LEGACY_STORE_PROFILE: StoreProfile = {
+  name: 'سوبر ماركت وماركت الألبان الخير والبركة',
+  branchName: 'الفرع الرئيسي',
+  phone: '01000000000',
+  address: 'القاهرة والجيزة',
+  receiptHeader: 'قسم الألبان والأجبان • بقالة جافة • مشروبات ومنظفات • كاشير ودليفري',
+  receiptFooter: 'شكراً لزيارتكم سوبر ماركت وماركت الألبان الخير والبركة',
+  taxNumber: '',
+  currency: 'EGP',
+  modules: {
+    dairy: true,
+    weighingScale: true,
+    delivery: false,
+  },
+};
 

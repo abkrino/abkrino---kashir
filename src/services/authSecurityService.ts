@@ -1,4 +1,4 @@
-import { User, Role, UserPermissions } from '../types';
+import { User, Role, UserPermissions, TabType } from '../types';
 import { storage } from './storageService';
 
 export type SensitiveOperation =
@@ -171,6 +171,52 @@ export function checkUserPermission(
       return Boolean(perms.canManageCash);
     case 'manage_users':
       return false; // Cashiers can never manage users
+    default:
+      return false;
+  }
+}
+
+/**
+ * Validates whether the given user has permission to access a specific navigation tab.
+ * Enforces strict role-based access control (RBAC):
+ * - Admins have access to all tabs.
+ * - Inactive users have no access.
+ * - Cashiers are restricted from Administration, Users, Settings, Backups, and Cloud.
+ * - Cashiers can access operational tabs based on their granted permissions.
+ */
+export function canAccessTab(user: User | null | undefined, tab: TabType): boolean {
+  if (!user || user.isActive === false) {
+    return false;
+  }
+
+  // Admin has full system access to all tabs
+  if (user.role === 'ADMIN') {
+    return true;
+  }
+
+  switch (tab) {
+    case 'dashboard':
+    case 'pos':
+    case 'invoices':
+    case 'customers':
+      return true;
+    case 'cash':
+      return checkUserPermission(user, 'manage_cash');
+    case 'inventory':
+      return checkUserPermission(user, 'manage_products');
+    case 'purchasing':
+    case 'suppliers':
+      return checkUserPermission(user, 'manage_purchases');
+    case 'reports':
+      return checkUserPermission(user, 'view_profits');
+    case 'users':
+    case 'settings':
+    case 'store-profile':
+    case 'backup':
+    case 'cloud':
+    case 'audit':
+      // Cashiers can never access management or configuration
+      return false;
     default:
       return false;
   }

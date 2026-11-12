@@ -14,11 +14,20 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
 }) => {
   const [format, setFormat] = useState<'THERMAL' | 'A4'>('THERMAL');
 
+  const storeProfile = storage.getStoreProfile();
+  const storeName = storeProfile.name || 'اسم المحل';
+  const storeBranch = storeProfile.branchName;
+  const storePhone = storeProfile.phone;
+  const storeAddress = storeProfile.address;
+  const storeHeader = storeProfile.receiptHeader;
+  const storeFooter = storeProfile.receiptFooter || (`شكراً لزيارتكم ${storeName}`);
+  const storeTax = storeProfile.taxNumber;
+  const storeLogo = storeProfile.logo;
+  const currencySymbol = storeProfile.currency === 'EGP' ? 'ج.م' : (storeProfile.currency || 'ج.م');
+
   const customers = storage.getCustomers();
   const customer = customers.find(c => c.id === invoice.customerId);
-
-  const COMPANY_PHONE = '01023456789 - 01156789012';
-  const customerPhone = customer?.phone || '01000000000';
+  const customerPhone = customer?.phone || '-';
 
   const handlePrint = () => {
     window.print();
@@ -76,10 +85,32 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
             /* 80mm ESC/POS Thermal Receipt for Supermarket & Dairy */
             <div className="bg-white text-black p-4 w-[330px] font-mono text-xs shadow-xl rounded border border-slate-300 leading-relaxed select-text print:shadow-none print:border-none print:w-full">
                 <div className="text-center pb-2 border-b-2 border-dashed border-black">
-                  <h2 className="font-black text-sm text-slate-900">سوبر ماركت وماركت الألبان الخير والبركة</h2>
-                  <p className="text-[10px] font-bold text-slate-800">قسم الألبان والأجبان • بقالة جافة • مشروبات ومنظفات</p>
-                  <p className="text-[10px]">خدمة الدليفري والتوصيل: {COMPANY_PHONE}</p>
-                  <p className="text-[9px] text-gray-700">فرع الماركت الرئيسي — كاشير سريع وميزان</p>
+                  {storeLogo && (
+                    <img
+                      src={storeLogo}
+                      alt="Store Logo"
+                      className="h-10 mx-auto object-contain mb-1 filter grayscale"
+                    />
+                  )}
+                  <h2 className="font-black text-sm text-slate-900">{storeName}</h2>
+                  {storeBranch && (
+                    <p className="text-[10px] font-bold text-slate-800">{storeBranch}</p>
+                  )}
+                  {storeHeader && (
+                    <p className="text-[10px] font-bold text-slate-800">{storeHeader}</p>
+                  )}
+                  {storePhone && (
+                    <p className="text-[10px]">
+                      {storeProfile.modules.delivery ? 'خدمة الدليفري والتوصيل: ' : 'هاتف المحل: '}
+                      <span dir="ltr">{storePhone}</span>
+                    </p>
+                  )}
+                  {storeAddress && (
+                    <p className="text-[9px] text-gray-700">{storeAddress}</p>
+                  )}
+                  {storeTax && (
+                    <p className="text-[8px] text-gray-600">الرقم الضريبي: {storeTax}</p>
+                  )}
                 </div>
 
                 <div className="py-2 border-b border-dashed border-black text-[10px] space-y-1">
@@ -155,8 +186,8 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
                           <td className="py-1 text-center font-bold font-mono">
                             {it.unit === 'KG' ? Number(it.quantity).toFixed(3) : it.quantity}
                           </td>
-                          <td className="py-1 text-center font-mono">{it.unitPrice.toFixed(2)}</td>
-                          <td className="py-1 text-left font-bold font-mono">{it.totalPrice.toFixed(2)}</td>
+                          <td className="py-1 text-center font-mono">{Number(it.unitPrice ?? 0).toFixed(2)}</td>
+                          <td className="py-1 text-left font-bold font-mono">{Number(it.totalPrice ?? 0).toFixed(2)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -217,24 +248,54 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
                 </div>
 
                 <div className="text-center pt-2 border-t-2 border-dashed border-black text-[9px] leading-tight space-y-0.5">
-                  <p className="font-bold">شكراً لزيارتكم سوبر ماركت وماركت الألبان الخير والبركة</p>
-                  <p>منتجات الألبان والأغذية المبردة تستبدل خلال 24 ساعة بشرط سلامة التبريد والعبوة</p>
-                  <p className="font-mono text-[8px] text-gray-600">خدمة التوصيل السريع والدليفري: {COMPANY_PHONE}</p>
+                  <p className="font-bold">{storeFooter}</p>
+                  {storeProfile.modules.dairy && (
+                    <p>منتجات الأغذية المبردة تستبدل خلال 24 ساعة بشرط سلامة التبريد والعبوة</p>
+                  )}
+                  {storeProfile.modules.delivery && storePhone && (
+                    <p className="font-mono text-[8px] text-gray-600">
+                      خدمة التوصيل السريع والدليفري: <span dir="ltr">{storePhone}</span>
+                    </p>
+                  )}
                 </div>
               </div>
           ) : (
             /* A4 Wholesale Invoice Layout */
             <div className="bg-white text-black p-6 w-[520px] text-xs shadow-xl rounded border border-slate-300 leading-normal select-text print:shadow-none print:border-none print:w-full">
               <div className="flex justify-between items-start pb-3 border-b-2 border-slate-900">
-                <div>
-                  <h2 className="font-black text-base text-slate-900">سوبر ماركت وماركت الألبان الخير والبركة</h2>
-                  <p className="text-[11px] text-slate-700">قسم الألبان والأجبان • بقالة جافة • مشروبات ومنظفات • كاشير ودليفري</p>
-                  <p className="text-[10px] font-bold text-slate-800">هاتف الماركت والدليفري: {COMPANY_PHONE}</p>
-                  <p className="text-[10px] text-slate-500">القاهرة والجيزة — خدمة عملاء السوبر ماركت</p>
+                <div className="flex items-start gap-3">
+                  {storeLogo && (
+                    <img
+                      src={storeLogo}
+                      alt="Store Logo"
+                      className="h-14 max-w-[120px] object-contain filter grayscale"
+                    />
+                  )}
+                  <div>
+                    <h2 className="font-black text-base text-slate-900">{storeName}</h2>
+                    {storeBranch && (
+                      <p className="text-xs font-bold text-slate-800">{storeBranch}</p>
+                    )}
+                    {storeHeader && (
+                      <p className="text-[11px] text-slate-700">{storeHeader}</p>
+                    )}
+                    {storePhone && (
+                      <p className="text-[10px] font-bold text-slate-800">
+                        {storeProfile.modules.delivery ? 'هاتف المبيعات والدليفري: ' : 'هاتف المحل: '}
+                        <span dir="ltr">{storePhone}</span>
+                      </p>
+                    )}
+                    {storeAddress && (
+                      <p className="text-[10px] text-slate-500">{storeAddress}</p>
+                    )}
+                    {storeTax && (
+                      <p className="text-[9px] text-slate-600">الرقم الضريبي: {storeTax}</p>
+                    )}
+                  </div>
                 </div>
                 <div className="text-left font-mono">
                   <span className="bg-slate-200 border border-slate-400 px-2.5 py-1 text-xs font-black block mb-1">
-                    فاتورة مبيعات قطاعي / سوبر ماركت
+                    فاتورة مبيعات
                   </span>
                   <span className="text-[11px] font-bold">رقم: {invoice.invoiceNumber}</span>
                 </div>
@@ -303,8 +364,8 @@ export const PrintableInvoice: React.FC<PrintableInvoiceProps> = ({
                       <td className="p-1.5 text-center font-mono font-bold">
                         {it.unit === 'KG' ? Number(it.quantity).toFixed(3) : it.quantity}
                       </td>
-                      <td className="p-1.5 text-center font-mono">{it.unitPrice.toFixed(2)}</td>
-                      <td className="p-1.5 text-left font-mono font-bold">{it.totalPrice.toFixed(2)}</td>
+                      <td className="p-1.5 text-center font-mono">{Number(it.unitPrice ?? 0).toFixed(2)}</td>
+                      <td className="p-1.5 text-left font-mono font-bold">{Number(it.totalPrice ?? 0).toFixed(2)}</td>
                     </tr>
                   ))}
                 </tbody>

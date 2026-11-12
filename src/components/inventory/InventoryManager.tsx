@@ -30,6 +30,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
   currentUser,
   onRefreshData,
 }) => {
+  const storeProfile = storage.getStoreProfile();
   const [products, setProducts] = useState<Product[]>(storage.getProducts());
   const [activeSubTab, setActiveSubTab] = useState<'PRODUCTS' | 'COMPANIES' | 'ADJUSTMENTS'>('PRODUCTS');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -891,55 +892,65 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                 </div>
               </div>
 
-              {/* Supermarket Dairy & Weighing Options */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-blue-50/50 dark:bg-blue-950/20 p-3 rounded-xl border border-blue-200 dark:border-blue-800">
-                <div className="sm:col-span-1 flex items-center pt-2">
-                  <label className="flex items-center gap-2 cursor-pointer font-bold text-xs text-blue-900 dark:text-blue-200">
-                    <input
-                      type="checkbox"
-                      checked={isWeighing}
-                      onChange={(e) => {
-                        setIsWeighing(e.target.checked);
-                        if (e.target.checked) {
-                          setBaseUnit('كجم');
-                          setStorageType('CHILLED');
-                        }
-                      }}
-                      className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
-                    />
-                    <span>⚖️ يباع بالميزان (بالكيلو والجرام)</span>
-                  </label>
-                </div>
+              {/* Department Specific Options (Only when dairy or weighingScale module is active) */}
+              {(storeProfile.modules.dairy || storeProfile.modules.weighingScale) && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-blue-50/50 dark:bg-blue-950/20 p-3 rounded-xl border border-blue-200 dark:border-blue-800">
+                  {storeProfile.modules.weighingScale && (
+                    <div className="sm:col-span-1 flex items-center pt-2">
+                      <label className="flex items-center gap-2 cursor-pointer font-bold text-xs text-blue-900 dark:text-blue-200">
+                        <input
+                          type="checkbox"
+                          checked={isWeighing}
+                          onChange={(e) => {
+                            setIsWeighing(e.target.checked);
+                            if (e.target.checked) {
+                              setBaseUnit('كجم');
+                              if (storeProfile.modules.dairy) {
+                                setStorageType('CHILLED');
+                              }
+                            }
+                          }}
+                          className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500"
+                        />
+                        <span>⚖️ يباع بالميزان (بالكيلو والجرام)</span>
+                      </label>
+                    </div>
+                  )}
 
-                <div>
-                  <label className="text-slate-800 dark:text-slate-200 block mb-1 font-bold text-xs">
-                    حفظ وتبريد (قسم الألبان):
-                  </label>
-                  <select
-                    value={storageType}
-                    onChange={(e) => setStorageType(e.target.value as 'AMBIENT' | 'CHILLED' | 'FROZEN')}
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl p-2 text-slate-900 dark:text-white font-bold text-xs"
-                  >
-                    <option value="AMBIENT">📦 جاف عادي (رفوف)</option>
-                    <option value="CHILLED">❄️ تبريد ثلاجة (ألبان وأجبان 4°C)</option>
-                    <option value="FROZEN">🧊 مجمدات (-18°C)</option>
-                  </select>
-                </div>
+                  {storeProfile.modules.dairy && (
+                    <div>
+                      <label className="text-slate-800 dark:text-slate-200 block mb-1 font-bold text-xs">
+                        حفظ وتبريد الأغذية:
+                      </label>
+                      <select
+                        value={storageType}
+                        onChange={(e) => setStorageType(e.target.value as 'AMBIENT' | 'CHILLED' | 'FROZEN')}
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl p-2 text-slate-900 dark:text-white font-bold text-xs"
+                      >
+                        <option value="AMBIENT">📦 جاف عادي (رفوف)</option>
+                        <option value="CHILLED">❄️ تبريد ثلاجة (ألبان وأجبان 4°C)</option>
+                        <option value="FROZEN">🧊 مجمدات (-18°C)</option>
+                      </select>
+                    </div>
+                  )}
 
-                <div>
-                  <label className="text-slate-800 dark:text-slate-200 block mb-1 font-bold text-xs">
-                    وزن الفارغ للطبق (جرام):
-                  </label>
-                  <input
-                    type="number"
-                    min="0"
-                    value={tareGrams}
-                    onChange={(e) => setTareGrams(parseInt(e.target.value) || 0)}
-                    placeholder="5 جم"
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl p-2 text-slate-900 dark:text-white font-mono font-bold text-xs"
-                  />
+                  {storeProfile.modules.weighingScale && (
+                    <div>
+                      <label className="text-slate-800 dark:text-slate-200 block mb-1 font-bold text-xs">
+                        وزن الفارغ للطبق (جرام):
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        value={tareGrams}
+                        onChange={(e) => setTareGrams(parseInt(e.target.value) || 0)}
+                        placeholder="5 جم"
+                        className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl p-2 text-slate-900 dark:text-white font-mono font-bold text-xs"
+                      />
+                    </div>
+                  )}
                 </div>
-              </div>
+              )}
 
               {/* Packaging Units: Wholesale (كرتونة / بالتة) & Retail (علبة / شريط / كيس...) */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-emerald-50/40 dark:bg-emerald-950/20 p-3.5 rounded-xl border border-emerald-200 dark:border-emerald-800/40">

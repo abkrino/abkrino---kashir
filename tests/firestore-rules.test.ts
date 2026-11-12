@@ -21,7 +21,7 @@ import { doc, getDoc, setDoc, updateDoc, collectionGroup, getDocs, serverTimesta
 const PROJECT_ID = 'abkrino-ai-rules-test';
 const RULES_PATH = resolve(__dirname, '../firestore.rules');
 
-describe('Firestore Multi-Tenant Security Rules', () => {
+describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('Firestore Multi-Tenant Security Rules', () => {
   let testEnv: RulesTestEnvironment;
 
   beforeAll(async () => {

@@ -1,27 +1,33 @@
-import React, { useState, useEffect } from 'react';
-import { User } from '../types';
-import { themeService, ThemeMode, FontSize } from '../services/themeService';
+import React, { useState, useEffect, useRef } from 'react';
+import { User, StoreProfile } from '../types';
+import { storage } from '../services/storageService';
+import { themeService, ThemeMode } from '../services/themeService';
+import { checkUserPermission } from '../services/authSecurityService';
+import { cloudService } from '../services/cloudService';
 import { 
   ShieldCheck, 
   UserCheck, 
-  HardDrive, 
   Coins, 
   Lock, 
   Sun, 
   Moon, 
-  Type, 
+  Menu, 
+  Store, 
+  Cloud,
+  LogOut,
+  ChevronDown,
+  Wifi,
+  WifiOff,
   Sliders,
-  Menu,
-  Store,
-  Cloud
+  Settings
 } from 'lucide-react';
 
 interface NavbarProps {
   currentUser: User;
-  onSwitchUser: (userId: string) => void;
-  users: User[];
+  onSwitchUser?: (userId: string) => void;
+  users?: User[];
   currentCash: number;
-  onOpenBackupModal: () => void;
+  onOpenBackupModal?: () => void;
   onOpenSettingsModal?: () => void;
   onNavigateCloud?: () => void;
   onLockScreen: () => void;
@@ -31,19 +37,48 @@ interface NavbarProps {
 
 export const Navbar: React.FC<NavbarProps> = ({
   currentUser,
-  users,
   currentCash,
   onOpenSettingsModal,
   onNavigateCloud,
   onLockScreen,
+  onOpenLogin,
   onToggleMobileMenu,
 }) => {
-  const [themeSettings, setThemeSettings] = useState(themeService.getSettings());
+  const [storeProfile, setStoreProfile] = useState<StoreProfile>(() => storage.getStoreProfile());
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
+  const [isSyncing, setIsSyncing] = useState<boolean>(cloudService.isSyncing());
+  const userMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    return themeService.subscribe((updated) => {
-      setThemeSettings(updated);
+    const unsubStorage = storage.onAction(() => {
+      setStoreProfile(storage.getStoreProfile());
     });
+
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    const unsubCloud = cloudService.subscribe(() => {
+      setIsSyncing(cloudService.isSyncing());
+    });
+
+    const handleClickOutside = (e: MouseEvent) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
+        setIsUserMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+
+    return () => {
+      unsubStorage();
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      unsubCloud();
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
   }, []);
 
   const isDark = themeService.isDarkMode();
@@ -53,29 +88,20 @@ export const Navbar: React.FC<NavbarProps> = ({
     themeService.updateSetting('theme', nextTheme);
   };
 
-  const handleCycleFontSize = () => {
-    const sizes: FontSize[] = ['normal', 'large', 'huge'];
-    const nextIndex = (sizes.indexOf(themeSettings.fontSize) + 1) % sizes.length;
-    themeService.updateSetting('fontSize', sizes[nextIndex]);
-  };
-
-  const fontSizeLabels: Record<FontSize, string> = {
-    normal: 'عادي',
-    large: 'كبير',
-    huge: 'ضخم',
-  };
+  const isAdmin = currentUser.role === 'ADMIN';
+  const canViewCash = isAdmin || checkUserPermission(currentUser, 'manage_cash');
 
   return (
-    <header className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-b border-slate-300 dark:border-slate-800 shadow-sm sticky top-0 z-40 select-none transition-colors">
-      <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between gap-2">
-        {/* Left/Right RTL Brand & Mobile Hamburger Toggle */}
-        <div className="flex items-center gap-2 sm:gap-3">
-          {/* Mobile & Tablet Hamburger Button */}
+    <header className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-b border-slate-200 dark:border-slate-800 shadow-xs sticky top-0 z-40 select-none transition-colors" dir="rtl">
+      <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between gap-3">
+        {/* Right Section: Brand & Mobile Menu Toggle */}
+        <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+          {/* Mobile & Tablet Hamburger Toggle */}
           {onToggleMobileMenu && (
             <button
               type="button"
               onClick={onToggleMobileMenu}
-              className="lg:hidden min-w-[44px] min-h-[44px] p-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 flex items-center justify-center cursor-pointer transition-colors shadow-xs"
+              className="lg:hidden p-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 cursor-pointer transition shadow-xs"
               aria-label="فتح القائمة الرئيسية"
               title="فتح القائمة الرئيسية"
             >
@@ -83,130 +109,190 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           )}
 
-          {/* Logo Brand */}
-          <div className="bg-emerald-600 text-white p-2 sm:p-2.5 rounded-xl font-bold shadow-sm flex items-center gap-2 shrink-0">
-            <Store className="w-5 h-5 sm:w-6 sm:h-6" />
-            <span className="text-sm sm:text-base font-black tracking-wider hidden xs:inline">سوبر ماركت</span>
-          </div>
+          {/* Store Logo or Icon */}
+          {storeProfile.logo ? (
+            <div className="h-9 sm:h-10 w-9 sm:w-10 rounded-xl bg-white dark:bg-slate-800 p-0.5 border border-slate-200 dark:border-slate-700 flex items-center justify-center shrink-0 overflow-hidden shadow-xs">
+              <img src={storeProfile.logo} alt="شعار المحل" className="max-h-full max-w-full object-contain" />
+            </div>
+          ) : (
+            <div className="bg-emerald-600 text-white p-2 rounded-xl font-bold shadow-xs flex items-center justify-center shrink-0">
+              <Store className="w-5 h-5" />
+            </div>
+          )}
 
-          <div>
-            <h1 className="font-black text-sm sm:text-base md:text-lg text-slate-900 dark:text-slate-100 flex items-center gap-1.5 sm:gap-2 leading-tight">
-              <span className="truncate max-w-[150px] sm:max-w-none">كاشير السوبر ماركت وماركت الألبان</span>
-              <span className="bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 text-[10px] sm:text-xs px-2 py-0.5 rounded-full border border-emerald-300 dark:border-emerald-700 hidden sm:flex items-center gap-1 font-mono font-bold">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                بيع قطاعي وميزان
-              </span>
+          {/* Store Name & Branch */}
+          <div className="min-w-0">
+            <h1 className="font-black text-sm sm:text-base text-slate-900 dark:text-slate-100 flex items-center gap-1.5 leading-tight truncate">
+              <span className="truncate">{storeProfile.name || 'اسم المحل'}</span>
+              {storeProfile.branchName && (
+                <span className="text-xs font-bold text-slate-400 dark:text-slate-500 shrink-0">
+                  — {storeProfile.branchName}
+                </span>
+              )}
             </h1>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400 hidden md:block font-medium">
-              قسم الألبان والأجبان • بقالة جافة • مشروبات • كاشير ودليفري
+            <p className="text-[11px] text-slate-400 dark:text-slate-500 truncate hidden sm:block">
+              {storeProfile.receiptHeader || 'نظام إدارة المبيعات ونقاط البيع المتكامل'}
             </p>
           </div>
         </div>
 
-        {/* Quick Accessibility & Operational Controls */}
-        <div className="flex items-center gap-1.5 sm:gap-2.5">
-          {/* Cloud Status Indicator */}
-          {onNavigateCloud && (
-            <button
-              type="button"
-              onClick={onNavigateCloud}
-              className="h-10 sm:h-11 px-2.5 sm:px-3 rounded-xl border border-emerald-300 dark:border-emerald-700 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/60 dark:hover:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5 cursor-pointer transition-all shadow-xs text-xs font-bold"
-              title="الكلود متصل ومؤمن (اضغط لفتح لوحة تحكم الكلود والنسخ الاحتياطي)"
-            >
-              <Cloud className="w-4 h-4 text-emerald-600 dark:text-emerald-400 animate-pulse" />
-              <span className="hidden sm:inline font-black">الكلود متصل ✓</span>
-            </button>
-          )}
-
-          {/* Cash Drawer Widget (Compact on mobile, full on tablet/desktop) */}
-          <div className="bg-amber-50 dark:bg-slate-800/90 border border-amber-300 dark:border-slate-700 rounded-xl px-2.5 sm:px-3.5 py-1.5 sm:py-2 flex items-center gap-2 shadow-xs">
-            <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg bg-amber-100 dark:bg-amber-950/80 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0">
-              <Coins className="w-4 h-4 sm:w-5 sm:h-5" />
-            </div>
-            <div>
-              <span className="text-[9px] sm:text-[11px] text-slate-600 dark:text-slate-400 block font-bold leading-none hidden sm:block">
-                نقدية الدرج:
-              </span>
-              <span className="text-xs sm:text-base font-black text-amber-700 dark:text-amber-300 font-mono leading-none">
-                {currentCash.toLocaleString('ar-EG', { minimumFractionDigits: 0 })} <span className="text-[10px] font-sans font-bold">ج</span>
-              </span>
-            </div>
-          </div>
-
-          {/* Quick Light / Dark Mode Toggle Button */}
+        {/* Left Section: Status, Cash, and User Menu */}
+        <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Connection & Cloud Sync Status Indicator */}
           <button
             type="button"
-            onClick={handleToggleTheme}
-            className="min-w-[40px] sm:min-w-[44px] h-10 sm:h-11 px-2.5 sm:px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 flex items-center justify-center gap-1.5 cursor-pointer transition-all shadow-xs text-xs font-bold"
-            title={isDark ? 'التحويل إلى الوضع الفاتح (Light Mode)' : 'التحويل إلى الوضع الداكن (Dark Mode)'}
-            aria-label="تبديل مظهر الواجهة"
+            onClick={onNavigateCloud}
+            className={`h-9 px-2.5 sm:px-3 rounded-xl border flex items-center gap-1.5 text-xs font-bold transition-all shadow-xs cursor-pointer ${
+              isOnline
+                ? 'bg-emerald-50 dark:bg-emerald-950/50 border-emerald-200 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50'
+                : 'bg-amber-50 dark:bg-amber-950/50 border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50'
+            }`}
+            title={
+              isOnline
+                ? (isSyncing ? 'جاري المزامنة السحابية...' : 'متصل بالسحابة وتعمل المزامنة التلقائية')
+                : 'الوضع المحلي (أوفلاين) - البيانات محفوظة محلياً بأمان'
+            }
           >
-            {isDark ? (
-              <>
-                <Sun className="w-4 h-4 sm:w-5 sm:h-5 text-amber-400" />
-                <span className="hidden lg:inline">فاتح</span>
-              </>
+            {isOnline ? (
+              <Cloud className={`w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 ${isSyncing ? 'animate-bounce' : ''}`} />
             ) : (
-              <>
-                <Moon className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-600" />
-                <span className="hidden lg:inline">داكن</span>
-              </>
+              <WifiOff className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
             )}
+            <span className="hidden sm:inline font-bold">
+              {isOnline ? (isSyncing ? 'مزامنة...' : 'السحابة متصلة') : 'محلي (أوفلاين)'}
+            </span>
           </button>
 
-          {/* Quick Font Size Zoom Button */}
-          <button
-            type="button"
-            onClick={handleCycleFontSize}
-            className="min-w-[40px] sm:min-w-[44px] h-10 sm:h-11 px-2.5 sm:px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 flex items-center justify-center gap-1 cursor-pointer transition-all shadow-xs text-xs font-bold font-mono"
-            title="تكبير حجم الخط لكبار السن وضعاف النظر"
-            aria-label="تغيير حجم الخط"
-          >
-            <Type className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <span className="hidden sm:inline font-bold">{fontSizeLabels[themeSettings.fontSize]}</span>
-          </button>
-
-          {/* Settings Shortcut Button */}
-          {onOpenSettingsModal && (
-            <button
-              type="button"
-              onClick={onOpenSettingsModal}
-              className="hidden md:flex h-10 sm:h-11 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 items-center gap-1.5 cursor-pointer transition-all shadow-xs text-xs font-bold"
-              title="إعدادات المظهر والخطوط وإمكانية الوصول"
+          {/* Cash Drawer Widget (Restricted by Permission) */}
+          {canViewCash && (
+            <div
+              className="bg-amber-50 dark:bg-slate-800/90 border border-amber-200 dark:border-slate-700 rounded-xl px-2.5 sm:px-3 py-1 flex items-center gap-2 shadow-xs"
+              title="رصيد النقدية الحالي في الدرج"
             >
-              <Sliders className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-              <span className="hidden lg:inline">المظهر</span>
-            </button>
+              <div className="w-6 h-6 rounded-lg bg-amber-100 dark:bg-amber-950/80 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0">
+                <Coins className="w-3.5 h-3.5" />
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-bold leading-none hidden sm:block">
+                  رصيد الدرج:
+                </span>
+                <span className="text-xs sm:text-sm font-black text-amber-800 dark:text-amber-300 font-mono leading-none">
+                  {currentCash.toLocaleString('ar-EG', { minimumFractionDigits: 0 })}{' '}
+                  <span className="text-[10px] font-sans font-bold">ج.م</span>
+                </span>
+              </div>
+            </div>
           )}
 
-          {/* User Profile & Lock Screen */}
-          <div className="flex items-center gap-1.5 bg-slate-100 dark:bg-slate-800/90 p-1 rounded-xl border border-slate-300 dark:border-slate-700">
-            <div className="flex items-center gap-1.5 px-1.5 text-xs">
-              <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-white shrink-0 ${currentUser.role === 'ADMIN' ? 'bg-emerald-600' : 'bg-blue-600'}`}>
-                {currentUser.role === 'ADMIN' ? (
-                  <ShieldCheck className="w-4 h-4" />
-                ) : (
-                  <UserCheck className="w-4 h-4" />
-                )}
+          {/* User Menu Dropdown Container */}
+          <div className="relative" ref={userMenuRef}>
+            <button
+              type="button"
+              onClick={() => setIsUserMenuOpen(prev => !prev)}
+              className="flex items-center gap-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 p-1.5 sm:px-2.5 sm:py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 cursor-pointer transition shadow-xs text-right"
+              aria-expanded={isUserMenuOpen}
+              aria-haspopup="true"
+            >
+              <div
+                className={`w-7 h-7 rounded-lg flex items-center justify-center text-white shrink-0 ${
+                  isAdmin ? 'bg-emerald-600' : 'bg-blue-600'
+                }`}
+              >
+                {isAdmin ? <ShieldCheck className="w-4 h-4" /> : <UserCheck className="w-4 h-4" />}
               </div>
-              <div className="hidden sm:block">
-                <span className="font-bold block text-slate-900 dark:text-slate-100 leading-tight truncate max-w-[90px]">
+              <div className="hidden sm:block text-right">
+                <span className="font-black block text-xs text-slate-900 dark:text-slate-100 leading-tight truncate max-w-[100px]">
                   {currentUser.fullName}
                 </span>
-                <span className="text-[10px] text-slate-500 dark:text-slate-400 font-semibold block leading-none">
-                  {currentUser.role === 'ADMIN' ? 'المدير' : 'كاشير'}
+                <span className="text-[10px] text-slate-400 dark:text-slate-400 font-bold block leading-none">
+                  {isAdmin ? 'مدير النظام' : 'كاشير'}
                 </span>
               </div>
-            </div>
-
-            <button
-              onClick={onLockScreen}
-              className="p-1.5 sm:p-2 rounded-lg bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 cursor-pointer transition-colors"
-              title="قفل الشاشة والأمان"
-              aria-label="قفل الشاشة"
-            >
-              <Lock className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400 hidden sm:block" />
             </button>
+
+            {/* Dropdown Menu */}
+            {isUserMenuOpen && (
+              <div
+                className="absolute left-0 mt-2 w-56 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-xl p-2 z-50 text-right animate-in fade-in zoom-in-95 duration-100"
+                dir="rtl"
+              >
+                {/* User info in dropdown */}
+                <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-800 mb-1">
+                  <p className="text-xs font-black text-slate-900 dark:text-slate-100 truncate">
+                    {currentUser.fullName}
+                  </p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 font-bold">
+                    @{currentUser.username} • {isAdmin ? 'مدير عام' : 'كاشير مبيعات'}
+                  </p>
+                </div>
+
+                {/* Dark / Light Mode Toggle */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleToggleTheme();
+                    setIsUserMenuOpen(false);
+                  }}
+                  className="w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition"
+                >
+                  <div className="flex items-center gap-2">
+                    {isDark ? (
+                      <Sun className="w-4 h-4 text-amber-400" />
+                    ) : (
+                      <Moon className="w-4 h-4 text-indigo-600" />
+                    )}
+                    <span>مظهر الواجهة:</span>
+                  </div>
+                  <span className="text-[11px] font-mono text-slate-400">
+                    {isDark ? 'الوضع الداكن' : 'الوضع الفاتح'}
+                  </span>
+                </button>
+
+                {/* Lock Screen */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsUserMenuOpen(false);
+                    onLockScreen();
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition"
+                >
+                  <Lock className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                  <span>قفل الشاشة والأمان</span>
+                </button>
+
+                {/* Settings (if admin) */}
+                {isAdmin && onOpenSettingsModal && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsUserMenuOpen(false);
+                      onOpenSettingsModal();
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 cursor-pointer transition"
+                  >
+                    <Settings className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                    <span>إعدادات النظام</span>
+                  </button>
+                )}
+
+                <div className="my-1 border-t border-slate-100 dark:border-slate-800" />
+
+                {/* Switch User / Logout */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsUserMenuOpen(false);
+                    onOpenLogin();
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-black text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/50 cursor-pointer transition"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>تبديل المستخدم</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

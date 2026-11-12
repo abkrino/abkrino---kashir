@@ -193,21 +193,21 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
     if (res.success) {
       setStatusMessage({ 
         type: 'success', 
-        text: 'تمت استعادة نسخة الكلود بنجاح وتحديث كافة الأرصدة والفواتير!' 
+        text: 'تمت استعادة النسخة السحابية بنجاح وتحديث كافة الأرصدة والفواتير!' 
       });
       onRefreshAll();
     } else {
-      setStatusMessage({ type: 'error', text: res.error || 'فشلت استعادة نسخة الكلود.' });
+      setStatusMessage({ type: 'error', text: res.error || 'فشلت استعادة النسخة السحابية.' });
     }
   };
 
   // Handle Delete Cloud Backup
   const handleDeleteCloudBackup = async (backupId: string) => {
-    if (!window.confirm('هل تريد بالتأكيد حذف هذه النسخة من الكلود؟')) return;
+    if (!window.confirm('هل تريد بالتأكيد حذف هذه النسخة السحابية؟')) return;
     await cloudService.deleteCloudBackup(backupId);
     const list = await cloudService.getCloudBackupsList();
     setCloudBackups(list);
-    setStatusMessage({ type: 'info', text: 'تم حذف النسخة المحددة من الكلود.' });
+    setStatusMessage({ type: 'info', text: 'تم حذف النسخة المحددة من السحابة.' });
   };
 
   // Local Device Backup Export
@@ -254,7 +254,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
     setStatusMessage({
       type: 'success',
       text: enabled 
-        ? 'تم تفعيل الحفظ التلقائي على الكلود بعد كل عملية (فاتورة / سداد / حركة نقدية).' 
+        ? 'تم تفعيل الحفظ التلقائي على السحابة بعد كل عملية (فاتورة / سداد / حركة نقدية).' 
         : 'تم تعطيل الحفظ التلقائي. يمكنك المزامنة يدوياً في أي وقت.'
     });
   };
@@ -270,15 +270,15 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                 <Cloud className="w-6 h-6 animate-pulse" />
               </span>
               <h2 className="text-xl sm:text-2xl font-black tracking-wide">
-                مركز إدارة وتشغيل الكلود والسحابة
+                مركز إدارة وتشغيل المزامنة السحابية
               </h2>
               <span className="bg-emerald-500/30 text-emerald-200 border border-emerald-400/40 text-xs px-3 py-1 rounded-full font-mono font-bold flex items-center gap-1.5">
                 <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400 animate-ping' : 'bg-amber-400'}`}></span>
-                {isOnline ? 'الكلود متصل ومؤمن ✓' : 'الوضع المحلي (أوفلاين)'}
+                {isOnline ? 'السحابة متصلة ومؤمنة ✓' : 'الوضع المحلي (أوفلاين)'}
               </span>
             </div>
             <p className="text-xs sm:text-sm text-emerald-100/90 font-medium max-w-2xl leading-relaxed">
-              مشروع الكلود المرتبط: <span className="font-mono font-bold text-white">abkrino-ai</span> • إدارة حساب المالك، المحل وسلسلة المحلات، والنسخ السحابي والمحلي.
+              المشروع السحابي المرتبط: <span className="font-mono font-bold text-white">abkrino-ai</span> • إدارة حساب المالك، المحل وسلسلة المحلات، والنسخ السحابي والمحلي.
             </p>
           </div>
 
@@ -291,7 +291,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
               className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs sm:text-sm font-black rounded-xl cursor-pointer shadow-md flex items-center gap-2 transition-all active:scale-95"
             >
               <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span>{isSyncing ? 'جاري المزامنة...' : 'مزامنة الكلود الآن'}</span>
+              <span>{isSyncing ? 'جاري المزامنة...' : 'المزامنة السحابية الآن'}</span>
             </button>
 
             <div className="bg-white/10 backdrop-blur-md px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 border border-white/20">
@@ -355,7 +355,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
         {[
           { id: 'ACCOUNT_LOGIN', label: 'المصادقة وربط المحل (إيميل وباسورد)', icon: Mail },
           { id: 'BACKUPS', label: 'النسخ السحابية والمحلية والاسترداد (Dual Backup)', icon: Database, badge: `${cloudBackups.length}` },
-          { id: 'SETTINGS', label: 'إعدادات الكلود والحفظ التلقائي', icon: Sliders },
+          { id: 'SETTINGS', label: 'إعدادات السحابة والمزامنة التلقائية', icon: Sliders },
         ].map(tab => (
           <button
             key={tab.id}
@@ -562,14 +562,14 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
           <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 p-4 rounded-2xl shadow-xs flex flex-col md:flex-row items-center justify-between gap-3">
             <div className="flex-1 w-full">
               <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                حفظ نسخة احتياطية فورية على الكلود:
+                حفظ نسخة احتياطية فورية على السحابة:
               </label>
               <div className="flex gap-2">
                 <input
                   type="text"
                   value={manualBackupNote}
                   onChange={(e) => setManualBackupNote(e.target.value)}
-                  placeholder="وصف اختياري للنسخة (مثلاً: قبل جرد الألبان أو نهاية اليوم)..."
+                  placeholder="وصف اختياري للنسخة (مثلاً: قبل الجرد أو نهاية الوردية)..."
                   className="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 dark:text-white"
                 />
                 <button
@@ -579,7 +579,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black text-xs rounded-xl cursor-pointer flex items-center gap-1.5 shadow-xs shrink-0"
                 >
                   <CloudCheck className="w-4 h-4" />
-                  <span>{isCreatingBackup ? 'جاري الحفظ...' : 'حفظ على الكلود الآن'}</span>
+                  <span>{isCreatingBackup ? 'جاري الحفظ...' : 'حفظ على السحابة الآن'}</span>
                 </button>
               </div>
             </div>
@@ -615,7 +615,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
               <div className="flex items-center gap-2">
                 <Database className="w-4 h-4 text-emerald-600" />
                 <h3 className="text-xs sm:text-sm font-black text-slate-900 dark:text-white">
-                  سجل النسخ الاحتياطية المحفوظة على الكلود ({cloudBackups.length})
+                  سجل النسخ الاحتياطية المحفوظة سحابياً ({cloudBackups.length})
                 </h3>
               </div>
               <span className="text-[11px] text-slate-500">
@@ -626,7 +626,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
             <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[460px] overflow-y-auto">
               {cloudBackups.length === 0 ? (
                 <div className="p-8 text-center text-slate-400 text-xs">
-                  لا توجد نسخ احتياطية محفوظة على الكلود حتى الآن. اضغط "حفظ على الكلود الآن" لإنشاء أول نسخة.
+                  لا توجد نسخ احتياطية سحابية حتى الآن. اضغط "حفظ على السحابة الآن" لإنشاء أول نسخة.
                 </div>
               ) : (
                 cloudBackups.map(backup => (
@@ -640,7 +640,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                           نسخة: {backup.dateStr} - {backup.timeStr}
                         </span>
                         <span className="text-[10px] bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 px-2 py-0.5 rounded-full font-mono font-bold">
-                          الكلود ✓
+                          السحابة ✓
                         </span>
                       </div>
                       <div className="text-[11px] text-slate-500 flex items-center gap-3 flex-wrap">
@@ -669,7 +669,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                         type="button"
                         onClick={() => handleDeleteCloudBackup(backup.id)}
                         className="p-2 text-slate-400 hover:text-rose-600 cursor-pointer rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/50"
-                        title="حذف النسخة من الكلود"
+                        title="حذف النسخة من السحابة"
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -682,12 +682,12 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
         </div>
       )}
 
-      {/* --- 3. CLOUD SETTINGS ("طريقة حفظ النسخة على الكلود بعد كل عملية يتم ضبطها من الاعدادات") --- */}
+      {/* --- 3. CLOUD SETTINGS ("طريقة حفظ النسخة على السحابة بعد كل عملية يتم ضبطها من الاعدادات") --- */}
       {activeSubTab === 'SETTINGS' && (
         <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl p-5 shadow-xs space-y-4">
           <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-3">
             <Sliders className="w-4 h-4 text-emerald-600" />
-            <span>إعدادات الكلود ومزامنة البيانات التلقائية</span>
+            <span>إعدادات المزامنة السحابية التلقائية</span>
           </h3>
 
           <div className="space-y-4">
@@ -695,10 +695,10 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
             <div className="flex items-center justify-between p-3.5 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800">
               <div className="space-y-0.5">
                 <span className="text-xs sm:text-sm font-black text-slate-900 dark:text-white block">
-                  حفظ نسخة على الكلود بعد كل عملية تلقائياً
+                  حفظ نسخة على السحابة بعد كل عملية تلقائياً
                 </span>
                 <span className="text-xs text-slate-500 dark:text-slate-400 block">
-                  عند إصدار كل فاتورة مبيعات، تسجيل مصروف، أو تحصيل نقدية، يتم حفظ التعديلات على الجهاز وفوراً على الكلود.
+                  عند إصدار كل فاتورة مبيعات، تسجيل مصروف، أو تحصيل نقدية، يتم حفظ التعديلات على الجهاز وفوراً على السحابة.
                 </span>
               </div>
               <label className="relative inline-flex items-center cursor-pointer shrink-0 mr-3">

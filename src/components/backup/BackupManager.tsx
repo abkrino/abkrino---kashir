@@ -339,13 +339,13 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
         <div className="space-y-1">
           <div className="flex items-center gap-2">
             <Cloud className="w-5 h-5 text-emerald-300" />
-            <h3 className="font-black text-sm sm:text-base">النسخ الاحتياطي والمزامنة السحابية (الكلود)</h3>
+            <h3 className="font-black text-sm sm:text-base">النسخ الاحتياطي والمزامنة السحابية</h3>
             <span className="text-[10px] bg-emerald-400/20 text-emerald-200 border border-emerald-300/30 px-2.5 py-0.5 rounded-full font-bold">
               نشط ومؤمن ✓
             </span>
           </div>
           <p className="text-xs text-emerald-100 max-w-xl leading-relaxed">
-            يتم حفظ لقطات كاملة من قاعدة البيانات على الكلود تلقائياً بعد كل عملية. يمكنك حفظ نسخة سحابية فورية أو استرجاع أي نسخة سابقة.
+            يتم حفظ لقطات كاملة من قاعدة البيانات سحابياً تلقائياً بعد كل عملية. يمكنك حفظ نسخة سحابية فورية أو استرجاع أي نسخة سابقة.
           </p>
         </div>
 
@@ -356,19 +356,19 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
             if (res.success) {
               setStatusMessage({
                 type: 'success',
-                text: 'تم حفظ نسخة سحابية متكاملة على الكلود بنجاح!',
+                text: 'تم حفظ نسخة سحابية متكاملة بنجاح!',
               });
             } else {
               setStatusMessage({
                 type: 'error',
-                text: res.error || 'فشل حفظ النسخة على الكلود.',
+                text: res.error || 'فشل حفظ النسخة السحابية.',
               });
             }
           }}
           className="px-4 py-2.5 bg-white text-emerald-900 hover:bg-emerald-50 active:scale-95 text-xs font-black rounded-xl cursor-pointer shadow-md flex items-center gap-2 transition-all shrink-0"
         >
           <CloudCheck className="w-4 h-4 text-emerald-700" />
-          <span>حفظ نسخة جديدة على الكلود الآن</span>
+          <span>حفظ نسخة سحابية جديدة الآن</span>
         </button>
       </div>
 

@@ -341,14 +341,14 @@ export const ThemeAccessibilitySettings: React.FC = () => {
           <div>
             <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <span className="p-1.5 bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 rounded-lg">☁️</span>
-              <span>إعدادات الكلود والحفظ التلقائي للنسخ</span>
+              <span>إعدادات السحابة والمزامنة التلقائية</span>
             </h3>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
-              ضبط طريقة حفظ نسخة البيانات على الكلود وعلى الجهاز بعد كل حركة كاشير أو تعديل مخزون.
+              ضبط طريقة حفظ نسخة البيانات على السحابة وعلى الجهاز بعد كل حركة كاشير أو تعديل مخزون.
             </p>
           </div>
           <span className="text-xs font-mono font-bold px-3 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700">
-            الكلود نشط ✓
+            السحابة نشطة ✓
           </span>
         </div>
 
@@ -356,10 +356,10 @@ export const ThemeAccessibilitySettings: React.FC = () => {
           <div className="flex items-center justify-between p-4 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800">
             <div className="space-y-1">
               <span className="text-sm font-black text-slate-900 dark:text-white block">
-                حفظ نسخة على الكلود بعد كل عملية تقوم بها على السيستم
+                حفظ نسخة على السحابة بعد كل عملية تقوم بها على السيستم
               </span>
               <span className="text-xs text-slate-500 dark:text-slate-400 block max-w-2xl leading-relaxed">
-                يقوم النظام بحفظ البيانات أولاً على الجهاز (أوفلاين محلي) ثم رفع نسخة مطابقة إلى الكلود تلقائياً لضمان عدم ضياع أي فاتورة بيع أو حركة نقدية.
+                يقوم النظام بحفظ البيانات أولاً على الجهاز (أوفلاين محلي) ثم رفع نسخة مطابقة إلى السحابة تلقائياً لضمان عدم ضياع أي فاتورة بيع أو حركة نقدية.
               </span>
             </div>
             <label className="relative inline-flex items-center cursor-pointer shrink-0 mr-4">
@@ -519,7 +519,7 @@ export const ThemeAccessibilitySettings: React.FC = () => {
         <div className="space-y-1">
           <p className="font-bold">ضمان الأمان وسلامة البيانات 100%:</p>
           <p className="text-xs leading-relaxed text-emerald-800 dark:text-emerald-300">
-            تغيير إعدادات المظهر والكلود لا يؤثر نهائياً على أي فواتير أو مخزون أو أرباح أو حسابات ديون أو موازين الخزينة. يتم الحفظ محلياً في ذاكرة التكوين وعلى الكلود لضمان أعلى مستويات الأمان.
+            تغيير إعدادات المظهر والسحابة لا يؤثر نهائياً على أي فواتير أو مخزون أو أرباح أو حسابات ديون أو موازين الخزينة. يتم الحفظ محلياً في ذاكرة التكوين وعلى السحابة لضمان أعلى مستويات الأمان.
           </p>
         </div>
       </div>

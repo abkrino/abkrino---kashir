@@ -41,6 +41,7 @@ describe('Local Snapshots, SHA-256 Checksum, Restore Safety & Bootstrap Idempote
     (storage as any).isFallback = false;
     (storage as any).migrationRecoveryRequired = false;
     await storage.init();
+    storage.loadDemoData();
   });
 
   afterEach(async () => {
