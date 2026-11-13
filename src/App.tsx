@@ -619,7 +619,7 @@ export default function App() {
         <div className="bg-amber-500/15 border-b border-amber-500/30 px-4 py-2.5 text-xs font-bold text-amber-900 dark:text-amber-200 flex flex-wrap items-center justify-between gap-2 shadow-xs">
           <div className="flex items-center gap-2">
             <span className="text-base">💡</span>
-            <span>يرجى مراجعة وتحديث بيانات المحل التجاري وعنوانه وأرقامه لتظهر في بونات الكاشير والفواتير والتقارير.</span>
+            <span>يرجى مراجعة بيانات المحل: رقم الهاتف والعنوان فارغان حالياً ويلزم إدخالهما ليظهرا في بونات الكاشير والفواتير والتقارير.</span>
           </div>
           <div className="flex items-center gap-2">
             <button

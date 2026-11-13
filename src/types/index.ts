@@ -237,7 +237,7 @@ export interface StockAdjustment {
   previousPieces: number;
   differencePieces: number; // الفرق بالقطع (+ زيادة أو - عجز)
   newPieces: number;
-  reason: 'AUDIT' | 'DAMAGE' | 'EXPIRY' | 'BONUS' | 'CORRECTION' | 'OTHER';
+  reason: 'AUDIT' | 'DAMAGE' | 'EXPIRY' | 'BONUS' | 'CORRECTION' | 'OPENING_BALANCE' | 'OTHER';
   reasonArabic: string;
   notes?: string;
   performedBy: string;
@@ -447,8 +447,8 @@ export const DEFAULT_STORE_PROFILE: StoreProfile = {
 export const LEGACY_STORE_PROFILE: StoreProfile = {
   name: 'سوبر ماركت وماركت الألبان الخير والبركة',
   branchName: 'الفرع الرئيسي',
-  phone: '01000000000',
-  address: 'القاهرة والجيزة',
+  phone: '',
+  address: '',
   receiptHeader: 'قسم الألبان والأجبان • بقالة جافة • مشروبات ومنظفات • كاشير ودليفري',
   receiptFooter: 'شكراً لزيارتكم سوبر ماركت وماركت الألبان الخير والبركة',
   taxNumber: '',

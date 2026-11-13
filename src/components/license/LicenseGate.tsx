@@ -101,7 +101,7 @@ export const LicenseGate: React.FC<LicenseGateProps> = ({ onActivationSuccess })
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
               <Laptop className="w-4 h-4 text-emerald-400" />
-              <span>معرّف الجهاز (Device ID):</span>
+              <span>معرّف الجهاز:</span>
             </span>
             <button
               type="button"
@@ -120,7 +120,7 @@ export const LicenseGate: React.FC<LicenseGateProps> = ({ onActivationSuccess })
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
                 <FileCheck className="w-4 h-4 text-emerald-400" />
-                <span>كود طلب الترخيص (Request Code):</span>
+                <span>كود طلب الترخيص:</span>
               </span>
               <button
                 type="button"

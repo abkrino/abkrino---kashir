@@ -18,8 +18,10 @@ import {
   X, 
   Barcode, 
   Layers,
-  ArrowUpDown
+  ArrowUpDown,
+  FileSpreadsheet
 } from 'lucide-react';
+import { ProductImportModal } from './ProductImportModal';
 
 interface InventoryManagerProps {
   currentUser: User;
@@ -39,6 +41,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
 
   // Modal States
   const [isAddProductModalOpen, setIsAddProductModalOpen] = useState<boolean>(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState<boolean>(false);
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
 
@@ -425,14 +428,24 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
             </button>
 
             {isAdmin && (
-              <button
-                type="button"
-                onClick={() => openAddModalForBrand()}
-                className="bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-md shadow-emerald-950/20 cursor-pointer transition-all"
-              >
-                <Plus className="w-4 h-4" />
-                <span>+ إضافة صنف جديد</span>
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsImportModalOpen(true)}
+                  className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 shadow-sm cursor-pointer transition-colors"
+                >
+                  <FileSpreadsheet className="w-4 h-4" />
+                  <span>استيراد أصناف</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openAddModalForBrand()}
+                  className="bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-md shadow-emerald-950/20 cursor-pointer transition-all"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>+ إضافة صنف جديد</span>
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -1103,7 +1116,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                   />
                 </div>
                 <div>
-                  <label className="text-slate-700 dark:text-slate-300 block mb-1 font-bold">رقم التشغيلة (Batch):</label>
+                  <label className="text-slate-700 dark:text-slate-300 block mb-1 font-bold">رقم التشغيلة:</label>
                   <input
                     type="text"
                     value={batchNumber}
@@ -1334,6 +1347,18 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {isAdmin && (
+        <ProductImportModal
+          isOpen={isImportModalOpen}
+          currentUser={currentUser}
+          onClose={() => setIsImportModalOpen(false)}
+          onImportComplete={() => {
+            setProducts(storage.getProducts());
+            onRefreshData();
+          }}
+        />
       )}
     </div>
   );

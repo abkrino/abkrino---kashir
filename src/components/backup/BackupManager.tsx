@@ -73,7 +73,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
     if (success) {
       setStatusMessage({
         type: 'success',
-        text: 'تم تفعيل الحفظ الدائم (Persistent Storage) بنجاح لحماية البيانات من الحذف التلقائي!',
+        text: 'تم تفعيل الحفظ الدائم بنجاح لحماية البيانات من الحذف التلقائي!',
       });
     } else {
       setStatusMessage({
@@ -143,7 +143,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
       if (res) {
         setStatusMessage({
           type: 'success',
-          text: 'تم إنشاء اللقطة الاستثنائية بنجاح وتصنيفها كمشبوهة (Suspicious) للاحتياط.',
+          text: 'تم إنشاء اللقطة الاستثنائية بنجاح وتصنيفها كمشبوهة للاحتياط.',
         });
         await loadSnapshots();
       }
@@ -172,6 +172,8 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
         ? 'إغلاق وردية'
         : snapshot.type === 'pre_restore'
         ? 'لقطة أمان قبل استعادة سابقة'
+        : snapshot.type === 'pre_import'
+        ? 'لقطة أمان قبل استيراد أصناف'
         : 'لقطة يدوية';
 
     const dateFormatted = `${snapshot.dateStr} - ${new Date(snapshot.timestamp).toLocaleTimeString('ar-EG', {
@@ -259,10 +261,10 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
 
   // Dry-Run Migration Simulation
   const handleSimulateMigration = () => {
-    setMigrationStatus('جاري فحص وتدقيق ملفات البرنامج القديم (Al-Bader / EasyStore)...');
+    setMigrationStatus('جاري فحص وتدقيق ملفات البرنامج القديم...');
     setTimeout(() => {
       setMigrationStatus(
-        'نتيجة الفحص التجريبي (Dry-Run): تم التحقق من 240 صنف، 45 عميل، 8 موردين. تم توحيد كود الصنف ومعاملات التحويل (كرتونة = 24 قطعة). لم يتم رصد أي تضارب باركود!'
+        'نتيجة الفحص التجريبي: تم التحقق من 240 صنف، 45 عميل، 8 موردين. تم توحيد كود الصنف ومعاملات التحويل (كرتونة = 24 قطعة). لم يتم رصد أي تضارب باركود!'
       );
     }, 1200);
   };
@@ -295,6 +297,12 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
         return (
           <span className="text-[10px] bg-purple-100 dark:bg-purple-950/80 text-purple-700 dark:text-purple-300 border border-purple-300 dark:border-purple-800 px-2 py-0.5 rounded font-bold">
             أمان قبل استعادة
+          </span>
+        );
+      case 'pre_import':
+        return (
+          <span className="text-[10px] bg-indigo-100 dark:bg-indigo-950/80 text-indigo-700 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-800 px-2 py-0.5 rounded font-bold">
+            أمان قبل استيراد
           </span>
         );
       default:
@@ -341,7 +349,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
             <Cloud className="w-5 h-5 text-emerald-300" />
             <h3 className="font-black text-sm sm:text-base">النسخ الاحتياطي والمزامنة السحابية</h3>
             <span className="text-[10px] bg-emerald-400/20 text-emerald-200 border border-emerald-300/30 px-2.5 py-0.5 rounded-full font-bold">
-              نشط ومؤمن ✓
+              {cloudService.isUserAuthenticated() && cloudService.isOnline() ? 'متصل ومؤمن ✓' : 'وضع محلي'}
             </span>
           </div>
           <p className="text-xs text-emerald-100 max-w-xl leading-relaxed">
@@ -516,7 +524,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 shadow-xs space-y-3 transition-colors">
           <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-sm">
             <Download className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <span>تصدير ملف النسخة الاحتياطية (SHA-256)</span>
+            <span>تصدير ملف النسخة الاحتياطية المؤمّنة</span>
           </div>
           <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
             يُصدّر ملف JSON مشفّر بتوقيع رقمي موثق مع فهرس كامل بعدد السجلات وإصدار المخطط لحمايته من أي عبث خارجي.
@@ -542,12 +550,12 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
             <span>استعادة من ملف خارجي (معاينة وفحص التوقيع)</span>
           </div>
           <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
-            يفحص صحة التوقيع الرقمي (SHA-256) وتوافق المخطط، ويعرض معاينة قبل الاستبدال مع لقطة أمان تلقائية للرجوع.
+            يفحص صحة التوقيع الرقمي وتوافق المخطط، ويعرض معاينة قبل الاستبدال مع لقطة أمان تلقائية للرجوع.
           </p>
           <div className="pt-2">
             <label className="bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl inline-flex items-center gap-2 shadow-md shadow-amber-950/20 cursor-pointer transition-colors">
               <Upload className="w-4 h-4" />
-              <span>اختيار ملف النسخة الاحتياطية (.json)</span>
+              <span>اختيار ملف النسخة الاحتياطية</span>
               <input type="file" accept=".json" onChange={handleFileSelect} className="hidden" />
             </label>
           </div>
@@ -566,10 +574,10 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
             </div>
             <div>
               <h3 className="font-bold text-sm text-slate-900 dark:text-white flex items-center gap-2">
-                <span>محرك التخزين المحلي الآمن (IndexedDB - kashir)</span>
+                <span>محرك التخزين المحلي الآمن</span>
                 {storageStatus?.isFallback ? (
                   <span className="text-[10px] bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/30 px-2 py-0.5 rounded-full font-bold">
-                    وضع التوافق (localStorage)
+                    وضع التوافق المحلي
                   </span>
                 ) : (
                   <span className="text-[10px] bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold">
@@ -598,7 +606,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2 text-xs border-t border-slate-100 dark:border-slate-800">
           <div className="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl space-y-1">
-            <span className="text-slate-500 dark:text-slate-400 block text-[11px]">حالة الحفظ الدائم (Persisted):</span>
+            <span className="text-slate-500 dark:text-slate-400 block text-[11px]">حالة الحفظ الدائم:</span>
             <span className="font-bold flex items-center gap-1.5 text-slate-800 dark:text-slate-200">
               {storageStatus?.persisted ? (
                 <>
@@ -640,7 +648,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
         <div className="flex items-center justify-between flex-wrap gap-2">
           <div className="flex items-center gap-2 text-slate-900 dark:text-white font-bold text-sm">
             <FileSpreadsheet className="w-4 h-4 text-blue-600 dark:text-blue-400" />
-            <span>مساعد ترحيل بيانات البرنامج القديم (Migration Assistant)</span>
+            <span>مساعد ترحيل بيانات البرنامج القديم</span>
           </div>
           <span className="text-[11px] bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 border border-blue-300 dark:border-blue-800 px-2.5 py-0.5 rounded font-bold">
             تدقيق مطابق لمعايير المرحلة الأولى
@@ -648,7 +656,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
         </div>
 
         <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed font-medium">
-          يتيح استيراد ملفات الإكسل (CSV/Excel) المصدرة من برامج المحاسبة القديمة مع الفحص التجريبي لمنع تكرار الأرصدة الافتتاحية وضمان سلامة وحدات التعبئة (كرتونة وقطعة).
+          يتيح استيراد ملفات الجداول المصدرة من برامج المحاسبة القديمة مع الفحص التجريبي لمنع تكرار الأرصدة الافتتاحية وضمان سلامة وحدات التعبئة (كرتونة وقطعة).
         </p>
 
         <div className="flex items-center gap-3">
@@ -657,7 +665,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
             className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-4 py-2.5 rounded-xl flex items-center gap-2 cursor-pointer shadow-xs transition-colors"
           >
             <RefreshCw className="w-3.5 h-3.5" />
-            <span>تشغيل فحص المحاكاة التجريبي (Dry-Run Test)</span>
+            <span>تشغيل فحص المحاكاة التجريبي</span>
           </button>
         </div>
 
@@ -733,7 +741,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
                 )}
               </div>
               <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed font-normal">
-                * توضيح أمان: البصمة الرقمية (SHA-256) تكشف التلف العرضي أو النقص في الملف أثناء الحفظ أو النقل، ولا تمنع التعديل المتعمد في حال تم إعادة حساب الهاش يدوياً.
+                * توضيح أمان: البصمة الرقمية تكشف التلف العرضي أو النقص في الملف أثناء الحفظ أو النقل، ولا تمنع التعديل المتعمد في حال تم إعادة حساب التوقيع يدوياً.
               </p>
             </div>
 

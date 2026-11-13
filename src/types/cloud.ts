@@ -31,7 +31,7 @@ export type OrgStatus = 'pending' | 'active' | 'suspended';
 
 export interface OrganizationDoc {
   orgId: string;                // Primary Auth UID
-  name: string;                 // Store or Chain Name (e.g. سوبر ماركت وماركت الألبان الخير والبركة)
+  name: string;                 // Store or Chain Name
   ownerEmail: string;           // Primary account email
   plan: string;                 // e.g. 'سوبر ماركت - باقة احترافية كاملة'
   maxBranches: number;          // Maximum allowed active branches (e.g. 1, 5, 20)

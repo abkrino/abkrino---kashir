@@ -328,7 +328,7 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
             <span>إدارة المستخدمين والكاشيرية والصلاحيات والأمان</span>
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-medium">
-            تحديد أرقام المرور المشفرة (PIN) لكل كاشير، وتخصيص صلاحيات تعديل الأسعار، الخصومات، البيع بالسالب، وحذف الفواتير.
+            تحديد أرقام المرور المشفرة لكل كاشير، وتخصيص صلاحيات تعديل الأسعار، الخصومات، البيع بالسالب، وحذف الفواتير.
           </p>
         </div>
 
@@ -375,7 +375,7 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
                 <th className="py-2.5 px-3">اسم المستخدم</th>
                 <th className="py-2.5 px-3">الدور</th>
                 <th className="py-2.5 px-3">الحالة</th>
-                <th className="py-2.5 px-3">الرقم السري (PIN)</th>
+                <th className="py-2.5 px-3">الرقم السري</th>
                 <th className="py-2.5 px-3">رقم الهاتف</th>
                 <th className="py-2.5 px-3">الصلاحيات الفعالة</th>
                 <th className="py-2.5 px-3 text-center">الإجراءات</th>
@@ -670,7 +670,7 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
                     }`}
                   >
                     <ShieldCheck className="w-4 h-4" />
-                    <span>مدير عام (Admin)</span>
+                    <span>مدير عام</span>
                   </button>
                   <button
                     type="button"
@@ -682,7 +682,7 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
                     }`}
                   >
                     <UserCheck className="w-4 h-4" />
-                    <span>كاشير مبيعات (Sales)</span>
+                    <span>كاشير مبيعات</span>
                   </button>
                 </div>
               </div>

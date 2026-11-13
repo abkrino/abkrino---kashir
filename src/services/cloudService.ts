@@ -29,7 +29,7 @@ import {
   PerformanceMetric, 
   CloudSettings 
 } from '../types';
-import { isStoreActivated } from './licenseService';
+import { isStoreActivated, licenseService } from './licenseService';
 import { orgSyncService } from './orgSyncService';
 
 // Initialize Firebase App
@@ -110,7 +110,6 @@ const LOCAL_STORAGE_KEYS = {
 };
 
 export const LEGACY_STORE_SYNC = false;
-const DEFAULT_STORE_ID = 'main-store';
 
 class CloudService {
   private isOnlineStatus: boolean = navigator.onLine;
@@ -204,23 +203,60 @@ class CloudService {
     return this.syncInProgress;
   }
 
-  // --- LINKED STORE & CHAIN PROFILE ("مربوط عليه محل واحد أو سلسلة محلات") ---
+  private getStoreDocId(): string {
+    const orgCtx = orgSyncService.getContext();
+    if (orgCtx?.orgId) {
+      return orgCtx.branchId ? `${orgCtx.orgId}_${orgCtx.branchId}` : orgCtx.orgId;
+    }
+    return licenseService.getDeviceId() || 'local-store';
+  }
+
+  // --- LINKED STORE & CHAIN PROFILE ---
   public getLinkedStore() {
-    try {
-      const data = localStorage.getItem('sm_linked_store_v1');
-      if (data) return JSON.parse(data);
-    } catch {}
+    const profile = storage.getStoreProfile();
+    const licState = licenseService.getLicenseState();
+    const orgCtx = orgSyncService.getContext();
+    const deviceId = licenseService.getDeviceId();
+    const licPayload = licState.payload;
+
+    const subscriptionStatus =
+      licState.status === 'valid'
+        ? 'ACTIVE'
+        : licState.status === 'grace'
+        ? 'GRACE'
+        : licState.status === 'expired'
+        ? 'EXPIRED'
+        : licState.status === 'tampered' || licState.status === 'wrong-device' || licState.status === 'clock-rollback'
+        ? 'LOCKED'
+        : 'UNLICENSED';
+
+    const subscriptionStatusLabel =
+      licState.status === 'valid'
+        ? 'سارٍ ومفعّل'
+        : licState.status === 'grace'
+        ? 'فترة سماح'
+        : licState.status === 'expired'
+        ? 'منتهي الصلاحية'
+        : licState.status === 'tampered'
+        ? 'توقيع غير صالح'
+        : licState.status === 'wrong-device'
+        ? 'مرتبط بجهاز آخر'
+        : licState.status === 'clock-rollback'
+        ? 'خطأ في تاريخ الجهاز'
+        : 'غير مرخص';
+
     return {
-      storeId: 'main-store',
-      storeCode: 'STORE-EGY-01',
-      storeName: 'سوبر ماركت وماركت الألبان الخير والبركة',
-      branchName: 'الفرع الرئيسي الموحد (قطاعي وميزان)',
-      chainName: 'سلسلة أسواق الخير والبركة للتوزيع والتجزئة',
-      ownerEmail: this.getCurrentUserEmail(),
-      subscriptionPlan: 'الباقة الموحدة المشتركة (سلسلة المحلات)',
-      subscriptionStatus: 'ACTIVE',
-      branchesCount: 1,
-      linkedAt: '2026-11-01',
+      storeId: orgCtx?.branchId || deviceId || '',
+      storeCode: orgCtx?.branchId || deviceId || '',
+      storeName: profile.name,
+      branchName: profile.branchName || '',
+      chainName: orgCtx?.orgId || profile.name,
+      ownerEmail: this.getCurrentUserEmail() || licPayload?.orgId || '',
+      subscriptionPlan: licPayload?.plan || 'غير مرخص',
+      subscriptionStatus,
+      subscriptionStatusLabel,
+      licenseStatus: licState.status,
+      linkedAt: licPayload?.issuedAt ? licPayload.issuedAt.slice(0, 10) : '',
     };
   }
 
@@ -236,9 +272,6 @@ class CloudService {
       await firebaseSignOut(auth);
       this.currentFirebaseUser = null;
       localStorage.removeItem(LOCAL_STORAGE_KEYS.AUTH_CACHE);
-      const store = this.getLinkedStore();
-      store.subscriptionStatus = 'LOCKED';
-      this.saveLinkedStore(store);
       this.notifyListeners();
     } catch (err) {
       console.error('Error signing out:', err);
@@ -313,14 +346,16 @@ class CloudService {
 
     const startTime = performance.now();
     try {
-      const storeRef = doc(db, 'stores', DEFAULT_STORE_ID);
+      const storeDocId = this.getStoreDocId();
+      const storeProfile = storage.getStoreProfile();
+      const storeRef = doc(db, 'stores', storeDocId);
       const backupJson = storage.exportFullBackupJson();
       const parsed = JSON.parse(backupJson);
 
       // 1. Update main store document
       await setDoc(storeRef, {
-        id: DEFAULT_STORE_ID,
-        name: 'سوبر ماركت وماركت الألبان الخير والبركة',
+        id: storeDocId,
+        name: storeProfile.name,
         ownerEmail: this.getCurrentUserEmail(),
         autoCloudSync: true,
         offlineModeEnabled: true,
@@ -334,7 +369,7 @@ class CloudService {
 
       // 2. Save active snapshot in cloudBackups
       const snapshotId = `auto-snapshot-${Date.now()}`;
-      const snapshotRef = doc(db, `stores/${DEFAULT_STORE_ID}/cloudBackups`, snapshotId);
+      const snapshotRef = doc(db, `stores/${storeDocId}/cloudBackups`, snapshotId);
       
       const newBackup: CloudBackupItem = {
         id: snapshotId,
@@ -385,7 +420,7 @@ class CloudService {
 
     const startTime = performance.now();
     try {
-      const colRef = collection(db, `stores/${DEFAULT_STORE_ID}/cloudBackups`);
+      const colRef = collection(db, `stores/${this.getStoreDocId()}/cloudBackups`);
       const snapshot = await getDocs(colRef);
       const list: CloudBackupItem[] = [];
       snapshot.forEach(docSnap => {
@@ -447,7 +482,7 @@ class CloudService {
       };
 
       if (this.isOnline()) {
-        const backupRef = doc(db, `stores/${DEFAULT_STORE_ID}/cloudBackups`, backupId);
+        const backupRef = doc(db, `stores/${this.getStoreDocId()}/cloudBackups`, backupId);
         await setDoc(backupRef, backup);
       }
 
@@ -483,7 +518,7 @@ class CloudService {
       let backup: CloudBackupItem | null = null;
 
       if (this.isOnline()) {
-        const backupRef = doc(db, `stores/${DEFAULT_STORE_ID}/cloudBackups`, backupId);
+        const backupRef = doc(db, `stores/${this.getStoreDocId()}/cloudBackups`, backupId);
         const snap = await getDoc(backupRef);
         if (snap.exists()) {
           backup = snap.data() as CloudBackupItem;
@@ -527,7 +562,7 @@ class CloudService {
   public async deleteCloudBackup(backupId: string): Promise<boolean> {
     try {
       if (this.isOnline()) {
-        const backupRef = doc(db, `stores/${DEFAULT_STORE_ID}/cloudBackups`, backupId);
+        const backupRef = doc(db, `stores/${this.getStoreDocId()}/cloudBackups`, backupId);
         await deleteDoc(backupRef);
       }
       const localCached = this.getLocalCachedBackups().filter(b => b.id !== backupId);
@@ -569,7 +604,7 @@ class CloudService {
 
     // Async push to Cloud if online
     if (this.isOnline()) {
-      const alertRef = doc(db, `stores/${DEFAULT_STORE_ID}/cloudAlerts`, newAlert.id);
+      const alertRef = doc(db, `stores/${this.getStoreDocId()}/cloudAlerts`, newAlert.id);
       setDoc(alertRef, newAlert).catch(() => {});
     }
   }
@@ -595,22 +630,12 @@ class CloudService {
         const initial: CloudAlert[] = [
           {
             id: 'alert-welcome',
-            title: 'جاهزية الكلود والتشغيل السحابي',
-            body: 'تم تفعيل الاتصال بالكلود بنجاح لمشروع abkrino-ai. بياناتك محفوظة محلياً وعلى الكلود.',
+            title: 'جاهزية المزامنة السحابية والعمل المحلي',
+            body: 'بيانات المحل محفوظة محلياً ويمكن ربطها بالمزامنة السحابية عند الحاجة.',
             type: 'SYSTEM',
             timestamp: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
             read: false,
             priority: 'NORMAL',
-          },
-          {
-            id: 'alert-dairy-fridge',
-            title: 'مراقبة تبريد قسم الألبان',
-            body: 'جميع منتجات الجبن والألبان الطازجة تحت المراقبة وتواريخ الصلاحية مطابقة.',
-            type: 'EXPIRY',
-            timestamp: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
-            read: false,
-            priority: 'NORMAL',
-            linkTab: 'inventory',
           }
         ];
         localStorage.setItem(LOCAL_STORAGE_KEYS.LOCAL_ALERTS, JSON.stringify(initial));
@@ -646,7 +671,7 @@ class CloudService {
     this.notifyListeners();
 
     if (this.isOnline()) {
-      const crashRef = doc(db, `stores/${DEFAULT_STORE_ID}/crashReports`, newCrash.id);
+      const crashRef = doc(db, `stores/${this.getStoreDocId()}/crashReports`, newCrash.id);
       setDoc(crashRef, newCrash).catch(() => {});
     }
   }
@@ -685,7 +710,7 @@ class CloudService {
     this.notifyListeners();
 
     if (this.isOnline() && metrics.length % 5 === 0) {
-      const metricRef = doc(db, `stores/${DEFAULT_STORE_ID}/performanceMetrics`, newMetric.id);
+      const metricRef = doc(db, `stores/${this.getStoreDocId()}/performanceMetrics`, newMetric.id);
       setDoc(metricRef, newMetric).catch(() => {});
     }
   }

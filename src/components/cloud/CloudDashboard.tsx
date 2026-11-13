@@ -278,7 +278,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
               </span>
             </div>
             <p className="text-xs sm:text-sm text-emerald-100/90 font-medium max-w-2xl leading-relaxed">
-              المشروع السحابي المرتبط: <span className="font-mono font-bold text-white">abkrino-ai</span> • إدارة حساب المالك، المحل وسلسلة المحلات، والنسخ السحابي والمحلي.
+              إدارة حساب المالك، ربط المحل والفرع، وحالة الاشتراك الفعلية والنسخ السحابي والمحلي.
             </p>
           </div>
 
@@ -295,13 +295,13 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
             </button>
 
             <div className="bg-white/10 backdrop-blur-md px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 border border-white/20">
-              <div className="w-2.5 h-2.5 rounded-full bg-emerald-400"></div>
-              <span className="font-mono">{linkedStore.ownerEmail}</span>
+              <div className={`w-2.5 h-2.5 rounded-full ${linkedStore.ownerEmail ? 'bg-emerald-400' : 'bg-amber-400'}`}></div>
+              <span className="font-mono">{linkedStore.ownerEmail || 'غير مرتبط بحساب'}</span>
             </div>
           </div>
         </div>
 
-        {/* Store & Chain Quick Badge Bar */}
+        {/* Store & License Quick Badge Bar */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mt-5 pt-4 border-t border-white/15 text-xs">
           <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl flex items-center gap-2.5">
             <Store className="w-5 h-5 text-emerald-300 shrink-0" />
@@ -314,16 +314,20 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
           <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl flex items-center gap-2.5">
             <Building2 className="w-5 h-5 text-cyan-300 shrink-0" />
             <div>
-              <span className="text-emerald-200 block text-[11px]">سلسلة المحلات:</span>
-              <span className="font-bold text-xs text-white block mt-0.5">{linkedStore.chainName}</span>
+              <span className="text-emerald-200 block text-[11px]">الفرع / المنشأة:</span>
+              <span className="font-bold text-xs text-white block mt-0.5">
+                {linkedStore.branchName || linkedStore.chainName}
+              </span>
             </div>
           </div>
 
           <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl flex items-center gap-2.5">
             <Layers className="w-5 h-5 text-amber-300 shrink-0" />
             <div>
-              <span className="text-emerald-200 block text-[11px]">باقة المحل المشتركة:</span>
-              <span className="font-bold text-xs text-white block mt-0.5">{linkedStore.subscriptionPlan}</span>
+              <span className="text-emerald-200 block text-[11px]">الباقة وحالة الاشتراك:</span>
+              <span className="font-bold text-xs text-white block mt-0.5">
+                {linkedStore.subscriptionPlan} — {linkedStore.subscriptionStatusLabel}
+              </span>
             </div>
           </div>
         </div>
@@ -354,7 +358,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
       <div className="flex items-center gap-1.5 overflow-x-auto pb-1 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 p-1.5 rounded-2xl shadow-xs no-scrollbar">
         {[
           { id: 'ACCOUNT_LOGIN', label: 'المصادقة وربط المحل (إيميل وباسورد)', icon: Mail },
-          { id: 'BACKUPS', label: 'النسخ السحابية والمحلية والاسترداد (Dual Backup)', icon: Database, badge: `${cloudBackups.length}` },
+          { id: 'BACKUPS', label: 'النسخ السحابية والمحلية والاسترداد', icon: Database, badge: `${cloudBackups.length}` },
           { id: 'SETTINGS', label: 'إعدادات السحابة والمزامنة التلقائية', icon: Sliders },
         ].map(tab => (
           <button
@@ -415,7 +419,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
 
               <div>
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                  كلمة المرور (Password):
+                  كلمة المرور:
                 </label>
                 <div className="relative">
                   <KeyRound className="w-4 h-4 text-slate-400 absolute right-3.5 top-3 pointer-events-none" />
@@ -493,7 +497,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
               <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
                 <span className="font-bold text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
                   <Activity className="w-3.5 h-3.5 text-blue-500" />
-                  <span>وقت آخر نبضة ناجحة (Heartbeat):</span>
+                  <span>وقت آخر نبضة اتصال ناجحة:</span>
                 </span>
                 <span className="font-mono font-bold text-slate-900 dark:text-white">
                   {lastHeartbeat ? lastHeartbeat.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم تُرسل بعد'}
@@ -504,7 +508,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
               <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
                 <span className="font-bold text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
                   <Clock className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>وقت آخر ملخص يومي (Cairo):</span>
+                  <span>وقت آخر ملخص يومي (بتوقيت القاهرة):</span>
                 </span>
                 <span className="font-mono font-bold text-slate-900 dark:text-white">
                   {lastSummary ? lastSummary.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم يُرفع بعد'}
@@ -718,7 +722,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                 الإيميل الأساسي المعتمد للمحل:
               </span>
               <span className="font-mono text-xs font-bold text-emerald-700 dark:text-emerald-400 block">
-                {linkedStore.ownerEmail || 'mahmoud.mansour0b@gmail.com'}
+                {linkedStore.ownerEmail || 'غير مرتبط بحساب بريد بعد'}
               </span>
               <p className="text-[11px] text-slate-500">
                 يلزم الاتصال بالإنترنت أول مرة فقط لتسجيل هذا الحساب، ثم يتم تخزين البيانات محلياً على الجهاز ليعمل الكاشير بالكامل بدون إنترنت.

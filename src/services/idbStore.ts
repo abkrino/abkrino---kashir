@@ -29,7 +29,7 @@ export type SnapshotStatus = 'healthy' | 'suspicious';
 export interface SnapshotRecord {
   id: string;
   dateStr: string;
-  type: 'daily' | 'shift_close' | 'pre_restore' | 'manual';
+  type: 'daily' | 'shift_close' | 'pre_restore' | 'pre_import' | 'manual';
   status: SnapshotStatus;
   timestamp: number;
   data: Record<string, any>;

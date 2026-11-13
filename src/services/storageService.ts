@@ -31,6 +31,7 @@ export const STORAGE_KEYS = {
   STORE_PROFILE: 'sm_store_profile_v1',
   STORE_PROFILE_REVIEWED: 'sm_store_profile_reviewed',
   ACCOUNTING_MODE: 'sm_accounting_mode_v1',
+  MONTHLY_POOL_INCLUDES_CAP_INJ: 'sm_monthly_pool_cap_inj_v1',
   FUNDING_SOURCES: 'sm_funding_sources_v1',
   SALES_RETURNS: 'sm_sales_returns_v1',
   DOCUMENT_SEQUENCES: 'sm_doc_sequences_v1',
@@ -52,10 +53,44 @@ export const BUSINESS_KEYS = [
   STORAGE_KEYS.PARKED_CARTS,
   STORAGE_KEYS.STORE_PROFILE,
   STORAGE_KEYS.ACCOUNTING_MODE,
+  STORAGE_KEYS.MONTHLY_POOL_INCLUDES_CAP_INJ,
   STORAGE_KEYS.FUNDING_SOURCES,
   STORAGE_KEYS.SALES_RETURNS,
   STORAGE_KEYS.DOCUMENT_SEQUENCES,
 ];
+
+const CAIRO_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Africa/Cairo',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
+export function getCairoDateString(date: Date = new Date()): string {
+  return CAIRO_DATE_FORMATTER.format(date);
+}
+
+export function getCairoMonthPrefix(date: Date = new Date()): string {
+  return getCairoDateString(date).slice(0, 7);
+}
+
+export function getMovementCairoMonthPrefix(movementDate: string): string {
+  if (!movementDate) return '';
+  const trimmed = movementDate.trim();
+  if (trimmed.includes('T') || /\d{2}:\d{2}/.test(trimmed)) {
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      return getCairoMonthPrefix(parsed);
+    }
+  }
+  const prefixMatch = trimmed.match(/^(\d{4}-\d{2})/);
+  if (prefixMatch) return prefixMatch[1];
+  const parsed = new Date(trimmed);
+  if (!Number.isNaN(parsed.getTime())) {
+    return getCairoMonthPrefix(parsed);
+  }
+  return '';
+}
 
 class StorageService {
   private cache: Map<string, any> = new Map();
@@ -714,6 +749,52 @@ class StorageService {
     return { success: true };
   }
 
+  public getMonthlyPoolIncludesCapitalInjection(): boolean {
+    return Boolean(this.getItem<boolean>(STORAGE_KEYS.MONTHLY_POOL_INCLUDES_CAP_INJ, false));
+  }
+
+  public async setMonthlyPoolIncludesCapitalInjection(
+    enabled: boolean,
+    adminUser: User | null | undefined,
+    passwordOrPin: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!adminUser || adminUser.role !== 'ADMIN' || adminUser.isActive === false) {
+      return { success: false, error: 'غير مصرح: تعديل هذا الإعداد مقتصر على مدير النظام فقط' };
+    }
+
+    const { authSecurityService } = await import('./authSecurityService');
+    const verification = await authSecurityService.verifyUserPassword(adminUser.id, passwordOrPin);
+    if (!verification.valid) {
+      return {
+        success: false,
+        error: verification.error || 'كلمة مرور المدير غير صحيحة. تم رفض تعديل الإعداد.',
+      };
+    }
+
+    const nextVal = Boolean(enabled);
+    const prevVal = this.getMonthlyPoolIncludesCapitalInjection();
+    if (prevVal === nextVal) {
+      return { success: true };
+    }
+
+    this.setItem(STORAGE_KEYS.MONTHLY_POOL_INCLUDES_CAP_INJ, nextVal);
+
+    this.addAuditLog(
+      'ACCOUNTING_SETTINGS',
+      'تعديل إعداد وعاء رأس المال الشهري',
+      'الإعدادات',
+      'monthlyPoolIncludesCapitalInjection',
+      `قام المدير (${adminUser.fullName}) بتغيير إعداد احتساب إيداعات رأس المال في رصيد الشهر (monthlyPoolIncludesCapitalInjection) من [${prevVal ? 'مفعّل' : 'معطل'}] إلى [${nextVal ? 'مفعّل' : 'معطل'}] (يسري على العمليات الجديدة فقط)`
+    );
+    this.notifyAction(
+      nextVal
+        ? 'تفعيل احتساب إيداعات رأس المال في رصيد الشهر'
+        : 'إيقاف احتساب إيداعات رأس المال في رصيد الشهر'
+    );
+
+    return { success: true };
+  }
+
   public getFundingSources(): FundingSource[] {
     const stored = this.getItem<FundingSource[] | null>(STORAGE_KEYS.FUNDING_SOURCES, null);
     if (!stored || !Array.isArray(stored) || stored.length === 0) {
@@ -1095,13 +1176,16 @@ class StorageService {
 
   public calculateMonthlyPoolAvailable(referenceDate?: Date): number {
     const now = referenceDate || new Date();
-    const currentMonthPrefix = now.toISOString().slice(0, 7); // YYYY-MM
+    const currentMonthPrefix = getCairoMonthPrefix(now);
+    const includeCapInjection = this.getMonthlyPoolIncludesCapitalInjection();
     const movements = this.getCashMovements();
     return movements.reduce((acc, m) => {
       if (m.affectsDrawer === false) return acc;
-      if (!m.date || !m.date.startsWith(currentMonthPrefix)) return acc;
-      // صافي النقدية الداخلة للدرج منذ أول الشهر (مبيعات نقدية وتحصيلات وإيداعات ناقص مدفوعات ومصروفات)، لا رصيد اللحظة / الافتتاحي ولا ضخ رأس المال
-      if (m.category === 'OPENING_BALANCE' || m.category === 'CAPITAL_INJECTION') return acc;
+      if (!m.date || getMovementCairoMonthPrefix(m.date) !== currentMonthPrefix) return acc;
+      // صافي النقدية الداخلة للدرج منذ أول الشهر (بتوقيت Africa/Cairo) باستثناء الرصيد الافتتاحي؛
+      // وتُستثنى حركات ضخ رأس المال CAPITAL_INJECTION إلا عند تفعيل monthlyPoolIncludesCapitalInjection
+      if (m.category === 'OPENING_BALANCE') return acc;
+      if (m.category === 'CAPITAL_INJECTION' && !includeCapInjection) return acc;
       return m.type === 'IN' ? acc + m.amount : acc - m.amount;
     }, 0);
   }
@@ -1301,7 +1385,7 @@ class StorageService {
     this.addCashMovement(
       {
         id: `cm-${Date.now()}`,
-        date: now.toISOString().split('T')[0],
+        date: getCairoDateString(now),
         time: now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
         type: 'OUT',
         category: 'DRAWER_ADJUSTMENT',
@@ -1341,7 +1425,7 @@ class StorageService {
     this.addCashMovement(
       {
         id: `cm-${Date.now()}`,
-        date: now.toISOString().split('T')[0],
+        date: getCairoDateString(now),
         time: now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
         type: 'IN',
         category: 'DRAWER_ADJUSTMENT',
@@ -1365,6 +1449,7 @@ class StorageService {
     description?: string;
     performedBy: string;
     user?: User | null;
+    affectsDrawer?: boolean;
   }): { success: boolean; error?: string } {
     if (!Number.isFinite(params.amount) || params.amount <= 0) {
       return { success: false, error: 'قيمة إيداع رأس المال يجب أن تكون أكبر من صفر' };
@@ -1376,11 +1461,15 @@ class StorageService {
 
     const cleanDesc = (params.description || '').trim() || 'ضخ / إيداع رأس مال من المالك';
     const now = new Date();
+    const resolvedAffectsDrawer =
+      params.affectsDrawer !== undefined
+        ? Boolean(params.affectsDrawer)
+        : this.getAccountingMode() !== 'CAPITAL';
 
     this.addCashMovement(
       {
         id: `cm-${Date.now()}`,
-        date: now.toISOString().split('T')[0],
+        date: getCairoDateString(now),
         time: now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
         type: 'IN',
         category: 'CAPITAL_INJECTION',
@@ -1388,7 +1477,7 @@ class StorageService {
         amount: params.amount,
         description: cleanDesc,
         performedBy: params.performedBy,
-        affectsDrawer: false,
+        affectsDrawer: resolvedAffectsDrawer,
         fundingSource: 'OWNER_LOAN',
         fundingDetails: { type: 'OWNER_LOAN', label: 'إيداع رأس مال من المالك', note: cleanDesc },
       },
@@ -1400,7 +1489,7 @@ class StorageService {
       'إيداع رأس مال',
       'الخزينة',
       'capital',
-      `ضخ رأس مال بقيمة ${params.amount} ج.م (حركة منفصلة غير إيرادية لا تؤثر على الدرج أو الأرباح): ${cleanDesc}`
+      `ضخ رأس مال بقيمة ${params.amount} ج.م (حركة منفصلة غير إيرادية ${resolvedAffectsDrawer ? 'أُودعت بالدرج' : 'لا تؤثر على الدرج'} ولا تدخل في الأرباح): ${cleanDesc}`
     );
     this.notifyAction(`إيداع رأس مال: ${params.amount} ج.م`);
     return { success: true };
@@ -1590,7 +1679,7 @@ class StorageService {
     if (invoice.paidAmount > 0) {
       this.addCashMovement({
         id: `cm-${Date.now()}`,
-        date: new Date().toISOString().split('T')[0],
+        date: getCairoDateString(),
         time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
         type: 'OUT',
         category: 'INVOICE_REVERSAL',
@@ -2001,7 +2090,7 @@ class StorageService {
 
     // 6. Execute state changes (stock, customer balance / cash movement, record, audit log)
     const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
+    const dateStr = getCairoDateString(now);
     const timeStr = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
     const returnNumber = this.nextDocumentNumber('RET', now);
 
@@ -2106,7 +2195,7 @@ class StorageService {
 
     const voucherNum = `RCV-${Date.now().toString().slice(-6)}`;
     const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
+    const dateStr = getCairoDateString(now);
     const timeStr = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
 
     this.addCashMovement({
@@ -2191,7 +2280,7 @@ class StorageService {
 
     const voucherNum = `PAY-${Date.now().toString().slice(-6)}`;
     const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
+    const dateStr = getCairoDateString(now);
     const timeStr = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
 
     const fundingLabel = finalFunding.note
@@ -2504,7 +2593,7 @@ class StorageService {
       this.addCashMovement(
         {
           id: `cm-${Date.now()}`,
-          date: new Date().toISOString().split('T')[0],
+          date: getCairoDateString(),
           time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
           type: 'IN',
           category: 'DRAWER_ADJUSTMENT',
@@ -2593,7 +2682,7 @@ class StorageService {
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
 
     const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
+    const dateStr = getCairoDateString(now);
     const timeStr = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
 
     const adjustment: StockAdjustment = {
@@ -2690,6 +2779,7 @@ class StorageService {
         users: this.getUsers(),
         storeProfile: this.getStoreProfile(),
         accountingMode: this.getAccountingMode(),
+        monthlyPoolIncludesCapitalInjection: this.getMonthlyPoolIncludesCapitalInjection(),
         fundingSources: this.getFundingSources(),
         salesReturns: this.getSalesReturns(),
       }
@@ -2720,6 +2810,10 @@ class StorageService {
       this.setItem(
         STORAGE_KEYS.ACCOUNTING_MODE,
         mode === 'DAILY_DRAWER' || mode === 'MONTHLY_POOL' || mode === 'CAPITAL' ? mode : 'DAILY_DRAWER'
+      );
+      this.setItem(
+        STORAGE_KEYS.MONTHLY_POOL_INCLUDES_CAP_INJ,
+        Boolean(parsed.data.monthlyPoolIncludesCapitalInjection)
       );
       this.setItem(
         STORAGE_KEYS.FUNDING_SOURCES,
@@ -2783,6 +2877,10 @@ class StorageService {
       restoredMode === 'DAILY_DRAWER' || restoredMode === 'MONTHLY_POOL' || restoredMode === 'CAPITAL'
         ? restoredMode
         : 'DAILY_DRAWER'
+    );
+    this.cache.set(
+      STORAGE_KEYS.MONTHLY_POOL_INCLUDES_CAP_INJ,
+      Boolean(data.monthlyPoolIncludesCapitalInjection)
     );
     this.cache.set(
       STORAGE_KEYS.FUNDING_SOURCES,

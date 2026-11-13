@@ -52,7 +52,7 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
         <ShieldAlert className="w-14 h-14 text-amber-500 mx-auto" />
         <h3 className="text-xl font-black text-slate-900 dark:text-white">غير مصرح بالدخول (صلاحية خاصة بالمدير العام)</h3>
         <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed font-medium">
-          تقارير الأرباح التشغيلية، تكاليف البضاعة المباعة (COGS)، وهامش مجمل الربح محجوبة عن حساب مسؤول المبيعات لحماية سرية بيانات أرباح الشركة.
+          تقارير الأرباح التشغيلية، تكاليف البضاعة المباعة، وهامش مجمل الربح محجوبة عن حساب مسؤول المبيعات لحماية سرية بيانات أرباح الشركة.
         </p>
       </div>
     );
@@ -410,7 +410,7 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
 
         {/* COGS */}
         <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl p-4 shadow-xs transition-colors">
-          <span className="text-xs text-slate-500 dark:text-slate-400 block font-bold">تكلفة البضاعة المباعة (COGS)</span>
+          <span className="text-xs text-slate-500 dark:text-slate-400 block font-bold">تكلفة البضاعة المباعة</span>
           <div className="mt-2">
             <span className="text-2xl font-black text-rose-600 dark:text-rose-400 font-mono">
               {totalCOGS.toLocaleString('ar-EG', { minimumFractionDigits: 2 })}
@@ -549,7 +549,7 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
                   <th className="p-3">اسم الشركة / المصنع</th>
                   <th className="p-3 text-center">الكمية المباعة</th>
                   <th className="p-3 text-center">إجمالي المبيعات</th>
-                  <th className="p-3 text-center">تكلفة الشراء (COGS)</th>
+                  <th className="p-3 text-center">تكلفة الشراء</th>
                   <th className="p-3 text-center">مجمل الربح</th>
                   <th className="p-3 text-left">هامش الربح %</th>
                 </tr>

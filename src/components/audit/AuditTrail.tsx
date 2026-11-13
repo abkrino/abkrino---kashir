@@ -20,7 +20,7 @@ export const AuditTrail: React.FC = () => {
         <div>
           <h2 className="text-xl font-black text-slate-900 dark:text-white flex items-center gap-2">
             <Shield className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
-            <span>سجل العمليات والرقابة الداخلية (Audit Trail)</span>
+            <span>سجل العمليات والرقابة الداخلية</span>
           </h2>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 font-medium">
             سجل غير قابل للحذف يوثق كل عملية تعديل مخزون، إصدار فاتورة، سداد نقدي، أو تحصيل مع اسم المستخدم والتوقيت.

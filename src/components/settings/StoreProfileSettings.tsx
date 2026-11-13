@@ -361,7 +361,7 @@ export const StoreProfileSettings: React.FC<StoreProfileSettingsProps> = ({
 
             <div>
               <label className="block text-xs font-black text-slate-700 dark:text-slate-300 mb-1.5">
-                سطر الترويسة أعلى الفاتورة (Header)
+                سطر الترويسة أعلى الفاتورة
               </label>
               <input
                 type="text"
@@ -374,7 +374,7 @@ export const StoreProfileSettings: React.FC<StoreProfileSettingsProps> = ({
 
             <div>
               <label className="block text-xs font-black text-slate-700 dark:text-slate-300 mb-1.5">
-                رسالة التذييل أسفل الفاتورة (Footer)
+                رسالة التذييل أسفل الفاتورة
               </label>
               <input
                 type="text"

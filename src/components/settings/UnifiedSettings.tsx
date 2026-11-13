@@ -258,13 +258,25 @@ export const UnifiedSettings: React.FC<UnifiedSettingsProps> = ({
                 <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40">
                   <span className="text-[11px] font-bold text-slate-400 block mb-1">حالة الترخيص:</span>
                   <div className="flex items-center gap-2">
-                    <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                    <ShieldCheck className={`w-5 h-5 ${licenseState.status === 'valid' ? 'text-emerald-600 dark:text-emerald-400' : licenseState.status === 'grace' ? 'text-amber-500' : 'text-rose-500'}`} />
                     <span className="font-black text-slate-900 dark:text-slate-100 text-sm">
-                      {licenseState.status === 'valid' || licenseState.canOperate ? 'مفعّل ونشط بالكامل' : 'يحتاج تفعيل'}
+                      {licenseState.status === 'valid'
+                        ? 'مفعّل ونشط بالكامل'
+                        : licenseState.status === 'grace'
+                        ? 'فترة سماح مؤقتة'
+                        : licenseState.status === 'expired'
+                        ? 'منتهي الصلاحية'
+                        : licenseState.status === 'tampered'
+                        ? 'توقيع غير صالح'
+                        : licenseState.status === 'wrong-device'
+                        ? 'مرتبط بجهاز آخر'
+                        : licenseState.status === 'clock-rollback'
+                        ? 'خطأ في تاريخ الجهاز'
+                        : 'غير مرخص'}
                     </span>
                   </div>
                   <span className="text-[10px] text-slate-400 mt-1 block">
-                    نظام التشغيل المحلي (LICENSE_ENFORCEMENT: معطل)
+                    {licenseState.message || 'نظام التشغيل المحلي'}
                   </span>
                 </div>
 
@@ -273,9 +285,11 @@ export const UnifiedSettings: React.FC<UnifiedSettingsProps> = ({
                   <div className="flex items-center gap-2">
                     <Calendar className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                     <span className="font-black text-slate-900 dark:text-slate-100 text-sm">
-                      {licenseState.daysRemaining !== null && licenseState.daysRemaining !== undefined
+                      {licenseState.status !== 'valid' && licenseState.status !== 'grace'
+                        ? 'غير مرخص'
+                        : licenseState.daysRemaining > 0
                         ? `${licenseState.daysRemaining} يوماً متبقية`
-                        : 'ترخيص تشغيلي دائم'}
+                        : 'منتهي'}
                     </span>
                   </div>
                   <span className="text-[10px] text-slate-400 mt-1 block">
@@ -284,7 +298,7 @@ export const UnifiedSettings: React.FC<UnifiedSettingsProps> = ({
                 </div>
 
                 <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40">
-                  <span className="text-[11px] font-bold text-slate-400 block mb-1">معرّف الجهاز (Device ID):</span>
+                  <span className="text-[11px] font-bold text-slate-400 block mb-1">معرّف الجهاز:</span>
                   <div className="flex items-center justify-between gap-2">
                     <span className="font-mono font-bold text-xs text-slate-900 dark:text-slate-100 truncate">
                       {licenseService.getDeviceId()}

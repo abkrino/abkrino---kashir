@@ -36,7 +36,7 @@ const ACCOUNTING_MODE_CARDS: {
   {
     mode: 'DAILY_DRAWER',
     title: 'الدرج اليومي الفعلي (الافتراضي)',
-    subtitle: 'DAILY_DRAWER',
+    subtitle: 'فحص لحظي لرصيد الدرج',
     description: 'المتاح للصرف = رصيد الدرج النقدي الفعلي لحظة العملية.',
     example:
       'مثال: إذا كان في الدرج 1,500 ج.م، يُصرف حتى 1,500 ج.م مباشرة، وأي مبلغ أكبر يتطلب إذن المدير وتحديد مصدر التمويل.',
@@ -45,7 +45,7 @@ const ACCOUNTING_MODE_CARDS: {
   {
     mode: 'MONTHLY_POOL',
     title: 'الوعاء الشهري التراكمي',
-    subtitle: 'MONTHLY_POOL',
+    subtitle: 'فحص تراكمي منذ أول الشهر',
     description:
       'المتاح للصرف = صافي النقدية الداخلة للدرج منذ أول الشهر الحالي (مبيعات نقدية وتحصيلات وإيداعات ناقص مدفوعات ومصروفات)، لا رصيد اللحظة.',
     example:
@@ -55,9 +55,9 @@ const ACCOUNTING_MODE_CARDS: {
   {
     mode: 'CAPITAL',
     title: 'التمويل من رأس المال',
-    subtitle: 'CAPITAL',
+    subtitle: 'مفصول عن درج الكاشير',
     description:
-      'لا فحص تغطية على الدرج؛ تُسجّل المشتريات والمصروفات كمدفوعة من رأس المال (affectsDrawer=false)، وإيداعات المالك تُسجّل CAPITAL_INJECTION كحركة منفصلة غير إيرادية.',
+      'لا فحص تغطية على الدرج؛ تُسجّل المشتريات والمصروفات كمدفوعة من رأس المال دون الخصم من الدرج، وإيداعات المالك تُسجّل كحركة رأس مال منفصلة غير إيرادية.',
     example:
       'مثال: سداد فاتورة شراء بـ 25,000 ج.م أو إيجار لا يخصم من درج الكاشير، وضخ 50,000 ج.م من المالك لا يدخل في الأرباح.',
     icon: Landmark,
@@ -65,11 +65,11 @@ const ACCOUNTING_MODE_CARDS: {
 ];
 
 const FUNDING_TYPE_LABELS: { value: FundingSourceType; label: string }[] = [
-  { value: 'OWNER_LOAN', label: 'سلفة / تمويل شخصي (OWNER_LOAN)' },
-  { value: 'CUSTODY', label: 'عهدة نقدية خارجية (CUSTODY)' },
-  { value: 'EXTERNAL_FUNDING', label: 'تمويل خارجي مستقل (EXTERNAL_FUNDING)' },
-  { value: 'DRAWER_NEGATIVE', label: 'سحب بالسالب من الدرج (DRAWER_NEGATIVE)' },
-  { value: 'OTHER', label: 'أخرى — يتطلب كتابة مصدر نصي (OTHER)' },
+  { value: 'OWNER_LOAN', label: 'سلفة / تمويل شخصي' },
+  { value: 'CUSTODY', label: 'عهدة نقدية خارجية' },
+  { value: 'EXTERNAL_FUNDING', label: 'تمويل خارجي مستقل' },
+  { value: 'DRAWER_NEGATIVE', label: 'سحب بالسالب من الدرج' },
+  { value: 'OTHER', label: 'أخرى — يتطلب كتابة مصدر نصي' },
 ];
 
 export const AccountingSettings: React.FC<AccountingSettingsProps> = ({
@@ -78,6 +78,9 @@ export const AccountingSettings: React.FC<AccountingSettingsProps> = ({
 }) => {
   const [activeMode, setActiveMode] = useState<AccountingMode>(
     storage.getAccountingMode()
+  );
+  const [monthlyPoolCapInj, setMonthlyPoolCapInj] = useState<boolean>(
+    storage.getMonthlyPoolIncludesCapitalInjection()
   );
   const [fundingSources, setFundingSources] = useState<FundingSource[]>(
     storage.getFundingSources()
@@ -92,6 +95,13 @@ export const AccountingSettings: React.FC<AccountingSettingsProps> = ({
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [switchSuccess, setSwitchSuccess] = useState<string | null>(null);
   const [isSubmittingSwitch, setIsSubmittingSwitch] = useState(false);
+
+  // Toggle monthlyPoolIncludesCapitalInjection Modal State
+  const [pendingCapInjSetting, setPendingCapInjSetting] = useState<boolean | null>(null);
+  const [capInjPassword, setCapInjPassword] = useState('');
+  const [capInjError, setCapInjError] = useState<string | null>(null);
+  const [capInjSuccess, setCapInjSuccess] = useState<string | null>(null);
+  const [isSubmittingCapInj, setIsSubmittingCapInj] = useState(false);
 
   // Add Funding Source Form
   const [newSourceType, setNewSourceType] =
@@ -171,6 +181,48 @@ export const AccountingSettings: React.FC<AccountingSettingsProps> = ({
     setNewSourceNote('');
     setSourceMsg({ type: 'success', text: 'تمت إضافة مصدر التمويل بنجاح' });
     onUpdated();
+  };
+
+  const handleRequestToggleCapInj = () => {
+    setCapInjError(null);
+    setCapInjSuccess(null);
+    if (!isAdmin) {
+      setCapInjError('غير مصرح: تعديل هذا الإعداد مقتصر على المدير العام فقط.');
+      return;
+    }
+    setCapInjPassword('');
+    setPendingCapInjSetting(!monthlyPoolCapInj);
+  };
+
+  const handleConfirmToggleCapInj = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (pendingCapInjSetting === null) return;
+    setCapInjError(null);
+    setIsSubmittingCapInj(true);
+    try {
+      const res = await storage.setMonthlyPoolIncludesCapitalInjection(
+        pendingCapInjSetting,
+        currentUser,
+        capInjPassword
+      );
+      if (!res.success) {
+        setCapInjError(res.error || 'تعذر تحديث الإعداد');
+        return;
+      }
+      await storage.flush();
+      const updated = storage.getMonthlyPoolIncludesCapitalInjection();
+      setMonthlyPoolCapInj(updated);
+      setPendingCapInjSetting(null);
+      setCapInjPassword('');
+      setCapInjSuccess(
+        updated
+          ? 'تم تفعيل احتساب إيداعات رأس المال المودعة بالدرج ضمن رصيد الشهر وتسجيله في سجل المراجعة. يسري على العمليات الجديدة فقط.'
+          : 'تم إيقاف احتساب إيداعات رأس المال ضمن رصيد الشهر وتسجيله في سجل المراجعة. يسري على العمليات الجديدة فقط.'
+      );
+      onUpdated();
+    } finally {
+      setIsSubmittingCapInj(false);
+    }
   };
 
   const handleToggleFundingSource = async (sourceId: string) => {
@@ -320,6 +372,71 @@ export const AccountingSettings: React.FC<AccountingSettingsProps> = ({
             );
           })}
         </div>
+      </div>
+
+      {/* 1b. Optional Setting for MONTHLY_POOL: monthlyPoolIncludesCapitalInjection */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-xs space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="space-y-1.5 flex-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-sm sm:text-base font-black text-slate-900 dark:text-slate-100">
+                احتساب إيداعات رأس المال في رصيد الوعاء الشهري
+              </h3>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                خاص بوضع الوعاء الشهري التراكمي
+              </span>
+              {activeMode !== 'MONTHLY_POOL' && (
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
+                  الوضع الحالي ليس الوعاء الشهري
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+              عند التفعيل: النقدية التي يضخّها المالك في الدرج تُحسب ضمن المتاح لتغطية المشتريات والمصروفات هذا الشهر. عند الإيقاف: تُستبعد ويُسأل عن مصدر التمويل.
+            </p>
+            <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+              مثال: إذا كانت مبيعات الشهر 5,000 ج.م وضخّ المالك 10,000 ج.م في الدرج، فعند الإيقاف المتاح الشهري 5,000 ج.م فقط، وعند التفعيل يصبح المتاح 15,000 ج.م (وتظل إيداعات رأس المال منفصلة ولا تدخل الأرباح أو المبيعات في أي حال).
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3 shrink-0">
+            <span
+              className={`text-xs font-black px-2.5 py-1 rounded-lg border ${
+                monthlyPoolCapInj
+                  ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
+                  : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700'
+              }`}
+            >
+              {monthlyPoolCapInj ? 'مفعّل' : 'معطل (الافتراضي)'}
+            </span>
+            <button
+              type="button"
+              onClick={handleRequestToggleCapInj}
+              className={`px-4 py-2 rounded-xl text-xs font-black cursor-pointer transition-colors flex items-center gap-1.5 ${
+                monthlyPoolCapInj
+                  ? 'bg-amber-600 hover:bg-amber-500 text-white'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+              }`}
+            >
+              <Lock className="w-3.5 h-3.5" />
+              <span>{monthlyPoolCapInj ? 'إيقاف الاحتساب' : 'تفعيل الاحتساب'}</span>
+            </button>
+          </div>
+        </div>
+
+        {capInjError && (
+          <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/70 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs font-bold flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-rose-600" />
+            <span>{capInjError}</span>
+          </div>
+        )}
+
+        {capInjSuccess && (
+          <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200 text-xs font-bold flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" />
+            <span>{capInjSuccess}</span>
+          </div>
+        )}
       </div>
 
       {/* 2. Structured Funding Sources Management */}
@@ -523,6 +640,78 @@ export const AccountingSettings: React.FC<AccountingSettingsProps> = ({
                   className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold cursor-pointer"
                 >
                   {isSubmittingSwitch ? 'جاري التحقق...' : 'اعتماد وتبديل النظام'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {/* Password Re-verification Modal for monthlyPoolIncludesCapitalInjection */}
+      {pendingCapInjSetting !== null && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl text-right">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-2 text-slate-900 dark:text-white">
+                <Lock className="w-4 h-4 text-emerald-600" />
+                <h4 className="font-black text-sm">
+                  تأكيد كلمة مرور المدير لتعديل إعداد الوعاء الشهري
+                </h4>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPendingCapInjSetting(null)}
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmToggleCapInj} className="mt-4 space-y-3.5 text-xs">
+              <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                أنت على وشك{' '}
+                <strong className="text-emerald-700 dark:text-emerald-400">
+                  {pendingCapInjSetting
+                    ? 'تفعيل احتساب إيداعات رأس المال بالدرج ضمن رصيد الشهر'
+                    : 'إيقاف احتساب إيداعات رأس المال ضمن رصيد الشهر'}
+                </strong>
+                . يسري التعديل على العمليات الجديدة فقط ولا يعدّل أو يحذف الحركات السابقة.
+              </p>
+
+              {capInjError && (
+                <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/80 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 font-bold">
+                  {capInjError}
+                </div>
+              )}
+
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                  أعد إدخال كلمة مرور / الرقم السري للمدير ({currentUser.fullName}):
+                </label>
+                <input
+                  type="password"
+                  required
+                  autoFocus
+                  value={capInjPassword}
+                  onChange={(e) => setCapInjPassword(e.target.value)}
+                  placeholder="أدخل كلمة المرور..."
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white font-mono"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setPendingCapInjSetting(null)}
+                  className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold cursor-pointer"
+                >
+                  إلغاء
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingCapInj}
+                  className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold cursor-pointer"
+                >
+                  {isSubmittingCapInj ? 'جاري التحقق...' : 'اعتماد التغيير'}
                 </button>
               </div>
             </form>

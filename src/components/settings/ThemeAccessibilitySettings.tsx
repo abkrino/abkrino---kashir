@@ -24,6 +24,7 @@ import {
 import { Lock } from 'lucide-react';
 import { licenseService, LicenseStateResult } from '../../services/licenseService';
 import { authSecurityService } from '../../services/authSecurityService';
+import { cloudService } from '../../services/cloudService';
 import { LicenseActivationModal } from '../license/LicenseActivationModal';
 
 export const ThemeAccessibilitySettings: React.FC = () => {
@@ -78,7 +79,7 @@ export const ThemeAccessibilitySettings: React.FC = () => {
           <div>
             <h2 className="text-2xl md:text-3xl font-black text-slate-900 dark:text-white flex items-center gap-3">
               <Sliders className="w-8 h-8 text-emerald-600 dark:text-emerald-400" />
-              <span>المظهر وإمكانية الوصول (Accessibility & Themes)</span>
+              <span>المظهر وإمكانية الوصول</span>
             </h2>
             <p className="text-base text-slate-600 dark:text-slate-300 mt-2 font-medium">
               تخصيص الواجهة لتكون مريحة وسهلة القراءة لكبار السن وضعاف النظر، مع التبديل الفوري بين الوضع الفاتح والداكن.
@@ -137,7 +138,7 @@ export const ThemeAccessibilitySettings: React.FC = () => {
                   </span>
                 )}
               </div>
-              <h4 className="text-lg font-black text-slate-900 dark:text-white">الوضع الفاتح (Light Mode)</h4>
+              <h4 className="text-lg font-black text-slate-900 dark:text-white">الوضع الفاتح</h4>
               <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
                 خلفية بيضاء نقية وتباين عالٍ بنصوص داكنة، مريح ومثالي للعمل نهاراً وفي المحلات والمخازن ذات الإضاءة العالية.
               </p>
@@ -173,7 +174,7 @@ export const ThemeAccessibilitySettings: React.FC = () => {
                   </span>
                 )}
               </div>
-              <h4 className="text-lg font-black text-slate-900 dark:text-white">الوضع الداكن (Dark Mode)</h4>
+              <h4 className="text-lg font-black text-slate-900 dark:text-white">الوضع الداكن</h4>
               <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
                 خلفية كحلية داكنة متدرجة مريحة للعين، تقلل الإجهاد البصري في أوقات العمل المسائية والورديات الطويلة.
               </p>
@@ -209,7 +210,7 @@ export const ThemeAccessibilitySettings: React.FC = () => {
                   </span>
                 )}
               </div>
-              <h4 className="text-lg font-black text-slate-900 dark:text-white">تلقائي حسب نظام الجهاز (System)</h4>
+              <h4 className="text-lg font-black text-slate-900 dark:text-white">تلقائي حسب نظام الجهاز</h4>
               <p className="text-sm text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
                 يتبع إعدادات ويندوز أو الأندرويد تلقائياً؛ يتحول للفاتح نهاراً وللداكن ليلاً حسب جهازك.
               </p>
@@ -308,7 +309,7 @@ export const ThemeAccessibilitySettings: React.FC = () => {
         <div>
           <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <Eye className="w-6 h-6 text-blue-600 dark:text-blue-400" />
-            <span>نمط التباين العالي (High Contrast Borders)</span>
+            <span>نمط التباين العالي</span>
           </h3>
           <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
             يحدد إطارات الجداول والأزرار بلون داكن وواضح جداً لتمييز الفواصل والحقول بسهولة فائقة دون تشتت.
@@ -348,7 +349,7 @@ export const ThemeAccessibilitySettings: React.FC = () => {
             </p>
           </div>
           <span className="text-xs font-mono font-bold px-3 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700">
-            السحابة نشطة ✓
+            {cloudService.isUserAuthenticated() && cloudService.isOnline() ? 'متصل بالسحابة ✓' : 'وضع محلي'}
           </span>
         </div>
 
@@ -374,8 +375,10 @@ export const ThemeAccessibilitySettings: React.FC = () => {
 
           <div className="p-3.5 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs">
             <div className="space-y-0.5">
-              <span className="font-bold text-slate-700 dark:text-slate-300 block">الإيميل الأساسي المعتمد للكلود:</span>
-              <span className="font-mono text-emerald-700 dark:text-emerald-400 font-black">mahmoud.mansour0b@gmail.com</span>
+              <span className="font-bold text-slate-700 dark:text-slate-300 block">الإيميل الأساسي المعتمد للسحابة:</span>
+              <span className="font-mono text-emerald-700 dark:text-emerald-400 font-black">
+                {cloudService.getCurrentUserEmail() || 'غير مسجل دخول'}
+              </span>
             </div>
             <span className="text-slate-500 font-bold bg-white dark:bg-slate-900 px-3 py-1 rounded-lg border border-slate-200 dark:border-slate-800">
               دخول بالإنترنت أول مرة فقط، ثم تشغيل محلي 100%
@@ -384,16 +387,16 @@ export const ThemeAccessibilitySettings: React.FC = () => {
         </div>
       </div>
 
-      {/* Section 5: Offline Licensing (قسم الترخيص الأوفلاين) */}
+      {/* Section 5: Offline Licensing */}
       <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-2xl p-6 shadow-sm space-y-4">
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3 gap-3">
           <div>
             <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <span className="p-1.5 bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-400 rounded-lg">🔑</span>
-              <span>الترخيص الأوفلاين للجهاز (Offline License)</span>
+              <span>الترخيص المحلي للجهاز</span>
             </h3>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-0.5">
-              إدارة تفعيل النظام المشفر (ECDSA P-256) للأجهزة التي تعمل بدون إنترنت أو عبر الشبكة المحلية.
+              إدارة تفعيل النظام المشفر للأجهزة التي تعمل بدون إنترنت أو عبر الشبكة المحلية.
             </p>
           </div>
           <button
@@ -435,16 +438,16 @@ export const ThemeAccessibilitySettings: React.FC = () => {
           </div>
 
           <div className="p-3.5 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1">
-            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-bold block">الخطة (Plan):</span>
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-bold block">الخطة:</span>
             <span className="text-xs font-bold text-slate-900 dark:text-white block truncate">
-              {licenseState.payload?.plan || 'باقة تجريبية / افتراضية'}
+              {licenseState.payload?.plan || 'غير مرخص'}
             </span>
           </div>
 
           <div className="p-3.5 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1">
-            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-bold block">وضع التشغيل (Mode):</span>
+            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-bold block">وضع التشغيل:</span>
             <span className="text-xs font-bold text-emerald-700 dark:text-emerald-400 block">
-              {licenseState.payload?.mode === 'offline' ? 'أوفلاين محلي (Offline)' : (licenseState.payload?.mode || 'أوفلاين / هجين')}
+              {licenseState.payload?.mode === 'offline' ? 'محلي بدون إنترنت' : (licenseState.payload?.mode || 'محلي / هجين')}
             </span>
           </div>
 
@@ -476,7 +479,7 @@ export const ThemeAccessibilitySettings: React.FC = () => {
           <div>
             <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
               <Lock className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
-              <span>أمان الشاشة والقفل التلقائي عند عدم النشاط (Auto-Lock)</span>
+              <span>أمان الشاشة والقفل التلقائي عند عدم النشاط</span>
             </h3>
             <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
               قفل شاشة الكاشير والمبيعات تلقائياً بعد فترة محددة من عدم لمس الجهاز لحماية الخزينة والمحل من تطفل الآخرين.

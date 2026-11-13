@@ -191,7 +191,7 @@ export const LicenseActivationModal: React.FC<LicenseActivationModalProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              نظام الترخيص الأوفلاين المشفر (ECDSA P-256) بدون الحاجة إلى اتصال دائم بالإنترنت.
+              نظام الترخيص المحلي المشفر بدون الحاجة إلى اتصال دائم بالإنترنت.
             </p>
           </div>
         </div>
@@ -216,7 +216,7 @@ export const LicenseActivationModal: React.FC<LicenseActivationModalProps> = ({
           <div className="flex items-center justify-between">
             <span className="text-xs font-black text-slate-900 dark:text-white flex items-center gap-1.5">
               <Laptop className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-              <span>الخطوة 1: كود طلب الترخيص للجهاز (Request Code)</span>
+              <span>الخطوة 1: كود طلب الترخيص للجهاز</span>
             </span>
             <div className="flex items-center gap-2">
               <button
@@ -260,7 +260,7 @@ export const LicenseActivationModal: React.FC<LicenseActivationModalProps> = ({
         <form onSubmit={handleActivate} className="space-y-3">
           <div>
             <label className="text-xs font-black text-slate-900 dark:text-white block mb-1.5">
-              الخطوة 2: لصق كود تفعيل الترخيص (Activation Token)
+              الخطوة 2: لصق كود تفعيل الترخيص
             </label>
             <textarea
               required

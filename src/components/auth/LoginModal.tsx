@@ -129,7 +129,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     const cleanPin = normalizeArabicDigits(rawPin).trim();
     
     if (!cleanPin) {
-      setError('يرجى كتابة الرقم السري (PIN)');
+      setError('يرجى كتابة الرقم السري');
       return;
     }
 
@@ -362,7 +362,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           <p className="text-xs text-slate-400 mt-0.5">
             {isForcedChangePin
               ? 'لحماية أموال وبيانات المحل، يرجى تعيين رقم سري جديد وخاص بك'
-              : 'اختر المستخدم واكتب الرقم السري (PIN)'}
+              : 'اختر المستخدم واكتب الرقم السري'}
           </p>
         </div>
 

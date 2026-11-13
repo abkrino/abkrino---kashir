@@ -174,6 +174,7 @@ class SnapshotService {
       parkedCarts: storage.getParkedCarts(),
       storeProfile: storage.getStoreProfile(),
       accountingMode: storage.getAccountingMode(),
+      monthlyPoolIncludesCapitalInjection: storage.getMonthlyPoolIncludesCapitalInjection(),
       fundingSources: storage.getFundingSources(),
       salesReturns: storage.getSalesReturns(),
     };
@@ -202,8 +203,10 @@ class SnapshotService {
 
     try {
       const all = await this.getAllSnapshots();
-      // Find the newest healthy snapshot (strictly excluding pre_restore)
-      const lastHealthy = all.find(s => s.status === 'healthy' && s.type !== 'pre_restore');
+      // Find the newest healthy snapshot (strictly excluding pre_restore and pre_import)
+      const lastHealthy = all.find(
+        s => s.status === 'healthy' && s.type !== 'pre_restore' && s.type !== 'pre_import'
+      );
 
       if (lastHealthy && lastHealthy.metadata?.recordCounts) {
         const oldProd = lastHealthy.metadata.recordCounts.products || 0;
@@ -309,7 +312,7 @@ class SnapshotService {
    * - Trims to 3 if storage quota exceeds 40% (Requirement 3)
    */
   public async createSnapshot(
-    type: 'daily' | 'shift_close' | 'pre_restore' | 'manual',
+    type: 'daily' | 'shift_close' | 'pre_restore' | 'pre_import' | 'manual',
     customId?: string,
     customDateStr?: string,
     options?: { force?: boolean; status?: SnapshotStatus }
@@ -351,9 +354,9 @@ class SnapshotService {
       const checksum = await computeDataChecksum(data);
       const approxSizeBytes = new TextEncoder().encode(JSON.stringify(data)).length;
 
-      // Status assignment: healthy by default, suspicious if specified or created under drop warning.
-      // Pre_restore snapshots are NEVER healthy and do not enter healthy protection (Requirement 3).
-      const status: SnapshotStatus = type === 'pre_restore' ? 'suspicious' : (options?.status || 'healthy');
+      // Pre_restore & pre_import snapshots are NEVER healthy and do not enter healthy protection.
+      const status: SnapshotStatus =
+        type === 'pre_restore' || type === 'pre_import' ? 'suspicious' : (options?.status || 'healthy');
 
       const metadata: SnapshotMetadata = {
         approxSizeBytes,
@@ -397,7 +400,7 @@ class SnapshotService {
         'لقطة نظام داخلية',
         'النسخ الاحتياطي',
         'system',
-        `تم إنشاء لقطة بيانات داخلية (${type === 'daily' ? 'يومية' : type === 'shift_close' ? 'إغلاق وردية' : type === 'pre_restore' ? 'قبل الاستعادة' : 'يدوية'}) بحالة [${status === 'healthy' ? 'سليمة' : 'مشبوهة'}] بحجم ${(approxSizeBytes / 1024).toFixed(1)} ك.ب`
+        `تم إنشاء لقطة بيانات داخلية (${type === 'daily' ? 'يومية' : type === 'shift_close' ? 'إغلاق وردية' : type === 'pre_restore' ? 'قبل الاستعادة' : type === 'pre_import' ? 'قبل استيراد الأصناف' : 'يدوية'}) بحالة [${status === 'healthy' ? 'سليمة' : 'مشبوهة'}] بحجم ${(approxSizeBytes / 1024).toFixed(1)} ك.ب`
       );
 
       return record;
@@ -421,7 +424,7 @@ class SnapshotService {
       const all = await idb.snapshots.orderBy('timestamp').toArray();
       let totalDeleted = 0;
 
-      // 1. Separate independent quota for pre_restore snapshots: keep newest 3 only (Requirement 3)
+      // 1a. Separate independent quota for pre_restore snapshots: keep newest 3 only (Requirement 3)
       const preRestoreSnapshots = all.filter(s => s.type === 'pre_restore');
       if (preRestoreSnapshots.length > 3) {
         const excessCount = preRestoreSnapshots.length - 3;
@@ -435,12 +438,26 @@ class SnapshotService {
         }
       }
 
-      // 2. Standard snapshots (strictly excluding pre_restore from the 7 target count)
-      const standardSnapshots = all.filter(s => s.type !== 'pre_restore');
+      // 1b. Separate independent quota for pre_import snapshots: keep newest 3 only
+      const preImportSnapshots = all.filter(s => s.type === 'pre_import');
+      if (preImportSnapshots.length > 3) {
+        const excessCount = preImportSnapshots.length - 3;
+        const toDeletePreImport = preImportSnapshots
+          .sort((a, b) => a.timestamp - b.timestamp)
+          .slice(0, excessCount)
+          .map(s => s.id);
+        if (toDeletePreImport.length > 0) {
+          await idb.snapshots.bulkDelete(toDeletePreImport);
+          totalDeleted += toDeletePreImport.length;
+        }
+      }
+
+      // 2. Standard snapshots (strictly excluding pre_restore & pre_import from the 7 target count)
+      const standardSnapshots = all.filter(s => s.type !== 'pre_restore' && s.type !== 'pre_import');
       if (standardSnapshots.length > targetKeepCount) {
-        // Identify the 2 newest healthy snapshots to protect (strictly excluding pre_restore)
+        // Identify the 2 newest healthy snapshots to protect (strictly excluding pre_restore & pre_import)
         const healthySnapshots = standardSnapshots
-          .filter(s => s.status === 'healthy' && s.type !== 'pre_restore')
+          .filter(s => s.status === 'healthy' && s.type !== 'pre_restore' && s.type !== 'pre_import')
           .sort((a, b) => a.timestamp - b.timestamp);
 
         const lastTwoHealthy = healthySnapshots.slice(-2);
@@ -788,6 +805,11 @@ class SnapshotService {
             payload.accountingMode === 'CAPITAL'
               ? payload.accountingMode
               : 'DAILY_DRAWER',
+          updatedAt: Date.now(),
+        },
+        {
+          key: STORAGE_KEYS.MONTHLY_POOL_INCLUDES_CAP_INJ,
+          value: Boolean(payload.monthlyPoolIncludesCapitalInjection),
           updatedAt: Date.now(),
         },
         {

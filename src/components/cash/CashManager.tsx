@@ -39,6 +39,9 @@ export const CashManager: React.FC<CashManagerProps> = ({
   const [depositType, setDepositType] = useState<'DRAWER' | 'CAPITAL_INJECTION'>(
     accountingMode === 'CAPITAL' ? 'CAPITAL_INJECTION' : 'DRAWER'
   );
+  const [capitalAffectsDrawer, setCapitalAffectsDrawer] = useState<boolean>(
+    accountingMode !== 'CAPITAL'
+  );
   const [depositAmount, setDepositAmount] = useState<number>(500);
   const [depositDesc, setDepositDesc] = useState<string>('');
   const [depositError, setDepositError] = useState<string | null>(null);
@@ -210,6 +213,7 @@ export const CashManager: React.FC<CashManagerProps> = ({
             description: depositDesc,
             performedBy: currentUser.fullName,
             user: currentUser,
+            affectsDrawer: capitalAffectsDrawer,
           })
         : storage.recordManualDeposit({
             amount: depositAmount,
@@ -301,10 +305,10 @@ export const CashManager: React.FC<CashManagerProps> = ({
             <span className="text-[10px] text-slate-500 dark:text-slate-400 block font-semibold">النظام المحاسبي النشط:</span>
             <span className="font-bold text-emerald-700 dark:text-emerald-300 text-xs">
               {accountingMode === 'DAILY_DRAWER'
-                ? 'الدرج اليومي (DAILY_DRAWER)'
+                ? 'الدرج اليومي الفعلي'
                 : accountingMode === 'MONTHLY_POOL'
                 ? `الوعاء الشهري (المتاح: ${monthlyPoolAvailable.toLocaleString('ar-EG')} ج.م)`
-                : 'رأس المال (CAPITAL — بلا قيد درج)'}
+                : 'رأس المال (بلا قيد درج)'}
             </span>
           </div>
 
@@ -657,9 +661,23 @@ export const CashManager: React.FC<CashManagerProps> = ({
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-lg p-2.5 text-slate-900 dark:text-white font-bold"
                 >
                   <option value="DRAWER">إيداع نقدي مباشر في درج الكاشير</option>
-                  <option value="CAPITAL_INJECTION">ضخ / إيداع رأس مال من المالك (CAPITAL_INJECTION — غير إيرادي)</option>
+                  <option value="CAPITAL_INJECTION">ضخ / إيداع رأس مال من المالك (غير إيرادي)</option>
                 </select>
               </div>
+
+              {depositType === 'CAPITAL_INJECTION' && (
+                <label className="flex items-start gap-2 p-2.5 rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={capitalAffectsDrawer}
+                    onChange={(e) => setCapitalAffectsDrawer(e.target.checked)}
+                    className="mt-0.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  <span className="text-[11px] text-slate-700 dark:text-slate-300 leading-relaxed font-semibold">
+                    توريد هذه النقدية فعلياً داخل درج الكاشير (يؤثر على الدرج ولا يُحسب ضمن الإيرادات أو الأرباح)
+                  </span>
+                </label>
+              )}
 
               <div>
                 <label className="text-slate-700 dark:text-slate-300 block mb-1 font-semibold">المبلغ (ج.م):</label>
