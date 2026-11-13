@@ -69,8 +69,23 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   });
 
-  const periodSalesTotal = filteredInvoices.reduce((sum, inv) => sum + inv.total, 0);
-  const periodTotalProfit = filteredInvoices.reduce((sum, inv) => sum + (inv.totalProfit || 0), 0);
+  // Filter sales returns based on selected period
+  const allSalesReturns = storage.getSalesReturns();
+  const filteredReturns = allSalesReturns.filter(ret => {
+    if (filterMode === 'TODAY') {
+      return ret.date === todayStr;
+    } else if (filterMode === 'MONTH') {
+      return ret.date.startsWith(currentMonthPrefix);
+    } else {
+      return ret.date >= customStartDate && ret.date <= customEndDate;
+    }
+  });
+  const periodReturnsTotal = Math.round(filteredReturns.reduce((sum, r) => sum + (r.totalAmount || 0), 0) * 100) / 100;
+  const periodReturnsProfitReversed = Math.round(filteredReturns.reduce((sum, r) => sum + (r.totalProfitReversed || 0), 0) * 100) / 100;
+
+  const grossPeriodSalesTotal = filteredInvoices.reduce((sum, inv) => sum + inv.total, 0);
+  const periodSalesTotal = Math.round((grossPeriodSalesTotal - periodReturnsTotal) * 100) / 100;
+  const periodTotalProfit = Math.round((filteredInvoices.reduce((sum, inv) => sum + (inv.totalProfit || 0), 0) - periodReturnsProfitReversed) * 100) / 100;
 
   // Filter expenses based on period
   const allExpenses = storage.getExpenses();
@@ -84,7 +99,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   });
   const periodExpensesTotal = periodExpenses.reduce((sum, exp) => sum + exp.amount, 0);
-  const periodNetProfit = periodTotalProfit - periodExpensesTotal;
+  const periodNetProfit = Math.round((periodTotalProfit - periodExpensesTotal) * 100) / 100;
 
   // Inventory valuation at cost
   const totalInventoryCost = products.reduce((sum, p) => sum + (p.stockPieces * p.costPricePerBase), 0);
@@ -239,9 +254,16 @@ export const Dashboard: React.FC<DashboardProps> = ({
             </span>
             <span className="text-sm font-bold text-slate-600 dark:text-slate-400 mr-2">ج.م</span>
           </div>
-          <div className="mt-2.5 text-xs text-slate-600 dark:text-slate-400 flex items-center gap-1.5 font-medium">
-            <span>عدد الفواتير المنفذة:</span>
-            <span className="font-bold text-slate-900 dark:text-slate-200">{filteredInvoices.length} فواتير</span>
+          <div className="mt-2.5 text-xs text-slate-600 dark:text-slate-400 flex items-center justify-between gap-1.5 font-medium">
+            <div>
+              <span>عدد الفواتير: </span>
+              <span className="font-bold text-slate-900 dark:text-slate-200">{filteredInvoices.length}</span>
+            </div>
+            {periodReturnsTotal > 0 && (
+              <span className="text-[11px] font-bold text-rose-600 dark:text-rose-400 font-mono">
+                المرتجعات: -{periodReturnsTotal.toLocaleString('ar-EG', { minimumFractionDigits: 2 })}
+              </span>
+            )}
           </div>
         </div>
 
@@ -465,6 +487,13 @@ export const Dashboard: React.FC<DashboardProps> = ({
                 <span className="text-xs text-purple-800 dark:text-purple-400 mr-1.5 font-bold">ج.م</span>
               </div>
             </div>
+          </div>
+          <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between text-xs text-amber-800 dark:text-amber-300">
+            <span className="font-bold">مرتجعات المبيعات للفترة ({filteredReturns.length} إيصال):</span>
+            <span className="font-mono font-black">
+              -{periodReturnsTotal.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م
+              {showProfitMasked ? ` (ربح معكوس: -${periodReturnsProfitReversed.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م)` : ''}
+            </span>
           </div>
         </div>
       )}

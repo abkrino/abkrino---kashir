@@ -11,6 +11,8 @@ export type SensitiveOperation =
   | 'manage_products'
   | 'manage_purchases'
   | 'manage_cash'
+  | 'withdraw_negative_cash'
+  | 'process_returns'
   | 'manage_users';
 
 export interface LockoutRecord {
@@ -169,6 +171,10 @@ export function checkUserPermission(
       return Boolean(perms.canManagePurchases);
     case 'manage_cash':
       return Boolean(perms.canManageCash);
+    case 'withdraw_negative_cash':
+      return Boolean(perms.canWithdrawNegativeCash);
+    case 'process_returns':
+      return Boolean(perms.canProcessReturns);
     case 'manage_users':
       return false; // Cashiers can never manage users
     default:
@@ -532,6 +538,38 @@ class AuthSecurityService {
     return { success: false, error: 'لم يتم تعيين رقم سري لهذا المستخدم بعد' };
   }
 
+  /**
+   * Re-verifies a user's password/PIN without resetting active user session or triggering full login flow.
+   * Used for sensitive operations like switching AccountingMode.
+   */
+  public async verifyUserPassword(userId: string, passwordOrPin: string): Promise<{ valid: boolean; error?: string }> {
+    const cleanPin = normalizeArabicDigits(passwordOrPin || '').trim();
+    if (!cleanPin) {
+      return { valid: false, error: 'يرجى إدخال كلمة مرور / الرقم السري للمدير للتأكيد' };
+    }
+
+    const users = storage.getUsers();
+    const user = users.find(u => u.id === userId);
+    if (!user) {
+      return { valid: false, error: 'المستخدم غير موجود' };
+    }
+    if (user.isActive === false) {
+      return { valid: false, error: 'حساب المدير معطل حالياً' };
+    }
+
+    if (user.pinHash && user.pinSalt) {
+      const isMatch = await verifyPasswordWithPbkdf2(cleanPin, user.pinHash, user.pinSalt);
+      return isMatch ? { valid: true } : { valid: false, error: 'كلمة مرور المدير غير صحيحة' };
+    }
+
+    if (user.pinCode) {
+      const isMatch = normalizeArabicDigits(user.pinCode).trim() === cleanPin;
+      return isMatch ? { valid: true } : { valid: false, error: 'كلمة مرور المدير غير صحيحة' };
+    }
+
+    return { valid: false, error: 'لم يتم تعيين كلمة مرور لهذا الحساب' };
+  }
+
   // Change user PIN/Password
   public async changeUserPin(
     userId: string,
@@ -629,6 +667,8 @@ class AuthSecurityService {
       canManageProducts: true,
       canManagePurchases: true,
       canManageCash: true,
+      canWithdrawNegativeCash: true,
+      canProcessReturns: true,
     };
 
     const newAdmin: User = {

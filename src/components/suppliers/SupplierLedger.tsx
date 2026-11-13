@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Supplier, User, CashMovement, PurchaseInvoice } from '../../types';
+import { Supplier, User, CashMovement, PurchaseInvoice, CashMovementFunding, CashOutEvaluation } from '../../types';
 import { storage } from '../../services/storageService';
+import { FundingSourceModal } from '../common/FundingSourceModal';
 import { 
   Building2, 
   Plus, 
@@ -50,8 +51,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
 
   // Negative Cash / Funding Source Inquiry Modal State
   const [showFundingModal, setShowFundingModal] = useState(false);
-  const [fundingSource, setFundingSource] = useState('سلفة شخصية من المدير لتسوية الوردية');
-  const [customFundingNote, setCustomFundingNote] = useState('');
+  const [cashEvalState, setCashEvalState] = useState<CashOutEvaluation | null>(null);
 
   // Add / Edit Supplier Modal State
   const [isSupplierModalOpen, setIsSupplierModalOpen] = useState(false);
@@ -127,7 +127,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
     setIsPayModalOpen(true);
   };
 
-  // Check drawer cash before payment
+  // Check drawer cash / accounting mode before payment using unified evaluateCashOut
   const handlePaymentInitialCheck = (e: React.FormEvent) => {
     e.preventDefault();
     setPayError(null);
@@ -137,47 +137,48 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
       return;
     }
 
-    // Check if drawer has enough cash
-    if (currentCashInDrawer < payAmount) {
-      // Show negative cash funding source inquiry modal!
-      setShowFundingModal(true);
-    } else {
-      executeSupplierPayment(false, '');
+    const evalRes = storage.evaluateCashOut(payAmount, {
+      user: currentUser,
+      operation: 'SUPPLIER_PAYMENT',
+    });
+
+    if (evalRes.allowed) {
+      executeSupplierPayment(false, undefined);
+      return;
     }
+
+    const canNegative =
+      currentUser.role === 'ADMIN' || Boolean(currentUser.permissions?.canWithdrawNegativeCash);
+
+    if (evalRes.requiresFundingSource && canNegative) {
+      setCashEvalState(evalRes);
+      setShowFundingModal(true);
+      return;
+    }
+
+    setPayError(evalRes.reason || 'الرصيد المتاح لا يكفي لإتمام سند الصرف');
   };
 
-  // Execute Supplier Payment with or without negative cash
-  const executeSupplierPayment = (allowNegative: boolean, sourceDescription: string) => {
-    const finalNotes = sourceDescription 
-      ? `${payNotes ? payNotes + ' • ' : ''}مصدر السحب بالسالب: [${sourceDescription}]`
-      : payNotes;
-
-    let fundingEnum: 'DRAWER' | 'PERSONAL_LOAN' | 'DRAWER_NEGATIVE' | 'OTHER' = 'DRAWER';
-    if (allowNegative) {
-      if (sourceDescription.includes('سلفة') || sourceDescription.includes('شخصية')) {
-        fundingEnum = 'PERSONAL_LOAN';
-      } else if (sourceDescription.includes('سحب مباشر بالسالب')) {
-        fundingEnum = 'DRAWER_NEGATIVE';
-      } else {
-        fundingEnum = 'OTHER';
-      }
-    }
-
+  // Execute Supplier Payment with structured funding details
+  const executeSupplierPayment = (allowNegative: boolean, fundingDetails?: CashMovementFunding) => {
     const res = storage.recordSupplierPayment({
       supplierId: selectedSupplierId,
       amount: payAmount,
-      notes: finalNotes,
+      notes: payNotes,
       paidBy: currentUser.fullName,
+      user: currentUser,
       allowNegativeCash: allowNegative,
-      fundingSource: fundingEnum,
+      fundingDetails,
     });
 
     if (!res.success) {
       setPayError(res.error || 'فشل في تسجيل سند الصرف');
+      setShowFundingModal(false);
       return;
     }
 
     setShowFundingModal(false);
+    setCashEvalState(null);
     setIsPayModalOpen(false);
     setPayNotes('');
     reloadData();
@@ -571,7 +572,13 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
                           {m.amount.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م
                         </td>
                         <td className="py-3 px-3 text-slate-700 dark:text-slate-300">
-                          {m.description}
+                          <div>{m.description}</div>
+                          {m.fundingDetails && (
+                            <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-[10px] font-bold text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                              مصدر التمويل: {m.fundingDetails.label}
+                              {m.fundingDetails.note ? ` (${m.fundingDetails.note})` : ''}
+                            </span>
+                          )}
                         </td>
                         <td className="py-3 px-3 text-slate-500 font-mono text-[11px]">
                           {m.performedBy}
@@ -707,62 +714,16 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
         </div>
       )}
 
-      {/* NEGATIVE CASH / FUNDING SOURCE INQUIRY MODAL as requested */}
-      {showFundingModal && (
-        <div className="fixed inset-0 bg-black/85 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 rounded-2xl p-6 max-w-md w-full shadow-2xl text-right">
-            <div className="flex items-center gap-2.5 text-amber-600 dark:text-amber-400 font-black mb-3">
-              <AlertTriangle className="w-6 h-6 shrink-0" />
-              <span className="text-sm">تنبيه: عجز رصيد بالدرج — استعلام مصدر السداد</span>
-            </div>
-
-            <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed mb-4">
-              المبلغ المطلوب صرفه (<strong>{payAmount.toLocaleString()} ج.م</strong>) أكبر من النقدية المتاحة بالدرج (<strong>{currentCashInDrawer.toLocaleString()} ج.م</strong>).
-              <br />
-              النظام يسمح بسحب المبلغ بالسالب حتى تتم تسوية الوردية في آخر اليوم.
-              <br />
-              <strong>من أين تم دفع سند الصرف؟</strong>
-            </p>
-
-            <div className="space-y-2 text-xs mb-4">
-              {[
-                'سلفة شخصية من صاحب العمل / المدير لتسوية الوردية',
-                'عهدة نقدية خارجية مستلمة',
-                'تمويل خارجي خاص خارج الدرج',
-                'سحب مباشر بالسالب من الدرج مع تسوية الوردية لاحقاً'
-              ].map(opt => (
-                <label key={opt} className="flex items-center gap-2 p-2 rounded-lg border border-slate-200 dark:border-slate-800 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800/60 font-medium">
-                  <input
-                    type="radio"
-                    name="fundingSource"
-                    checked={fundingSource === opt}
-                    onChange={() => setFundingSource(opt)}
-                    className="w-4 h-4 text-rose-600"
-                  />
-                  <span>{opt}</span>
-                </label>
-              ))}
-            </div>
-
-            <div className="flex justify-end gap-2.5 pt-3 border-t border-slate-200 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setShowFundingModal(false)}
-                className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold text-xs cursor-pointer"
-              >
-                تراجع
-              </button>
-              <button
-                type="button"
-                onClick={() => executeSupplierPayment(true, fundingSource)}
-                className="px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs cursor-pointer shadow-md"
-              >
-                تأكيد الصرف بالسالب وتدوين المصدر
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* STRUCTURED FUNDING SOURCE MODAL */}
+      <FundingSourceModal
+        isOpen={showFundingModal}
+        amount={payAmount}
+        available={cashEvalState?.available ?? currentCashInDrawer}
+        mode={cashEvalState?.mode ?? storage.getAccountingMode()}
+        operationLabel="سند صرف مورد"
+        onCancel={() => setShowFundingModal(false)}
+        onConfirm={(funding) => executeSupplierPayment(true, funding)}
+      />
 
       {/* EDIT PAYMENT MODAL */}
       {isEditPaymentModalOpen && paymentToEdit && (

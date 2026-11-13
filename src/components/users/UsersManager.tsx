@@ -39,6 +39,8 @@ const DEFAULT_ADMIN_PERMISSIONS: UserPermissions = {
   canManageProducts: true,
   canManagePurchases: true,
   canManageCash: true,
+  canWithdrawNegativeCash: true,
+  canProcessReturns: true,
 };
 
 const DEFAULT_SALES_PERMISSIONS: UserPermissions = {
@@ -51,6 +53,8 @@ const DEFAULT_SALES_PERMISSIONS: UserPermissions = {
   canManageProducts: false,
   canManagePurchases: false,
   canManageCash: false,
+  canWithdrawNegativeCash: false,
+  canProcessReturns: false,
 };
 
 export const UsersManager: React.FC<UsersManagerProps> = ({
@@ -824,6 +828,26 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
                       className="rounded accent-emerald-600 w-4 h-4 cursor-pointer"
                     />
                     <span>تسجيل فواتير الشراء والتوريد</span>
+                  </label>
+
+                  <label className="flex items-center gap-2 text-slate-700 dark:text-slate-300 cursor-pointer font-medium">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(permissions.canWithdrawNegativeCash)}
+                      onChange={() => togglePermission('canWithdrawNegativeCash')}
+                      className="rounded accent-amber-600 w-4 h-4 cursor-pointer"
+                    />
+                    <span>السحب بالسالب أو تجاوز غطاء الدرج</span>
+                  </label>
+
+                  <label className="flex items-center gap-2 text-slate-700 dark:text-slate-300 cursor-pointer font-medium">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(permissions.canProcessReturns)}
+                      onChange={() => togglePermission('canProcessReturns')}
+                      className="rounded accent-amber-600 w-4 h-4 cursor-pointer"
+                    />
+                    <span>تسجيل وإدارة مرتجعات المبيعات</span>
                   </label>
                 </div>
               </div>

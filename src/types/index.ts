@@ -28,6 +28,8 @@ export interface UserPermissions {
   canManageProducts: boolean; // إضافة وتعديل الأصناف والشركات
   canManagePurchases: boolean; // تسجيل فواتير الشراء
   canManageCash: boolean; // إدارة الخزينة والمصروفات
+  canWithdrawNegativeCash?: boolean; // السحب بالسالب من الدرج أو بتمويل خارجي
+  canProcessReturns?: boolean; // تسجيل وإدارة مرتجعات المبيعات
 }
 
 export interface User {
@@ -296,6 +298,7 @@ export interface CashMovement {
     | 'OPENING_BALANCE' 
     | 'DRAWER_ADJUSTMENT' 
     | 'INVOICE_REVERSAL'
+    | 'SALES_REFUND'
     | 'CAPITAL_INJECTION';
   categoryLabelArabic: string;
   amount: number;
@@ -456,4 +459,66 @@ export const LEGACY_STORE_PROFILE: StoreProfile = {
     delivery: false,
   },
 };
+
+// --- SALES RETURNS (مرتجعات المبيعات) ---
+export type SalesReturnReason =
+  | 'DAMAGED'
+  | 'EXPIRED'
+  | 'CUSTOMER_CHANGED_MIND'
+  | 'WRONG_ITEM'
+  | 'QUALITY_ISSUE'
+  | 'OTHER';
+
+export const SALES_RETURN_REASON_LABELS: Record<SalesReturnReason, string> = {
+  DAMAGED: 'تالف / كسر',
+  EXPIRED: 'منتهي أو قريب الصلاحية',
+  CUSTOMER_CHANGED_MIND: 'عدول العميل عن الشراء',
+  WRONG_ITEM: 'صنف خاطئ / تبديل',
+  QUALITY_ISSUE: 'ملاحظة على الجودة',
+  OTHER: 'أخرى',
+};
+
+export type SalesReturnRefundMethod = 'CASH' | 'CUSTOMER_CREDIT';
+
+export interface SalesReturnItem {
+  itemKey: string; // مفتاح السطر المرجعي في الفاتورة الأصلية
+  productId: string;
+  productCode: string;
+  productName: string;
+  unit: 'CARTON' | 'PIECE' | 'KG' | 'GRAM';
+  unitLabel?: string;
+  quantity: number; // الكمية المرتجعة بوحدة البيع
+  piecesCount: number; // المكافئ بالوحدة الأساسية للمخزن (قطع أو كجم)
+  unitSellingPrice: number; // سعر البيع وقت الفاتورة الأصلية
+  unitCostPrice: number; // تكلفة الوحدة وقت البيع
+  subtotal: number; // إجمالي البيع المرتجع قبل حصة خصم الفاتورة
+  costTotal: number; // إجمالي التكلفة المرتجعة وقت البيع
+}
+
+export interface SalesReturn {
+  id: string;
+  returnNumber: string; // RET-YYYY-00001
+  date: string;
+  time: string;
+  originalInvoiceId: string;
+  originalInvoiceNumber: string;
+  customerId: string;
+  customerName: string;
+  items: SalesReturnItem[];
+  reason: SalesReturnReason;
+  reasonLabelArabic: string;
+  reasonNote?: string;
+  refundMethod: SalesReturnRefundMethod;
+  returnToStock: boolean; // true = يعود للمخزون، false = تالف لا يعود للمخزون
+  subtotal: number;
+  discountAdjustedAmount: number;
+  totalAmount: number; // صافي قيمة المرتجع المردودة
+  totalCost: number; // إجمالي التكلفة المستردة/المعكوسة
+  totalProfitReversed: number; // صافي الربح المعكوس = totalAmount - totalCost
+  performedByUserId: string;
+  performedBy: string;
+  fundingDetails?: CashMovementFunding;
+  affectsDrawer?: boolean;
+}
+
 

@@ -5,7 +5,7 @@ import { licenseService } from './licenseService';
 import { detectEnvironment } from './environmentService';
 import { storage } from './storageService';
 import { DailySummaryDoc } from '../types/cloud';
-import { SalesInvoice, PurchaseInvoice, Product, Customer, Supplier } from '../types';
+import { SalesInvoice, PurchaseInvoice, Product, Customer, Supplier, SalesReturn } from '../types';
 import { APP_VERSION } from '../config/appConfig';
 
 export type SyncState = 
@@ -27,6 +27,7 @@ export interface RawStorageDailySummaryInput {
   suppliers: Supplier[];
   cashInDrawer: number;
   cairoDateStr: string;
+  salesReturns?: SalesReturn[];
 }
 
 // ---------------------------------------------------------------------------
@@ -46,7 +47,7 @@ export function getYyyyMmDdCairo(date: Date = new Date()): string {
 // Pure Helper: Calculate Daily Summary Data from Local Store
 // ---------------------------------------------------------------------------
 export function calculateDailySummaryData(input: RawStorageDailySummaryInput): Omit<DailySummaryDoc, 'updatedAt'> {
-  const { invoices, purchases, products, customers, suppliers, cashInDrawer, cairoDateStr } = input;
+  const { invoices, purchases, products, customers, suppliers, cashInDrawer, cairoDateStr, salesReturns = [] } = input;
 
   // Filter sales invoices belonging to this Cairo calendar date
   const todaysInvoices = invoices.filter(inv => {
@@ -56,7 +57,18 @@ export function calculateDailySummaryData(input: RawStorageDailySummaryInput): O
     return invDateStr === cairoDateStr;
   });
 
-  const salesTotal = todaysInvoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
+  const grossSalesTotal = todaysInvoices.reduce((sum, inv) => sum + (Number(inv.total) || 0), 0);
+
+  // Filter sales returns belonging to this Cairo calendar date & deduct from salesTotal
+  const todaysReturns = salesReturns.filter(ret => {
+    const rawDate = ret.date;
+    if (!rawDate) return false;
+    const retDateStr = getYyyyMmDdCairo(new Date(rawDate));
+    return retDateStr === cairoDateStr;
+  });
+  const returnsTotal = todaysReturns.reduce((sum, ret) => sum + (Number(ret.totalAmount) || 0), 0);
+
+  const salesTotal = grossSalesTotal - returnsTotal;
   const invoiceCount = todaysInvoices.length;
 
   // Filter purchase invoices belonging to this Cairo calendar date
@@ -501,6 +513,7 @@ class OrgSyncService {
         suppliers: storage.getSuppliers(),
         cashInDrawer: storage.calculateCurrentCashInDrawer(),
         cairoDateStr,
+        salesReturns: storage.getSalesReturns(),
       });
 
       const isAllZeros =

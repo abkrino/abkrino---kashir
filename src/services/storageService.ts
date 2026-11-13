@@ -1,7 +1,11 @@
 import {
   Product, Customer, Supplier, SalesInvoice, PurchaseInvoice,
   CashMovement, Expense, AuditLog, SystemShift, User, StockAdjustment, ParkedCart,
-  StoreProfile, DEFAULT_STORE_PROFILE, LEGACY_STORE_PROFILE
+  StoreProfile, DEFAULT_STORE_PROFILE, LEGACY_STORE_PROFILE,
+  AccountingMode, FundingSource, FundingSourceType, CashMovementFunding,
+  CashOutEvaluation, DEFAULT_FUNDING_SOURCES,
+  SalesReturn, SalesReturnItem, SalesReturnReason, SalesReturnRefundMethod,
+  SALES_RETURN_REASON_LABELS, InvoiceLineItem
 } from '../types';
 import {
   INITIAL_PRODUCTS, INITIAL_CUSTOMERS, INITIAL_SUPPLIERS, INITIAL_SHIFT,
@@ -26,6 +30,10 @@ export const STORAGE_KEYS = {
   PARKED_CARTS: 'sm_parked_carts_v3',
   STORE_PROFILE: 'sm_store_profile_v1',
   STORE_PROFILE_REVIEWED: 'sm_store_profile_reviewed',
+  ACCOUNTING_MODE: 'sm_accounting_mode_v1',
+  FUNDING_SOURCES: 'sm_funding_sources_v1',
+  SALES_RETURNS: 'sm_sales_returns_v1',
+  DOCUMENT_SEQUENCES: 'sm_doc_sequences_v1',
 };
 
 export const BUSINESS_KEYS = [
@@ -43,6 +51,10 @@ export const BUSINESS_KEYS = [
   STORAGE_KEYS.ACTIVE_USER_ID,
   STORAGE_KEYS.PARKED_CARTS,
   STORAGE_KEYS.STORE_PROFILE,
+  STORAGE_KEYS.ACCOUNTING_MODE,
+  STORAGE_KEYS.FUNDING_SOURCES,
+  STORAGE_KEYS.SALES_RETURNS,
+  STORAGE_KEYS.DOCUMENT_SEQUENCES,
 ];
 
 class StorageService {
@@ -638,6 +650,180 @@ class StorageService {
     return Boolean(profile && profile.name && profile.name.trim() !== '' && profile.name !== 'اسم المحل');
   }
 
+  // --- ACCOUNTING MODE & FUNDING SOURCES ---
+  public getAccountingMode(): AccountingMode {
+    const mode = this.getItem<string>(STORAGE_KEYS.ACCOUNTING_MODE, 'DAILY_DRAWER');
+    if (mode === 'DAILY_DRAWER' || mode === 'MONTHLY_POOL' || mode === 'CAPITAL') {
+      return mode;
+    }
+    return 'DAILY_DRAWER';
+  }
+
+  public async setAccountingMode(
+    newMode: AccountingMode,
+    adminUser: User | null | undefined,
+    passwordOrPin: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (newMode !== 'DAILY_DRAWER' && newMode !== 'MONTHLY_POOL' && newMode !== 'CAPITAL') {
+      return { success: false, error: 'نظام المحاسبة المحدد غير صالح' };
+    }
+
+    if (!adminUser || adminUser.role !== 'ADMIN' || adminUser.isActive === false) {
+      return { success: false, error: 'غير مصرح: تغيير النظام المحاسبي مقتصر على مدير النظام فقط' };
+    }
+
+    const currentShift = this.getCurrentShift();
+    if (currentShift && currentShift.status === 'OPEN') {
+      return {
+        success: false,
+        error: 'لا يمكن تغيير النظام المحاسبي أثناء وجود وردية مفتوحة. يجب مطابقة الدرج وإغلاق الوردية الحالية أولاً.',
+      };
+    }
+
+    const { authSecurityService } = await import('./authSecurityService');
+    const verification = await authSecurityService.verifyUserPassword(adminUser.id, passwordOrPin);
+    if (!verification.valid) {
+      return {
+        success: false,
+        error: verification.error || 'كلمة مرور المدير غير صحيحة. تم رفض تبديل النظام المحاسبي.',
+      };
+    }
+
+    const prevMode = this.getAccountingMode();
+    if (prevMode === newMode) {
+      return { success: true };
+    }
+
+    this.setItem(STORAGE_KEYS.ACCOUNTING_MODE, newMode);
+
+    const modeLabels: Record<AccountingMode, string> = {
+      DAILY_DRAWER: 'الدرج اليومي الفعلي (DAILY_DRAWER)',
+      MONTHLY_POOL: 'الوعاء الشهري التراكمي (MONTHLY_POOL)',
+      CAPITAL: 'التمويل من رأس المال (CAPITAL)',
+    };
+
+    this.addAuditLog(
+      'ACCOUNTING_MODE',
+      'تغيير النظام المحاسبي',
+      'الإعدادات',
+      newMode,
+      `قام المدير (${adminUser.fullName}) بتبديل نظام المحاسبة من [${modeLabels[prevMode]}] إلى [${modeLabels[newMode]}] (يسري على العمليات الجديدة فقط)`
+    );
+    this.notifyAction(`تغيير النظام المحاسبي إلى ${modeLabels[newMode]}`);
+
+    return { success: true };
+  }
+
+  public getFundingSources(): FundingSource[] {
+    const stored = this.getItem<FundingSource[] | null>(STORAGE_KEYS.FUNDING_SOURCES, null);
+    if (!stored || !Array.isArray(stored) || stored.length === 0) {
+      return JSON.parse(JSON.stringify(DEFAULT_FUNDING_SOURCES));
+    }
+    return stored;
+  }
+
+  public getActiveFundingSources(): FundingSource[] {
+    return this.getFundingSources().filter(s => s.isActive !== false);
+  }
+
+  public addFundingSource(
+    adminUser: User | null | undefined,
+    params: { type: FundingSourceType; label: string; note?: string }
+  ): { success: boolean; error?: string; source?: FundingSource } {
+    if (!adminUser || adminUser.role !== 'ADMIN' || adminUser.isActive === false) {
+      return { success: false, error: 'غير مصرح: تعديل مصادر التمويل مقتصر على المدير العام فقط' };
+    }
+
+    const cleanLabel = (params.label || '').trim();
+    if (!cleanLabel) {
+      return { success: false, error: 'يرجى كتابة اسم مصدر التمويل' };
+    }
+
+    const validTypes: FundingSourceType[] = ['DRAWER', 'OWNER_LOAN', 'CUSTODY', 'EXTERNAL_FUNDING', 'DRAWER_NEGATIVE', 'OTHER'];
+    if (!validTypes.includes(params.type)) {
+      return { success: false, error: 'نوع مصدر التمويل غير صالح' };
+    }
+
+    const sources = this.getFundingSources();
+    const newSource: FundingSource = {
+      id: `fs-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      type: params.type,
+      label: cleanLabel,
+      note: params.note?.trim() || undefined,
+      isActive: true,
+      isSystemDefault: false,
+    };
+
+    sources.push(newSource);
+    this.setItem(STORAGE_KEYS.FUNDING_SOURCES, sources);
+
+    this.addAuditLog(
+      'SETTINGS',
+      'إضافة مصدر تمويل',
+      'الإعدادات',
+      newSource.id,
+      `أضاف المدير (${adminUser.fullName}) مصدر تمويل جديد: ${newSource.label} (${newSource.type})`
+    );
+
+    return { success: true, source: newSource };
+  }
+
+  public toggleFundingSource(
+    adminUser: User | null | undefined,
+    sourceId: string
+  ): { success: boolean; error?: string; source?: FundingSource } {
+    if (!adminUser || adminUser.role !== 'ADMIN' || adminUser.isActive === false) {
+      return { success: false, error: 'غير مصرح: تعديل مصادر التمويل مقتصر على المدير العام فقط' };
+    }
+
+    const sources = this.getFundingSources();
+    const idx = sources.findIndex(s => s.id === sourceId);
+    if (idx === -1) {
+      return { success: false, error: 'مصدر التمويل غير موجود' };
+    }
+
+    if (sources[idx].id === 'fs-drawer') {
+      return { success: false, error: 'لا يمكن إيقاف المصدر الأساسي (نقدية الدرج المباشرة)' };
+    }
+
+    sources[idx] = { ...sources[idx], isActive: !sources[idx].isActive };
+    this.setItem(STORAGE_KEYS.FUNDING_SOURCES, sources);
+
+    this.addAuditLog(
+      'SETTINGS',
+      sources[idx].isActive ? 'تفعيل مصدر تمويل' : 'إيقاف مصدر تمويل',
+      'الإعدادات',
+      sources[idx].id,
+      `قام المدير (${adminUser.fullName}) بـ ${sources[idx].isActive ? 'تفعيل' : 'إيقاف'} مصدر التمويل: ${sources[idx].label}`
+    );
+
+    return { success: true, source: sources[idx] };
+  }
+
+  public validateFundingDetails(funding?: CashMovementFunding): {
+    valid: boolean;
+    error?: string;
+    normalized?: CashMovementFunding;
+  } {
+    if (!funding) {
+      return { valid: false, error: 'يرجى تحديد مصدر التمويل' };
+    }
+    if (funding.type === 'OTHER' && (!funding.note || !funding.note.trim())) {
+      return {
+        valid: false,
+        error: 'عند اختيار "أخرى" يجب كتابة توضيح مصدر التمويل في مربع النص الإلزامي',
+      };
+    }
+    return {
+      valid: true,
+      normalized: {
+        type: funding.type,
+        label: (funding.label || '').trim() || funding.type,
+        note: funding.note?.trim() || undefined,
+      },
+    };
+  }
+
   // --- USERS & ROLES MANAGEMENT ---
   public getUsers(): User[] {
     const users = this.getItem<User[]>(STORAGE_KEYS.USERS, []);
@@ -840,6 +1026,7 @@ class StorageService {
     customer: Customer;
     invoices: SalesInvoice[];
     payments: CashMovement[];
+    returns: SalesReturn[];
   } | null {
     const cust = this.getCustomers().find(c => c.id === customerId);
     if (!cust) return null;
@@ -848,8 +1035,9 @@ class StorageService {
     const payments = this.getCashMovements().filter(
       m => m.category === 'CUSTOMER_COLLECTION' && m.description.includes(cust.name)
     );
+    const returns = this.getSalesReturns().filter(r => r.customerId === customerId);
 
-    return { customer: cust, invoices, payments };
+    return { customer: cust, invoices, payments, returns };
   }
 
   // --- SUPPLIERS ---
@@ -900,8 +1088,143 @@ class StorageService {
   public calculateCurrentCashInDrawer(): number {
     const movements = this.getCashMovements();
     return movements.reduce((acc, m) => {
+      if (m.affectsDrawer === false) return acc;
       return m.type === 'IN' ? acc + m.amount : acc - m.amount;
     }, 0);
+  }
+
+  public calculateMonthlyPoolAvailable(referenceDate?: Date): number {
+    const now = referenceDate || new Date();
+    const currentMonthPrefix = now.toISOString().slice(0, 7); // YYYY-MM
+    const movements = this.getCashMovements();
+    return movements.reduce((acc, m) => {
+      if (m.affectsDrawer === false) return acc;
+      if (!m.date || !m.date.startsWith(currentMonthPrefix)) return acc;
+      // صافي النقدية الداخلة للدرج منذ أول الشهر (مبيعات نقدية وتحصيلات وإيداعات ناقص مدفوعات ومصروفات)، لا رصيد اللحظة / الافتتاحي ولا ضخ رأس المال
+      if (m.category === 'OPENING_BALANCE' || m.category === 'CAPITAL_INJECTION') return acc;
+      return m.type === 'IN' ? acc + m.amount : acc - m.amount;
+    }, 0);
+  }
+
+  /**
+   * Unified Cash-Out Coverage & Funding Source Evaluator (Service Layer)
+   */
+  public evaluateCashOut(
+    amount: number,
+    context?: {
+      user?: User | null;
+      operation?: 'SUPPLIER_PAYMENT' | 'EXPENSE' | 'PURCHASE_CASH' | 'MANUAL_WITHDRAWAL' | 'SALES_REFUND' | string;
+      allowNegativeCash?: boolean;
+      fundingDetails?: CashMovementFunding;
+    }
+  ): CashOutEvaluation {
+    const mode = this.getAccountingMode();
+    const isSalesRefund = context?.operation === 'SALES_REFUND';
+    // Cash sales refunds ALWAYS check physical drawer balance regardless of accountingMode
+    const available = isSalesRefund
+      ? this.calculateCurrentCashInDrawer()
+      : mode === 'DAILY_DRAWER'
+      ? this.calculateCurrentCashInDrawer()
+      : mode === 'MONTHLY_POOL'
+      ? this.calculateMonthlyPoolAvailable()
+      : Infinity;
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return {
+        allowed: false,
+        requiresFundingSource: false,
+        available,
+        mode,
+        reason: 'المبلغ يجب أن يكون أكبر من صفر',
+      };
+    }
+
+    // Validate structured fundingDetails if provided (strictly reject OTHER without note in ALL modes)
+    if (context?.fundingDetails) {
+      const check = this.validateFundingDetails(context.fundingDetails);
+      if (!check.valid) {
+        return {
+          allowed: false,
+          requiresFundingSource: true,
+          available,
+          mode,
+          reason: check.error,
+        };
+      }
+    }
+
+    // CAPITAL mode: No drawer coverage check for expenses & purchases, EXCEPT sales refunds which ALWAYS come from drawer
+    if (mode === 'CAPITAL' && !isSalesRefund) {
+      return {
+        allowed: true,
+        requiresFundingSource: false,
+        available,
+        mode,
+      };
+    }
+
+    // Check against available liquidity (drawer cash for DAILY_DRAWER & SALES_REFUND; monthly pool for MONTHLY_POOL)
+    if (available >= amount) {
+      return {
+        allowed: true,
+        requiresFundingSource: false,
+        available,
+        mode,
+      };
+    }
+
+    // Insufficient funds -> Requires Funding Source & Negative/External Permission (ADMIN or explicit permission)
+    const actingUser = context?.user !== undefined ? context.user : this.getActiveUser();
+    const canNegative = Boolean(
+      actingUser &&
+        actingUser.isActive !== false &&
+        (actingUser.role === 'ADMIN' || actingUser.permissions?.canWithdrawNegativeCash)
+    );
+
+    if (!canNegative) {
+      const reason = isSalesRefund
+        ? `رصيد الدرج المتاح (${available} ج.م) لا يكفي لرد ${amount} ج.م نقداً. يرجى اختيار "رصيد للعميل" بدلاً من الرد النقدي، أو مراجعة المدير العام.`
+        : `الرصيد المتاح (${available} ج.م) لا يكفي لصرف ${amount} ج.م. السحب بالسالب أو التمويل البديل مقتصر على المدير العام أو بصلاحية صريحة فقط.`;
+      return {
+        allowed: false,
+        requiresFundingSource: true,
+        available,
+        mode,
+        reason,
+      };
+    }
+
+    if (!context?.allowNegativeCash) {
+      const msg = isSalesRefund
+        ? `الرصيد النقدي بالدرج (${available} ج.م) لا يكفي لرد ${amount} ج.م نقداً. يمكنك اختيار رد المبلغ كـ "رصيد للعميل" أو تحديد مصدر التمويل لتجاوز الدرج.`
+        : mode === 'MONTHLY_POOL'
+        ? `صافي الوعاء الشهري المتاح منذ أول الشهر (${available} ج.م) لا يكفي لصرف ${amount} ج.م. يرجى تحديد مصدر التمويل للمتابعة.`
+        : `الرصيد النقدي بالدرج (${available} ج.م) لا يكفي لصرف ${amount} ج.م. يرجى تحديد مصدر التمويل أو تفعيل السحب بالسالب.`;
+      return {
+        allowed: false,
+        requiresFundingSource: true,
+        available,
+        mode,
+        reason: msg,
+      };
+    }
+
+    if (!context.fundingDetails) {
+      return {
+        allowed: false,
+        requiresFundingSource: true,
+        available,
+        mode,
+        reason: 'يرجى تحديد مصدر التمويل المنظّم قبل تأكيد الصرف.',
+      };
+    }
+
+    return {
+      allowed: true,
+      requiresFundingSource: true,
+      available,
+      mode,
+    };
   }
 
   // --- CASH MOVEMENTS ---
@@ -909,10 +1232,178 @@ class StorageService {
     return this.getItem<CashMovement[]>(STORAGE_KEYS.CASH_MOVEMENTS, INITIAL_CASH_MOVEMENTS);
   }
 
-  public addCashMovement(movement: CashMovement): void {
+  public addCashMovement(
+    movement: CashMovement,
+    options?: { user?: User | null; allowNegativeCash?: boolean; skipCashOutCheck?: boolean }
+  ): { success: boolean; error?: string } {
+    if (
+      !options?.skipCashOutCheck &&
+      movement.type === 'OUT' &&
+      movement.category !== 'INVOICE_REVERSAL' &&
+      movement.affectsDrawer !== false
+    ) {
+      const evalRes = this.evaluateCashOut(movement.amount, {
+        user: options?.user,
+        operation: movement.category,
+        allowNegativeCash: options?.allowNegativeCash,
+        fundingDetails: movement.fundingDetails,
+      });
+      if (!evalRes.allowed) {
+        return { success: false, error: evalRes.reason || 'تعذر تنفيذ حركة السحب النقدي' };
+      }
+      if (evalRes.mode === 'CAPITAL' && movement.category !== 'SALES_REFUND') {
+        movement.affectsDrawer = false;
+      }
+    }
+
     const movements = this.getCashMovements();
     movements.unshift(movement);
     this.setItem(STORAGE_KEYS.CASH_MOVEMENTS, movements);
+    return { success: true };
+  }
+
+  public recordManualWithdrawal(params: {
+    amount: number;
+    description: string;
+    performedBy: string;
+    user?: User | null;
+    allowNegativeCash?: boolean;
+    fundingDetails?: CashMovementFunding;
+  }): { success: boolean; error?: string } {
+    const cleanDesc = (params.description || '').trim();
+    if (!cleanDesc) {
+      return { success: false, error: 'يرجى كتابة سبب أو بيان السحب اليدوي' };
+    }
+
+    const evalRes = this.evaluateCashOut(params.amount, {
+      user: params.user,
+      operation: 'MANUAL_WITHDRAWAL',
+      allowNegativeCash: params.allowNegativeCash,
+      fundingDetails: params.fundingDetails,
+    });
+
+    if (!evalRes.allowed) {
+      return { success: false, error: evalRes.reason };
+    }
+
+    const affectsDrawer = evalRes.mode !== 'CAPITAL';
+    const resolvedFunding: CashMovementFunding = params.fundingDetails
+      ? this.validateFundingDetails(params.fundingDetails).normalized!
+      : evalRes.mode === 'CAPITAL'
+      ? { type: 'EXTERNAL_FUNDING', label: 'رأس مال المحل (لا يؤثر على الدرج)' }
+      : { type: 'DRAWER', label: 'نقدية الدرج المباشرة' };
+
+    const fundingText = resolvedFunding.note
+      ? `${resolvedFunding.label} — ${resolvedFunding.note}`
+      : resolvedFunding.label;
+
+    const now = new Date();
+    this.addCashMovement(
+      {
+        id: `cm-${Date.now()}`,
+        date: now.toISOString().split('T')[0],
+        time: now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+        type: 'OUT',
+        category: 'DRAWER_ADJUSTMENT',
+        categoryLabelArabic: 'سحب نقدي يدوي',
+        amount: params.amount,
+        description: `سحب يدوي: ${cleanDesc} (${fundingText})`,
+        performedBy: params.performedBy,
+        fundingSource: resolvedFunding.type,
+        fundingDetails: resolvedFunding,
+        affectsDrawer,
+      },
+      { skipCashOutCheck: true }
+    );
+
+    this.addAuditLog(
+      'CASH_WITHDRAWAL',
+      'سحب نقدي يدوي',
+      'الخزينة',
+      'drawer',
+      `سحب يدوي بقيمة ${params.amount} ج.م: ${cleanDesc} [${fundingText}]`
+    );
+    this.notifyAction(`سحب نقدي يدوي: ${params.amount} ج.م`);
+    return { success: true };
+  }
+
+  public recordManualDeposit(params: {
+    amount: number;
+    description: string;
+    performedBy: string;
+  }): { success: boolean; error?: string } {
+    if (!Number.isFinite(params.amount) || params.amount <= 0) {
+      return { success: false, error: 'المبلغ يجب أن يكون أكبر من صفر' };
+    }
+    const cleanDesc = (params.description || '').trim() || 'إيداع نقدي بالدرج';
+    const now = new Date();
+
+    this.addCashMovement(
+      {
+        id: `cm-${Date.now()}`,
+        date: now.toISOString().split('T')[0],
+        time: now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+        type: 'IN',
+        category: 'DRAWER_ADJUSTMENT',
+        categoryLabelArabic: 'إيداع نقدي بالدرج',
+        amount: params.amount,
+        description: cleanDesc,
+        performedBy: params.performedBy,
+        affectsDrawer: true,
+        fundingDetails: { type: 'DRAWER', label: 'إيداع نقدي مباشر بالدرج' },
+      },
+      { skipCashOutCheck: true }
+    );
+
+    this.addAuditLog('CASH_DEPOSIT', 'إيداع بالدرج', 'الخزينة', 'drawer', `إيداع بالدرج بقيمة ${params.amount} ج.م: ${cleanDesc}`);
+    this.notifyAction(`إيداع نقدي بالدرج: ${params.amount} ج.م`);
+    return { success: true };
+  }
+
+  public recordCapitalInjection(params: {
+    amount: number;
+    description?: string;
+    performedBy: string;
+    user?: User | null;
+  }): { success: boolean; error?: string } {
+    if (!Number.isFinite(params.amount) || params.amount <= 0) {
+      return { success: false, error: 'قيمة إيداع رأس المال يجب أن تكون أكبر من صفر' };
+    }
+    const actingUser = params.user !== undefined ? params.user : this.getActiveUser();
+    if (actingUser && actingUser.role !== 'ADMIN' && !actingUser.permissions?.canManageCash) {
+      return { success: false, error: 'غير مصرح بتسجيل إيداعات رأس المال' };
+    }
+
+    const cleanDesc = (params.description || '').trim() || 'ضخ / إيداع رأس مال من المالك';
+    const now = new Date();
+
+    this.addCashMovement(
+      {
+        id: `cm-${Date.now()}`,
+        date: now.toISOString().split('T')[0],
+        time: now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+        type: 'IN',
+        category: 'CAPITAL_INJECTION',
+        categoryLabelArabic: 'إيداع رأس مال (غير إيرادي)',
+        amount: params.amount,
+        description: cleanDesc,
+        performedBy: params.performedBy,
+        affectsDrawer: false,
+        fundingSource: 'OWNER_LOAN',
+        fundingDetails: { type: 'OWNER_LOAN', label: 'إيداع رأس مال من المالك', note: cleanDesc },
+      },
+      { skipCashOutCheck: true }
+    );
+
+    this.addAuditLog(
+      'CAPITAL_INJECTION',
+      'إيداع رأس مال',
+      'الخزينة',
+      'capital',
+      `ضخ رأس مال بقيمة ${params.amount} ج.م (حركة منفصلة غير إيرادية لا تؤثر على الدرج أو الأرباح): ${cleanDesc}`
+    );
+    this.notifyAction(`إيداع رأس مال: ${params.amount} ج.م`);
+    return { success: true };
   }
 
   // --- EXPENSES ---
@@ -920,26 +1411,71 @@ class StorageService {
     return this.getItem<Expense[]>(STORAGE_KEYS.EXPENSES, INITIAL_EXPENSES);
   }
 
-  public recordExpense(expense: Expense): void {
-    const expenses = this.getExpenses();
-    expenses.unshift(expense);
-    this.setItem(STORAGE_KEYS.EXPENSES, expenses);
-
-    this.addCashMovement({
-      id: `cm-${Date.now()}`,
-      date: expense.date,
-      time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
-      type: 'OUT',
-      category: 'EXPENSE',
-      categoryLabelArabic: expense.categoryLabelArabic,
-      amount: expense.amount,
-      referenceId: expense.id,
-      description: `مصروف: ${expense.categoryLabelArabic} - ${expense.notes}`,
-      performedBy: expense.recordedBy,
+  public recordExpense(
+    expense: Expense,
+    options?: { user?: User | null; allowNegativeCash?: boolean; fundingDetails?: CashMovementFunding }
+  ): { success: boolean; error?: string } {
+    const evalRes = this.evaluateCashOut(expense.amount, {
+      user: options?.user,
+      operation: 'EXPENSE',
+      allowNegativeCash: options?.allowNegativeCash,
+      fundingDetails: options?.fundingDetails || expense.fundingDetails,
     });
 
-    this.addAuditLog('EXPENSE', 'تسجيل مصروف', 'المصروفات', expense.id, `تسجيل مصروف بقيمة ${expense.amount} ج.م - ${expense.categoryLabelArabic}`);
+    if (!evalRes.allowed) {
+      return { success: false, error: evalRes.reason };
+    }
+
+    const affectsDrawer = evalRes.mode !== 'CAPITAL';
+    const rawFunding = options?.fundingDetails || expense.fundingDetails;
+    const resolvedFunding: CashMovementFunding = rawFunding
+      ? this.validateFundingDetails(rawFunding).normalized!
+      : evalRes.mode === 'CAPITAL'
+      ? { type: 'EXTERNAL_FUNDING', label: 'رأس مال المحل (لا يؤثر على الدرج)' }
+      : { type: 'DRAWER', label: 'نقدية الدرج المباشرة' };
+
+    const expenseToSave: Expense = {
+      ...expense,
+      fundingDetails: resolvedFunding,
+      affectsDrawer,
+    };
+
+    const expenses = this.getExpenses();
+    expenses.unshift(expenseToSave);
+    this.setItem(STORAGE_KEYS.EXPENSES, expenses);
+
+    const fundingText = resolvedFunding.note
+      ? `${resolvedFunding.label} — ${resolvedFunding.note}`
+      : resolvedFunding.label;
+
+    this.addCashMovement(
+      {
+        id: `cm-${Date.now()}`,
+        date: expense.date,
+        time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+        type: 'OUT',
+        category: 'EXPENSE',
+        categoryLabelArabic: expense.categoryLabelArabic,
+        amount: expense.amount,
+        referenceId: expense.id,
+        description: `مصروف: ${expense.categoryLabelArabic} - ${expense.notes} (${fundingText})`,
+        performedBy: expense.recordedBy,
+        fundingSource: resolvedFunding.type,
+        fundingDetails: resolvedFunding,
+        affectsDrawer,
+      },
+      { skipCashOutCheck: true }
+    );
+
+    this.addAuditLog(
+      'EXPENSE',
+      'تسجيل مصروف',
+      'المصروفات',
+      expense.id,
+      `تسجيل مصروف بقيمة ${expense.amount} ج.م - ${expense.categoryLabelArabic} [${fundingText}]`
+    );
     this.notifyAction(`تسجيل مصروف: ${expense.categoryLabelArabic}`);
+    return { success: true };
   }
 
   // --- SALES INVOICES: POST, UPDATE, DELETE & NEGATIVE STOCK ---
@@ -1130,6 +1666,429 @@ class StorageService {
     return { success: true };
   }
 
+  // --- SEQUENTIAL DOCUMENT NUMBERING (INV / PUR / RET) ---
+  public nextDocumentNumber(prefix: 'INV' | 'PUR' | 'RET', date?: Date): string {
+    const year = (date || new Date()).getFullYear();
+    const seqKey = `${prefix}-${year}`;
+    const storedSequences = this.getItem<Record<string, number>>(STORAGE_KEYS.DOCUMENT_SEQUENCES, {});
+    const sequences = storedSequences && typeof storedSequences === 'object' ? { ...storedSequences } : {};
+
+    let maxExisting = 0;
+    const regex = new RegExp(`^${prefix}-${year}-(\\d+)$`);
+    const existingNumbers =
+      prefix === 'INV'
+        ? this.getSalesInvoices().map(inv => inv.invoiceNumber)
+        : prefix === 'PUR'
+        ? this.getPurchases().map(pur => pur.invoiceNumber)
+        : this.getSalesReturns().map(ret => ret.returnNumber);
+
+    for (const docNum of existingNumbers) {
+      if (typeof docNum === 'string') {
+        const m = docNum.match(regex);
+        if (m) {
+          const parsed = parseInt(m[1], 10);
+          if (Number.isFinite(parsed) && parsed > maxExisting) {
+            maxExisting = parsed;
+          }
+        }
+      }
+    }
+
+    const nextSeq = Math.max(sequences[seqKey] || 0, maxExisting) + 1;
+    sequences[seqKey] = nextSeq;
+    this.setItem(STORAGE_KEYS.DOCUMENT_SEQUENCES, sequences);
+
+    return `${prefix}-${year}-${String(nextSeq).padStart(5, '0')}`;
+  }
+
+  // --- SALES RETURNS (مرتجعات المبيعات) ---
+  public getSalesReturns(invoiceId?: string): SalesReturn[] {
+    const list = this.getItem<SalesReturn[]>(STORAGE_KEYS.SALES_RETURNS, []);
+    if (!Array.isArray(list)) {
+      this.setItem(STORAGE_KEYS.SALES_RETURNS, []);
+      return [];
+    }
+    return invoiceId ? list.filter(r => r.originalInvoiceId === invoiceId) : list;
+  }
+
+  public getInvoiceLineKey(item: InvoiceLineItem): string {
+    return item.id || `${item.productId}::${item.unit}`;
+  }
+
+  public getReturnedQtyByInvoice(invoiceId: string): Record<string, number> {
+    const returns = this.getSalesReturns(invoiceId);
+    const map: Record<string, number> = {};
+    for (const ret of returns) {
+      for (const it of ret.items) {
+        const key = it.itemKey || `${it.productId}::${it.unit}`;
+        map[key] = Math.round(((map[key] || 0) + Number(it.quantity || 0)) * 1000) / 1000;
+      }
+    }
+    return map;
+  }
+
+  public getInvoiceReturnSummary(invoice: SalesInvoice): {
+    status: 'NONE' | 'PARTIAL' | 'FULL';
+    totalSoldQty: number;
+    totalReturnedQty: number;
+    totalReturnedAmount: number;
+    returnedCount: number;
+    returnedQtyByKey: Record<string, number>;
+  } {
+    const returns = this.getSalesReturns(invoice.id);
+    const returnedQtyByKey: Record<string, number> = {};
+    for (const ret of returns) {
+      for (const it of ret.items) {
+        const key = it.itemKey || `${it.productId}::${it.unit}`;
+        returnedQtyByKey[key] = Math.round(((returnedQtyByKey[key] || 0) + Number(it.quantity || 0)) * 1000) / 1000;
+      }
+    }
+
+    let totalSoldQty = 0;
+    let totalReturnedQty = 0;
+    let allItemsFullyReturned = invoice.items.length > 0;
+
+    for (const orig of invoice.items) {
+      const key = this.getInvoiceLineKey(orig);
+      const fallbackKey = `${orig.productId}::${orig.unit}`;
+      const returnedForItem =
+        returnedQtyByKey[key] !== undefined
+          ? returnedQtyByKey[key]
+          : (returnedQtyByKey[fallbackKey] || 0);
+      totalSoldQty += Number(orig.quantity || 0);
+      totalReturnedQty += returnedForItem;
+      if (returnedForItem + 1e-6 < Number(orig.quantity || 0)) {
+        allItemsFullyReturned = false;
+      }
+    }
+
+    const totalReturnedAmount = Math.round(returns.reduce((s, r) => s + Number(r.totalAmount || 0), 0) * 100) / 100;
+    const status: 'NONE' | 'PARTIAL' | 'FULL' =
+      returns.length === 0 || totalReturnedQty <= 1e-6
+        ? 'NONE'
+        : allItemsFullyReturned
+        ? 'FULL'
+        : 'PARTIAL';
+
+    return {
+      status,
+      totalSoldQty: Math.round(totalSoldQty * 1000) / 1000,
+      totalReturnedQty: Math.round(totalReturnedQty * 1000) / 1000,
+      totalReturnedAmount,
+      returnedCount: returns.length,
+      returnedQtyByKey,
+    };
+  }
+
+  public canInvoiceRefundToCustomerCredit(invoice: SalesInvoice): {
+    eligible: boolean;
+    customer?: Customer;
+    reason?: string;
+  } {
+    if (
+      !invoice.customerId ||
+      invoice.customerId === 'cust-walkin' ||
+      invoice.customerId === 'walk-in' ||
+      invoice.customerId === 'c-cash'
+    ) {
+      return {
+        eligible: false,
+        reason: 'هذه الفاتورة لعميل نقدي مباشر؛ رد المبلغ كرصيد متاح فقط لفواتير العملاء المسجلين على حساب.',
+      };
+    }
+
+    const customer = this.getCustomers().find(c => c.id === invoice.customerId);
+    if (!customer) {
+      return {
+        eligible: false,
+        reason: 'حساب العميل المرتبط بهذه الفاتورة غير موجود في سجل العملاء.',
+      };
+    }
+
+    const isCustomerAccount =
+      invoice.paymentType === 'CREDIT' ||
+      invoice.paymentType === 'SPLIT' ||
+      invoice.remainingAmount > 0 ||
+      Boolean(customer.isCreditAllowed) ||
+      customer.currentBalance !== 0;
+
+    if (!isCustomerAccount) {
+      return {
+        eligible: false,
+        customer,
+        reason: 'هذه الفاتورة مدفوعة نقداً لعميل غير مفعل له حساب آجل؛ يمكن الرد نقداً من الدرج.',
+      };
+    }
+
+    return { eligible: true, customer };
+  }
+
+  public processSalesReturn(params: {
+    invoiceId: string;
+    items: Array<{
+      invoiceItemId?: string;
+      productId: string;
+      unit?: 'CARTON' | 'PIECE' | 'KG' | 'GRAM';
+      quantity: number;
+    }>;
+    reason: SalesReturnReason;
+    reasonNote?: string;
+    refundMethod: SalesReturnRefundMethod;
+    returnToStock: boolean;
+    user?: User | null;
+    allowNegativeCash?: boolean;
+    fundingDetails?: CashMovementFunding;
+  }): { success: boolean; error?: string; salesReturn?: SalesReturn } {
+    // 1. Permission check
+    const actingUser = params.user !== undefined ? params.user : this.getActiveUser();
+    if (
+      !actingUser ||
+      actingUser.isActive === false ||
+      (actingUser.role !== 'ADMIN' && !actingUser.permissions?.canProcessReturns)
+    ) {
+      return { success: false, error: 'غير مصرح: ليس لديك صلاحية تسجيل مرتجعات المبيعات' };
+    }
+
+    // 2. Invoice lookup
+    const invoices = this.getSalesInvoices();
+    const invoice = invoices.find(inv => inv.id === params.invoiceId || inv.invoiceNumber === params.invoiceId);
+    if (!invoice) {
+      return { success: false, error: 'فاتورة المبيعات الأصلية غير موجودة' };
+    }
+
+    // 3. Reason validation
+    if (!params.reason || !SALES_RETURN_REASON_LABELS[params.reason]) {
+      return { success: false, error: 'يرجى تحديد سبب المرتجع' };
+    }
+    const cleanReasonNote = (params.reasonNote || '').trim();
+    if (params.reason === 'OTHER' && !cleanReasonNote) {
+      return { success: false, error: 'عند اختيار سبب "أخرى" يجب كتابة توضيح سبب المرتجع في مربع النص الإلزامي.' };
+    }
+
+    // 4. Items validation & remaining quantity check
+    if (!Array.isArray(params.items) || params.items.length === 0) {
+      return { success: false, error: 'يرجى اختيار صنف واحد على الأقل بكمية مرتجعة موجبة' };
+    }
+
+    const products = this.getProducts();
+    const summary = this.getInvoiceReturnSummary(invoice);
+    const requestedPerKey: Record<string, number> = {};
+    const returnItems: SalesReturnItem[] = [];
+
+    for (const req of params.items) {
+      const qty = Number(req.quantity);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        return { success: false, error: 'الكمية المرتجعة يجب أن تكون أكبر من صفر' };
+      }
+
+      const origItem = invoice.items.find(it => {
+        if (req.invoiceItemId && it.id === req.invoiceItemId) return true;
+        if (req.invoiceItemId) return false;
+        return it.productId === req.productId && (!req.unit || it.unit === req.unit);
+      });
+
+      if (!origItem) {
+        return { success: false, error: 'أحد الأصناف المختارة غير موجود في فاتورة البيع الأصلية' };
+      }
+
+      const lineKey = this.getInvoiceLineKey(origItem);
+      const fallbackKey = `${origItem.productId}::${origItem.unit}`;
+      const alreadyReturned =
+        summary.returnedQtyByKey[lineKey] !== undefined
+          ? summary.returnedQtyByKey[lineKey]
+          : (summary.returnedQtyByKey[fallbackKey] || 0);
+      const batchRequested = (requestedPerKey[lineKey] || 0) + qty;
+      const maxReturnable = Math.max(0, Math.round((origItem.quantity - alreadyReturned) * 1000) / 1000);
+
+      if (batchRequested > maxReturnable + 1e-6) {
+        return {
+          success: false,
+          error: `الكمية المرتجعة للصنف (${origItem.productName}) تتجاوز المتاح للاسترجاع (${maxReturnable}) بعد خصم المرتجعات السابقة.`,
+        };
+      }
+      requestedPerKey[lineKey] = batchRequested;
+
+      const prod = products.find(p => p.id === origItem.productId);
+      const piecesPerUnit =
+        origItem.unit === 'KG'
+          ? 1
+          : origItem.unit === 'CARTON'
+          ? (origItem.quantity > 0 && origItem.piecesCount > 0
+              ? origItem.piecesCount / origItem.quantity
+              : (prod?.piecesPerWholesaleUnit || 1))
+          : 1;
+
+      const normalizedQty = origItem.unit === 'KG' ? Math.round(qty * 1000) / 1000 : qty;
+      const piecesCount =
+        origItem.unit === 'KG'
+          ? normalizedQty
+          : Math.round(normalizedQty * piecesPerUnit * 1000) / 1000;
+
+      const unitSellingPrice = Number(origItem.unitPrice) || 0;
+      const fallbackUnitCost = prod
+        ? (origItem.unit === 'CARTON' ? prod.costPricePerCarton : prod.costPricePerBase)
+        : 0;
+      const unitCostPrice = origItem.costPrice !== undefined ? Number(origItem.costPrice) : fallbackUnitCost;
+
+      const subtotal = Math.round(normalizedQty * unitSellingPrice * 100) / 100;
+      const costTotal = Math.round(normalizedQty * unitCostPrice * 100) / 100;
+
+      returnItems.push({
+        itemKey: lineKey,
+        productId: origItem.productId,
+        productCode: origItem.productCode || prod?.code || '-',
+        productName: origItem.productName,
+        unit: origItem.unit,
+        unitLabel: origItem.unitLabel,
+        quantity: normalizedQty,
+        piecesCount,
+        unitSellingPrice,
+        unitCostPrice,
+        subtotal,
+        costTotal,
+      });
+    }
+
+    const subtotal = Math.round(returnItems.reduce((s, it) => s + it.subtotal, 0) * 100) / 100;
+    const totalCost = Math.round(returnItems.reduce((s, it) => s + it.costTotal, 0) * 100) / 100;
+
+    // Apply proportional invoice-level discount if original invoice had a discount
+    let discountAdjustedAmount = 0;
+    if (invoice.discountAmount > 0 && invoice.subtotal > 0) {
+      const discountRatio = Math.max(0, Math.min(1, invoice.discountAmount / invoice.subtotal));
+      discountAdjustedAmount = Math.round(subtotal * discountRatio * 100) / 100;
+    }
+    let totalAmount = Math.max(0, Math.round((subtotal - discountAdjustedAmount) * 100) / 100);
+    const maxRemainingInvoiceAmount = Math.max(0, Math.round((invoice.total - summary.totalReturnedAmount) * 100) / 100);
+    if (totalAmount > maxRemainingInvoiceAmount) {
+      totalAmount = maxRemainingInvoiceAmount;
+      discountAdjustedAmount = Math.max(0, Math.round((subtotal - totalAmount) * 100) / 100);
+    }
+    const totalProfitReversed = Math.round((totalAmount - totalCost) * 100) / 100;
+
+    // 5. Refund Method checks BEFORE applying any side effects
+    let resolvedFunding: CashMovementFunding | undefined;
+    const customers = this.getCustomers();
+    let targetCustomer: Customer | undefined;
+
+    if (params.refundMethod === 'CUSTOMER_CREDIT') {
+      const creditEligibility = this.canInvoiceRefundToCustomerCredit(invoice);
+      if (!creditEligibility.eligible) {
+        return { success: false, error: creditEligibility.reason };
+      }
+      targetCustomer = customers.find(c => c.id === invoice.customerId);
+      if (!targetCustomer) {
+        return { success: false, error: 'حساب العميل غير موجود' };
+      }
+    } else if (params.refundMethod === 'CASH') {
+      if (totalAmount > 0) {
+        const evalRes = this.evaluateCashOut(totalAmount, {
+          user: actingUser,
+          operation: 'SALES_REFUND',
+          allowNegativeCash: params.allowNegativeCash,
+          fundingDetails: params.fundingDetails,
+        });
+        if (!evalRes.allowed) {
+          return { success: false, error: evalRes.reason };
+        }
+        resolvedFunding = params.fundingDetails
+          ? this.validateFundingDetails(params.fundingDetails).normalized!
+          : { type: 'DRAWER', label: 'نقدية الدرج المباشرة' };
+      }
+    } else {
+      return { success: false, error: 'طريقة رد المرتجع غير صالحة' };
+    }
+
+    // 6. Execute state changes (stock, customer balance / cash movement, record, audit log)
+    const now = new Date();
+    const dateStr = now.toISOString().split('T')[0];
+    const timeStr = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+    const returnNumber = this.nextDocumentNumber('RET', now);
+
+    if (params.returnToStock) {
+      for (const item of returnItems) {
+        const prod = products.find(p => p.id === item.productId);
+        if (prod) {
+          prod.stockPieces = Math.round((prod.stockPieces + item.piecesCount) * 1000) / 1000;
+        }
+      }
+      this.setItem(STORAGE_KEYS.PRODUCTS, products);
+    }
+
+    if (params.refundMethod === 'CUSTOMER_CREDIT' && targetCustomer) {
+      targetCustomer.currentBalance = Math.round((targetCustomer.currentBalance - totalAmount) * 100) / 100;
+      this.setItem(STORAGE_KEYS.CUSTOMERS, customers);
+    } else if (params.refundMethod === 'CASH' && totalAmount > 0) {
+      const fundingLabel = resolvedFunding?.note
+        ? `${resolvedFunding.label} — ${resolvedFunding.note}`
+        : (resolvedFunding?.label || 'نقدية الدرج المباشرة');
+
+      this.addCashMovement(
+        {
+          id: `cm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          date: dateStr,
+          time: timeStr,
+          type: 'OUT',
+          category: 'SALES_REFUND',
+          categoryLabelArabic: 'مرتجع مبيعات نقدي',
+          amount: totalAmount,
+          referenceId: returnNumber,
+          description: `رد نقدي لمرتجع مبيعات ${returnNumber} (فاتورة ${invoice.invoiceNumber}) - ${invoice.customerName} (${fundingLabel})`,
+          performedBy: actingUser.fullName,
+          fundingSource: resolvedFunding?.type || 'DRAWER',
+          fundingDetails: resolvedFunding || { type: 'DRAWER', label: 'نقدية الدرج المباشرة' },
+          affectsDrawer: true, // Cash sales refunds ALWAYS affect drawer
+        },
+        { skipCashOutCheck: true }
+      );
+    }
+
+    const salesReturn: SalesReturn = {
+      id: `ret-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      returnNumber,
+      date: dateStr,
+      time: timeStr,
+      originalInvoiceId: invoice.id,
+      originalInvoiceNumber: invoice.invoiceNumber,
+      customerId: invoice.customerId,
+      customerName: invoice.customerName,
+      items: returnItems,
+      reason: params.reason,
+      reasonLabelArabic: SALES_RETURN_REASON_LABELS[params.reason],
+      reasonNote: cleanReasonNote || undefined,
+      refundMethod: params.refundMethod,
+      returnToStock: Boolean(params.returnToStock),
+      subtotal,
+      discountAdjustedAmount,
+      totalAmount,
+      totalCost,
+      totalProfitReversed,
+      performedByUserId: actingUser.id,
+      performedBy: actingUser.fullName,
+      fundingDetails: resolvedFunding,
+      affectsDrawer: params.refundMethod === 'CASH',
+    };
+
+    const allReturns = this.getSalesReturns();
+    allReturns.unshift(salesReturn);
+    this.setItem(STORAGE_KEYS.SALES_RETURNS, allReturns);
+
+    const reasonText = cleanReasonNote
+      ? `${SALES_RETURN_REASON_LABELS[params.reason]} (${cleanReasonNote})`
+      : SALES_RETURN_REASON_LABELS[params.reason];
+
+    this.addAuditLog(
+      'SALES_RETURN',
+      'تسجيل مرتجع مبيعات',
+      'مرتجعات المبيعات',
+      returnNumber,
+      `مرتجع ${returnNumber} على الفاتورة ${invoice.invoiceNumber} بقيمة ${totalAmount} ج.م • الرد: ${params.refundMethod === 'CASH' ? 'نقدي من الدرج' : 'رصيد للعميل'} • المخزن: ${params.returnToStock ? 'أُعيد للمخزن' : 'تالف لم يُعد'} • السبب: ${reasonText}`
+    );
+    this.notifyAction(`مرتجع مبيعات: ${returnNumber}`);
+
+    return { success: true, salesReturn };
+  }
+
   // --- CUSTOMER DEBT COLLECTION (سند قبض) ---
   public recordCustomerCollection(params: {
     customerId: string;
@@ -1175,29 +2134,57 @@ class StorageService {
     return { success: true };
   }
 
-  // --- SUPPLIER PAYMENT (سند صرف مورد مع إمكانية السحب بالسالب ومصدر التمويل) ---
+  // --- SUPPLIER PAYMENT (سند صرف مورد مع الفحص الموحد ومصدر التمويل المنظم) ---
   public recordSupplierPayment(params: {
     supplierId: string;
     amount: number;
     notes?: string;
     paidBy: string;
+    user?: User | null;
     allowNegativeCash?: boolean;
-    fundingSource?: 'DRAWER' | 'PERSONAL_LOAN' | 'DRAWER_NEGATIVE' | 'OTHER';
+    fundingDetails?: CashMovementFunding;
+    fundingSource?: FundingSourceType | 'PERSONAL_LOAN' | 'DRAWER_NEGATIVE' | 'DRAWER' | 'OTHER';
   }): { success: boolean; error?: string } {
     const suppliers = this.getSuppliers();
     const supp = suppliers.find(s => s.id === params.supplierId);
     if (!supp) return { success: false, error: 'المورد غير موجود' };
     if (params.amount <= 0) return { success: false, error: 'المبلغ يجب أن يكون أكبر من صفر' };
 
-    const currentCash = this.calculateCurrentCashInDrawer();
-    const isNegativeCash = currentCash < params.amount;
-
-    if (isNegativeCash && !params.allowNegativeCash) {
-      return { 
-        success: false, 
-        error: `الرصيد النقدي بالدرج (${currentCash} ج.م) لا يكفي لصرف ${params.amount} ج.م. يمكنك تفعيل خيار السحب بالسالب لتسوية الوردية لاحقاً.` 
+    // Normalize legacy fundingSource enum if passed without fundingDetails
+    let resolvedInputFunding: CashMovementFunding | undefined = params.fundingDetails;
+    if (!resolvedInputFunding && params.fundingSource) {
+      const legacyMap: Record<string, { type: FundingSourceType; label: string }> = {
+        DRAWER: { type: 'DRAWER', label: 'نقدية الدرج المباشرة' },
+        PERSONAL_LOAN: { type: 'OWNER_LOAN', label: 'سلفة / تمويل شخصي من صاحب العمل' },
+        OWNER_LOAN: { type: 'OWNER_LOAN', label: 'سلفة / تمويل شخصي من صاحب العمل' },
+        CUSTODY: { type: 'CUSTODY', label: 'عهدة نقدية خارجية مستلمة' },
+        EXTERNAL_FUNDING: { type: 'EXTERNAL_FUNDING', label: 'تمويل خارجي مستقل' },
+        DRAWER_NEGATIVE: { type: 'DRAWER_NEGATIVE', label: 'سحب مباشر بالسالب مع تسوية الوردية لاحقاً' },
+        OTHER: { type: 'OTHER', label: 'أخرى (مصدر مخصص)' },
       };
+      const mapped = legacyMap[params.fundingSource];
+      if (mapped) {
+        resolvedInputFunding = { type: mapped.type, label: mapped.label };
+      }
     }
+
+    const evalRes = this.evaluateCashOut(params.amount, {
+      user: params.user,
+      operation: 'SUPPLIER_PAYMENT',
+      allowNegativeCash: params.allowNegativeCash,
+      fundingDetails: resolvedInputFunding,
+    });
+
+    if (!evalRes.allowed) {
+      return { success: false, error: evalRes.reason };
+    }
+
+    const affectsDrawer = evalRes.mode !== 'CAPITAL';
+    const finalFunding: CashMovementFunding = resolvedInputFunding
+      ? this.validateFundingDetails(resolvedInputFunding).normalized!
+      : evalRes.mode === 'CAPITAL'
+      ? { type: 'EXTERNAL_FUNDING', label: 'رأس مال المحل (لا يؤثر على الدرج)' }
+      : { type: 'DRAWER', label: 'نقدية الدرج المباشرة' };
 
     supp.currentBalance -= params.amount;
     this.setItem(STORAGE_KEYS.SUPPLIERS, suppliers);
@@ -1207,28 +2194,30 @@ class StorageService {
     const dateStr = now.toISOString().split('T')[0];
     const timeStr = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
 
-    const funding = params.fundingSource || (isNegativeCash ? 'DRAWER_NEGATIVE' : 'DRAWER');
-    const fundingLabel = funding === 'PERSONAL_LOAN' 
-      ? 'سلفة / تمويل شخصي' 
-      : funding === 'DRAWER_NEGATIVE' 
-      ? 'سحب بالسالب من الدرج' 
-      : 'نقدية الدرج';
+    const fundingLabel = finalFunding.note
+      ? `${finalFunding.label} — ${finalFunding.note}`
+      : finalFunding.label;
 
-    this.addCashMovement({
-      id: `cm-${Date.now()}`,
-      date: dateStr,
-      time: timeStr,
-      type: 'OUT',
-      category: 'SUPPLIER_PAYMENT',
-      categoryLabelArabic: 'سند صرف مورد',
-      amount: params.amount,
-      referenceId: voucherNum,
-      supplierId: supp.id,
-      supplierName: supp.name,
-      fundingSource: funding,
-      description: `سند صرف للمورد: ${supp.name} (${fundingLabel}) ${params.notes ? `• ${params.notes}` : ''}`,
-      performedBy: params.paidBy,
-    });
+    this.addCashMovement(
+      {
+        id: `cm-${Date.now()}`,
+        date: dateStr,
+        time: timeStr,
+        type: 'OUT',
+        category: 'SUPPLIER_PAYMENT',
+        categoryLabelArabic: 'سند صرف مورد',
+        amount: params.amount,
+        referenceId: voucherNum,
+        supplierId: supp.id,
+        supplierName: supp.name,
+        fundingSource: finalFunding.type,
+        fundingDetails: finalFunding,
+        affectsDrawer,
+        description: `سند صرف للمورد: ${supp.name} (${fundingLabel}) ${params.notes ? `• ${params.notes}` : ''}`,
+        performedBy: params.paidBy,
+      },
+      { skipCashOutCheck: true }
+    );
 
     this.addAuditLog(
       'PAYMENT',
@@ -1336,11 +2325,42 @@ class StorageService {
     return this.getItem<PurchaseInvoice[]>(STORAGE_KEYS.PURCHASES, []);
   }
 
-  public postPurchaseInvoice(purchase: PurchaseInvoice): { success: boolean; error?: string } {
+  public postPurchaseInvoice(
+    purchase: PurchaseInvoice,
+    options?: { user?: User | null; allowNegativeCash?: boolean; fundingDetails?: CashMovementFunding }
+  ): { success: boolean; error?: string } {
     const products = this.getProducts();
     const suppliers = this.getSuppliers();
     const supp = suppliers.find(s => s.id === purchase.supplierId);
     if (!supp) return { success: false, error: 'المورد غير محدد' };
+
+    // Service-layer cash-out coverage check BEFORE modifying stock or balances
+    let affectsDrawer = true;
+    let resolvedFunding: CashMovementFunding | undefined;
+
+    if (purchase.paidAmount > 0) {
+      const evalRes = this.evaluateCashOut(purchase.paidAmount, {
+        user: options?.user,
+        operation: 'PURCHASE_CASH',
+        allowNegativeCash: options?.allowNegativeCash,
+        fundingDetails: options?.fundingDetails || purchase.fundingDetails,
+      });
+
+      if (!evalRes.allowed) {
+        return { success: false, error: evalRes.reason };
+      }
+
+      affectsDrawer = evalRes.mode !== 'CAPITAL';
+      const rawFunding = options?.fundingDetails || purchase.fundingDetails;
+      resolvedFunding = rawFunding
+        ? this.validateFundingDetails(rawFunding).normalized!
+        : evalRes.mode === 'CAPITAL'
+        ? { type: 'EXTERNAL_FUNDING', label: 'رأس مال المحل (لا يؤثر على الدرج)' }
+        : { type: 'DRAWER', label: 'نقدية الدرج المباشرة' };
+
+      purchase.affectsDrawer = affectsDrawer;
+      purchase.fundingDetails = resolvedFunding;
+    }
 
     // حساب المديونيات
     purchase.previousSupplierBalance = supp.currentBalance;
@@ -1395,22 +2415,32 @@ class StorageService {
     purchase.newSupplierBalance = supp.currentBalance;
     this.setItem(STORAGE_KEYS.SUPPLIERS, suppliers);
 
-    // سداد نقدي من الدرج إن وجد
-    if (purchase.paidAmount > 0) {
-      this.addCashMovement({
-        id: `cm-${Date.now()}`,
-        date: purchase.date,
-        time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
-        type: 'OUT',
-        category: 'SUPPLIER_PAYMENT',
-        categoryLabelArabic: 'دفعة مشتريات نقدية',
-        amount: purchase.paidAmount,
-        referenceId: purchase.invoiceNumber,
-        supplierId: supp.id,
-        supplierName: supp.name,
-        description: `سداد نقدي لفاتورة شراء ${purchase.invoiceNumber} من ${supp.name}`,
-        performedBy: this.getActiveUser()?.fullName || 'النظام',
-      });
+    // سداد نقدي من الدرج أو رأس المال إن وجد
+    if (purchase.paidAmount > 0 && resolvedFunding) {
+      const fundingLabel = resolvedFunding.note
+        ? `${resolvedFunding.label} — ${resolvedFunding.note}`
+        : resolvedFunding.label;
+
+      this.addCashMovement(
+        {
+          id: `cm-${Date.now()}`,
+          date: purchase.date,
+          time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+          type: 'OUT',
+          category: 'SUPPLIER_PAYMENT',
+          categoryLabelArabic: 'دفعة مشتريات نقدية',
+          amount: purchase.paidAmount,
+          referenceId: purchase.invoiceNumber,
+          supplierId: supp.id,
+          supplierName: supp.name,
+          fundingSource: resolvedFunding.type,
+          fundingDetails: resolvedFunding,
+          affectsDrawer,
+          description: `سداد نقدي لفاتورة شراء ${purchase.invoiceNumber} من ${supp.name} (${fundingLabel})`,
+          performedBy: options?.user?.fullName || this.getActiveUser()?.fullName || 'النظام',
+        },
+        { skipCashOutCheck: true }
+      );
     }
 
     const purchases = this.getPurchases();
@@ -1469,20 +2499,25 @@ class StorageService {
       this.setItem(STORAGE_KEYS.SUPPLIERS, suppliers);
     }
 
-    // 3. رد النقدية المسددة إن وجدت
+    // 3. رد النقدية المسددة إن وجدت (باحترام affectsDrawer إذا كانت الفاتورة من رأس المال)
     if (purchase.paidAmount > 0) {
-      this.addCashMovement({
-        id: `cm-${Date.now()}`,
-        date: new Date().toISOString().split('T')[0],
-        time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
-        type: 'IN',
-        category: 'DRAWER_ADJUSTMENT',
-        categoryLabelArabic: 'إلغاء فاتورة شراء',
-        amount: purchase.paidAmount,
-        referenceId: purchase.invoiceNumber,
-        description: `رد نقدية لحذف فاتورة الشراء رقم ${purchase.invoiceNumber} من ${purchase.supplierName}`,
-        performedBy: this.getActiveUser()?.fullName || 'النظام',
-      });
+      this.addCashMovement(
+        {
+          id: `cm-${Date.now()}`,
+          date: new Date().toISOString().split('T')[0],
+          time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+          type: 'IN',
+          category: 'DRAWER_ADJUSTMENT',
+          categoryLabelArabic: 'إلغاء فاتورة شراء',
+          amount: purchase.paidAmount,
+          referenceId: purchase.invoiceNumber,
+          description: `رد نقدية لحذف فاتورة الشراء رقم ${purchase.invoiceNumber} من ${purchase.supplierName}`,
+          performedBy: this.getActiveUser()?.fullName || 'النظام',
+          affectsDrawer: purchase.affectsDrawer !== false,
+          fundingDetails: purchase.fundingDetails,
+        },
+        { skipCashOutCheck: true }
+      );
     }
 
     const filtered = purchases.filter(p => p.id !== purchase.id);
@@ -1653,6 +2688,10 @@ class StorageService {
         stockAdjustments: this.getStockAdjustments(),
         currentShift: this.getCurrentShift(),
         users: this.getUsers(),
+        storeProfile: this.getStoreProfile(),
+        accountingMode: this.getAccountingMode(),
+        fundingSources: this.getFundingSources(),
+        salesReturns: this.getSalesReturns(),
       }
     };
     return JSON.stringify(backupData, null, 2);
@@ -1673,8 +2712,21 @@ class StorageService {
       this.setItem(STORAGE_KEYS.CASH_MOVEMENTS, parsed.data.cashMovements || []);
       this.setItem(STORAGE_KEYS.EXPENSES, parsed.data.expenses || []);
       this.setItem(STORAGE_KEYS.AUDIT_LOGS, parsed.data.auditLogs || []);
+      this.setItem(STORAGE_KEYS.SALES_RETURNS, Array.isArray(parsed.data.salesReturns) ? parsed.data.salesReturns : []);
       if (parsed.data.stockAdjustments) this.setItem(STORAGE_KEYS.STOCK_ADJUSTMENTS, parsed.data.stockAdjustments);
       if (parsed.data.users) this.setItem(STORAGE_KEYS.USERS, parsed.data.users);
+
+      const mode = parsed.data.accountingMode;
+      this.setItem(
+        STORAGE_KEYS.ACCOUNTING_MODE,
+        mode === 'DAILY_DRAWER' || mode === 'MONTHLY_POOL' || mode === 'CAPITAL' ? mode : 'DAILY_DRAWER'
+      );
+      this.setItem(
+        STORAGE_KEYS.FUNDING_SOURCES,
+        Array.isArray(parsed.data.fundingSources) && parsed.data.fundingSources.length > 0
+          ? parsed.data.fundingSources
+          : JSON.parse(JSON.stringify(DEFAULT_FUNDING_SOURCES))
+      );
 
       this.addAuditLog('RESTORE', 'استعادة نسخة احتياطية', 'النظام', 'restore', 'تمت استعادة قاعدة البيانات بنجاح من ملف خارجي');
 
@@ -1711,6 +2763,7 @@ class StorageService {
     if (data.users !== undefined) this.cache.set(STORAGE_KEYS.USERS, data.users);
     if (data.currentShift !== undefined) this.cache.set(STORAGE_KEYS.SHIFT, data.currentShift);
     if (data.parkedCarts !== undefined) this.cache.set(STORAGE_KEYS.PARKED_CARTS, data.parkedCarts);
+    this.cache.set(STORAGE_KEYS.SALES_RETURNS, Array.isArray(data.salesReturns) ? data.salesReturns : []);
 
     if (data.storeProfile !== undefined) {
       this.cache.set(STORAGE_KEYS.STORE_PROFILE, data.storeProfile);
@@ -1722,6 +2775,21 @@ class StorageService {
       this.cache.set(STORAGE_KEYS.STORE_PROFILE, fallbackProfile);
       this.cache.set(STORAGE_KEYS.STORE_PROFILE_REVIEWED, false);
     }
+
+    // Optional AccountingMode & FundingSources (legacy backups without them receive safe defaults)
+    const restoredMode = data.accountingMode;
+    this.cache.set(
+      STORAGE_KEYS.ACCOUNTING_MODE,
+      restoredMode === 'DAILY_DRAWER' || restoredMode === 'MONTHLY_POOL' || restoredMode === 'CAPITAL'
+        ? restoredMode
+        : 'DAILY_DRAWER'
+    );
+    this.cache.set(
+      STORAGE_KEYS.FUNDING_SOURCES,
+      Array.isArray(data.fundingSources) && data.fundingSources.length > 0
+        ? data.fundingSources
+        : JSON.parse(JSON.stringify(DEFAULT_FUNDING_SOURCES))
+    );
 
     this.pendingWrites.clear();
     this.migrationRecoveryRequired = false;

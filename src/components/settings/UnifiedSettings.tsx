@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User, TabType } from '../../types';
 import { StoreProfileSettings } from './StoreProfileSettings';
+import { AccountingSettings } from './AccountingSettings';
 import { ThemeAccessibilitySettings } from './ThemeAccessibilitySettings';
 import { BackupManager } from '../backup/BackupManager';
 import { CloudDashboard } from '../cloud/CloudDashboard';
@@ -23,9 +24,6 @@ import {
   CheckCircle2,
   Copy,
   Check,
-  Clock,
-  Sparkles,
-  Layers,
   ChevronLeft
 } from 'lucide-react';
 
@@ -67,7 +65,13 @@ export const UnifiedSettings: React.FC<UnifiedSettingsProps> = ({
     return unsub;
   }, []);
 
-  const subTabs = [
+  const subTabs: {
+    id: SettingsSubTab;
+    label: string;
+    description: string;
+    icon: React.ComponentType<{ className?: string }>;
+    badge?: string;
+  }[] = [
     {
       id: 'store-profile' as SettingsSubTab,
       label: 'بيانات المحل',
@@ -77,9 +81,8 @@ export const UnifiedSettings: React.FC<UnifiedSettingsProps> = ({
     {
       id: 'accounting' as SettingsSubTab,
       label: 'المحاسبة',
-      description: 'دليل الحسابات وقيود اليومية (قريباً)',
+      description: 'أنظمة المحاسبة وفحص الدرج ومصادر التمويل',
       icon: Calculator,
-      badge: 'مؤقت',
     },
     {
       id: 'appearance' as SettingsSubTab,
@@ -210,55 +213,12 @@ export const UnifiedSettings: React.FC<UnifiedSettingsProps> = ({
             />
           )}
 
-          {/* 2. Accounting Placeholder */}
+          {/* 2. Accounting Modes & Funding Sources */}
           {activeSubTab === 'accounting' && (
-            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 sm:p-8 shadow-xs">
-              <div className="max-w-2xl mx-auto text-center py-6">
-                <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-3xl bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto mb-4 shadow-xs">
-                  <Calculator className="w-8 h-8 sm:w-10 sm:h-10" />
-                </div>
-                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 text-xs font-bold border border-emerald-200 dark:border-emerald-800 mb-3">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>وحدة المحاسبة العامة — قيد التطوير والتجهيز</span>
-                </div>
-                <h3 className="text-lg sm:text-xl font-black text-slate-900 dark:text-slate-100 mb-2">
-                  دليل الحسابات وقيود اليومية الآلية
-                </h3>
-                <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 leading-relaxed mb-6">
-                  يعمل النظام حالياً بالنظام المحاسبي التشغيلي (المبيعات، المشتريات، نقدية الدرج، المصروفات، وذمم العملاء والموردين). يجري تجهيز شجرة الحسابات العامة وميزان المراجعة وقائمة الدخل التلقائية لربط العمليات محاسبياً في التحديث القادم.
-                </p>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-right">
-                  <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-                    <div className="flex items-center gap-2 mb-1 text-slate-800 dark:text-slate-200 font-bold text-xs">
-                      <Layers className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                      <span>شجرة الحسابات</span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 dark:text-slate-500">
-                      أصول، خصوم، حقوق ملكية، إيرادات ومصروفات بتسلسل محاسبي قياسي.
-                    </p>
-                  </div>
-                  <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-                    <div className="flex items-center gap-2 mb-1 text-slate-800 dark:text-slate-200 font-bold text-xs">
-                      <Clock className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                      <span>قيود آلية</span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 dark:text-slate-500">
-                      توليد قيود اليومية المحاسبية تلقائياً مع كل فاتورة بيع أو شراء أو سداد.
-                    </p>
-                  </div>
-                  <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/50">
-                    <div className="flex items-center gap-2 mb-1 text-slate-800 dark:text-slate-200 font-bold text-xs">
-                      <FileText className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                      <span>القوائم المالية</span>
-                    </div>
-                    <p className="text-[11px] text-slate-400 dark:text-slate-500">
-                      ميزان مراجعة بالمدة، قائمة أرباح وخسائر، وموازنة عامة بنقرة زر.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
+            <AccountingSettings
+              currentUser={currentUser}
+              onUpdated={onRefreshAll}
+            />
           )}
 
           {/* 3. Appearance & Accessibility */}

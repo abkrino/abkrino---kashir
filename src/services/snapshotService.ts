@@ -1,6 +1,6 @@
 import { idb, SnapshotRecord, SnapshotMetadata, SnapshotStatus, KVRecord } from './idbStore';
 import { storage, STORAGE_KEYS } from './storageService';
-import { DEFAULT_STORE_PROFILE, LEGACY_STORE_PROFILE } from '../types';
+import { DEFAULT_STORE_PROFILE, LEGACY_STORE_PROFILE, DEFAULT_FUNDING_SOURCES } from '../types';
 
 export const CURRENT_SCHEMA_VERSION = 1;
 export const APP_VERSION = '1.0.0';
@@ -173,6 +173,9 @@ class SnapshotService {
       users: storage.getUsers(),
       parkedCarts: storage.getParkedCarts(),
       storeProfile: storage.getStoreProfile(),
+      accountingMode: storage.getAccountingMode(),
+      fundingSources: storage.getFundingSources(),
+      salesReturns: storage.getSalesReturns(),
     };
   }
 
@@ -366,6 +369,7 @@ class SnapshotService {
           stockAdjustments: data.stockAdjustments?.length || 0,
           users: data.users?.length || 0,
           parkedCarts: data.parkedCarts?.length || 0,
+          salesReturns: data.salesReturns?.length || 0,
         },
         schemaVersion: CURRENT_SCHEMA_VERSION,
         appVersion: APP_VERSION,
@@ -520,6 +524,7 @@ class SnapshotService {
         stockAdjustments: data.stockAdjustments?.length || 0,
         users: data.users?.length || 0,
         parkedCarts: data.parkedCarts?.length || 0,
+        salesReturns: data.salesReturns?.length || 0,
       },
       checksum,
       data,
@@ -617,6 +622,16 @@ class SnapshotService {
             };
           }
         }
+      }
+      if (
+        typeof parsed.recordCounts.salesReturns === 'number' &&
+        Array.isArray(data.salesReturns) &&
+        data.salesReturns.length !== parsed.recordCounts.salesReturns
+      ) {
+        return {
+          valid: false,
+          error: `عدد سجلات مرتجعات المبيعات في الملف (${data.salesReturns.length}) لا يطابق الفهرس المسجل (${parsed.recordCounts.salesReturns})، الملف غير مكتمل أو تالف.`,
+        };
       }
     }
 
@@ -764,6 +779,29 @@ class SnapshotService {
           key: STORAGE_KEYS.STORE_PROFILE,
           value: payload.storeProfile || (Array.isArray(payload.products) && payload.products.length > 0 ? LEGACY_STORE_PROFILE : DEFAULT_STORE_PROFILE),
           updatedAt: Date.now()
+        },
+        {
+          key: STORAGE_KEYS.ACCOUNTING_MODE,
+          value:
+            payload.accountingMode === 'DAILY_DRAWER' ||
+            payload.accountingMode === 'MONTHLY_POOL' ||
+            payload.accountingMode === 'CAPITAL'
+              ? payload.accountingMode
+              : 'DAILY_DRAWER',
+          updatedAt: Date.now(),
+        },
+        {
+          key: STORAGE_KEYS.FUNDING_SOURCES,
+          value:
+            Array.isArray(payload.fundingSources) && payload.fundingSources.length > 0
+              ? payload.fundingSources
+              : JSON.parse(JSON.stringify(DEFAULT_FUNDING_SOURCES)),
+          updatedAt: Date.now(),
+        },
+        {
+          key: STORAGE_KEYS.SALES_RETURNS,
+          value: Array.isArray(payload.salesReturns) ? payload.salesReturns : [],
+          updatedAt: Date.now(),
         },
       ];
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Customer, User, SalesInvoice, CashMovement } from '../../types';
+import { Customer, User, SalesInvoice, CashMovement, SalesReturn } from '../../types';
 import { storage } from '../../services/storageService';
 import { 
   Users, 
@@ -55,6 +55,7 @@ export const CustomerLedger: React.FC<CustomerLedgerProps> = ({
     customer: Customer;
     invoices: SalesInvoice[];
     payments: CashMovement[];
+    returns: SalesReturn[];
   } | null>(null);
 
   const reloadCustomers = () => {
@@ -392,6 +393,19 @@ export const CustomerLedger: React.FC<CustomerLedgerProps> = ({
                       <td className="p-1.5 font-mono">{pay.referenceId}</td>
                       <td className="p-1.5 font-mono">-</td>
                       <td className="p-1.5 font-mono font-bold text-emerald-800">{pay.amount.toFixed(2)}</td>
+                    </tr>
+                  ))}
+                  {statementData.returns.map(ret => (
+                    <tr key={ret.id} className="bg-amber-50/60">
+                      <td className="p-1.5 font-mono">{ret.date}</td>
+                      <td className="p-1.5">
+                        مرتجع مبيعات — {ret.refundMethod === 'CUSTOMER_CREDIT' ? 'خصم من رصيد العميل' : 'رد نقدي'} ({ret.reasonLabelArabic})
+                      </td>
+                      <td className="p-1.5 font-mono">{ret.returnNumber}</td>
+                      <td className="p-1.5 font-mono">-</td>
+                      <td className="p-1.5 font-mono font-bold text-amber-800">
+                        {ret.refundMethod === 'CUSTOMER_CREDIT' ? ret.totalAmount.toFixed(2) : `${ret.totalAmount.toFixed(2)} (نقدي)`}
+                      </td>
                     </tr>
                   ))}
                 </tbody>

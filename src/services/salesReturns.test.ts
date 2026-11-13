@@ -1,0 +1,643 @@
+import 'fake-indexeddb/auto';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { idb } from './idbStore';
+import { storage, STORAGE_KEYS } from './storageService';
+import { authSecurityService, hashPasswordWithPbkdf2 } from './authSecurityService';
+import { snapshotService, CURRENT_SCHEMA_VERSION, computeDataChecksum } from './snapshotService';
+import { calculateDailySummaryData } from './orgSyncService';
+import { INITIAL_SHIFT } from '../data/initialData';
+import {
+  Customer,
+  Product,
+  SalesInvoice,
+  User,
+} from '../types';
+
+const storageMock = (() => {
+  let store: Record<string, string> = {};
+  return {
+    getItem: (key: string) => store[key] || null,
+    setItem: (key: string, value: string) => {
+      store[key] = String(value);
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+  };
+})();
+
+if (typeof globalThis.localStorage === 'undefined') {
+  Object.defineProperty(globalThis, 'localStorage', {
+    value: storageMock,
+    writable: true,
+  });
+}
+
+describe('Sales Returns (مرتجعات المبيعات)', () => {
+  let adminUser: User;
+  let cashierWithReturns: User;
+  let cashierNoReturns: User;
+  let creditCustomer: Customer;
+  let walkinCustomer: Customer;
+  let testProduct: Product;
+  let kgProduct: Product;
+
+  const ADMIN_PASS = 'Adm!n#9482';
+  const CASHIER_PASS = '4829';
+
+  beforeEach(async () => {
+    localStorage.clear();
+    await idb.kv.clear();
+    await idb.snapshots.clear();
+    (storage as any).cache.clear();
+    (storage as any).pendingWrites.clear();
+    (storage as any).initPromise = null;
+    (storage as any).isReady = false;
+    (storage as any).isFallback = false;
+    (storage as any).migrationRecoveryRequired = false;
+    await storage.init();
+
+    const { hashHex, saltHex } = await hashPasswordWithPbkdf2(ADMIN_PASS);
+    adminUser = {
+      id: 'u-admin-ret',
+      fullName: 'المدير العام للاختبار',
+      username: 'admin_ret',
+      role: 'ADMIN',
+      pinHash: hashHex,
+      pinSalt: saltHex,
+      isActive: true,
+      permissions: {
+        canEditPrice: true,
+        canGiveDiscount: true,
+        canSellNegativeStock: true,
+        canDeleteInvoice: true,
+        canEditInvoice: true,
+        canViewProfits: true,
+        canManageProducts: true,
+        canManagePurchases: true,
+        canManageCash: true,
+        canWithdrawNegativeCash: true,
+        canProcessReturns: true,
+      },
+    };
+    storage.setItem(STORAGE_KEYS.USERS, [adminUser]);
+
+    const c1 = await authSecurityService.saveCashier(adminUser, {
+      fullName: 'كاشير بصلاحية المرتجعات',
+      username: 'cashier_ret',
+      role: 'SALES',
+      pin: CASHIER_PASS,
+      isActive: true,
+      permissions: {
+        canEditPrice: false,
+        canGiveDiscount: false,
+        canSellNegativeStock: false,
+        canDeleteInvoice: false,
+        canEditInvoice: false,
+        canViewProfits: false,
+        canManageProducts: false,
+        canManagePurchases: false,
+        canManageCash: true,
+        canWithdrawNegativeCash: false,
+        canProcessReturns: true,
+      },
+    });
+    expect(c1.success).toBe(true);
+    cashierWithReturns = c1.user!;
+
+    const c2 = await authSecurityService.saveCashier(adminUser, {
+      fullName: 'كاشير بدون صلاحية المرتجعات',
+      username: 'cashier_noret',
+      role: 'SALES',
+      pin: CASHIER_PASS,
+      isActive: true,
+      permissions: {
+        canEditPrice: false,
+        canGiveDiscount: false,
+        canSellNegativeStock: false,
+        canDeleteInvoice: false,
+        canEditInvoice: false,
+        canViewProfits: false,
+        canManageProducts: false,
+        canManagePurchases: false,
+        canManageCash: false,
+        canWithdrawNegativeCash: false,
+        canProcessReturns: false,
+      },
+    });
+    expect(c2.success).toBe(true);
+    cashierNoReturns = c2.user!;
+
+    storage.setActiveUser(adminUser.id);
+
+    testProduct = {
+      id: 'prod-ret-1',
+      code: '2001',
+      barcode: '6221000002001',
+      name: 'جبنة رومي قديمة',
+      category: 'بقالة',
+      brand: 'العلامة',
+      baseUnit: 'قطعة',
+      wholesaleUnit: 'كرتونة',
+      piecesPerWholesaleUnit: 10,
+      costPricePerBase: 20,
+      costPricePerCarton: 200,
+      retailPricePerBase: 30,
+      wholesalePricePerCarton: 280,
+      halfWholesalePricePerCarton: 290,
+      stockPieces: 100,
+      reorderLevelPieces: 10,
+      isActive: true,
+    };
+    kgProduct = {
+      id: 'prod-ret-kg',
+      code: '2002',
+      barcode: '6221000002002',
+      name: 'زيتون مخلل',
+      category: 'مخللات',
+      brand: 'العلامة',
+      baseUnit: 'كيلو',
+      wholesaleUnit: 'صفيحة',
+      piecesPerWholesaleUnit: 10,
+      costPricePerBase: 40,
+      costPricePerCarton: 400,
+      retailPricePerBase: 60,
+      wholesalePricePerCarton: 550,
+      halfWholesalePricePerCarton: 580,
+      stockPieces: 50,
+      reorderLevelPieces: 5,
+      isActive: true,
+      isWeighing: true,
+    };
+    storage.setItem(STORAGE_KEYS.PRODUCTS, [testProduct, kgProduct]);
+
+    creditCustomer = {
+      id: 'cust-credit-1',
+      code: 'C-101',
+      name: 'سوبر ماركت الأمل',
+      phone: '01011111111',
+      area: 'وسط البلد',
+      priceTier: 'RETAIL',
+      creditLimit: 10000,
+      currentBalance: 0,
+      isCreditAllowed: true,
+    };
+    walkinCustomer = {
+      id: 'c-cash',
+      code: 'C-000',
+      name: 'عميل نقدي مباشر',
+      phone: '-',
+      area: '-',
+      priceTier: 'RETAIL',
+      creditLimit: 0,
+      currentBalance: 0,
+      isCreditAllowed: false,
+    };
+    storage.setItem(STORAGE_KEYS.CUSTOMERS, [walkinCustomer, creditCustomer]);
+
+    storage.setItem(STORAGE_KEYS.INVOICES, []);
+    storage.setItem(STORAGE_KEYS.SALES_RETURNS, []);
+    storage.setItem(STORAGE_KEYS.DOCUMENT_SEQUENCES, {});
+    storage.setItem(STORAGE_KEYS.CASH_MOVEMENTS, []);
+    storage.setItem(STORAGE_KEYS.AUDIT_LOGS, []);
+    storage.saveCurrentShift({ ...INITIAL_SHIFT, status: 'OPEN' });
+  });
+
+  afterEach(async () => {
+    await idb.kv.clear();
+    await idb.snapshots.clear();
+  });
+
+  function postSampleInvoice(overrides?: Partial<SalesInvoice>): SalesInvoice {
+    const today = new Date().toISOString().split('T')[0];
+    const inv: SalesInvoice = {
+      id: `inv-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      invoiceNumber: storage.nextDocumentNumber('INV'),
+      date: today,
+      time: '11:00',
+      customerId: walkinCustomer.id,
+      customerName: walkinCustomer.name,
+      customerPhone: walkinCustomer.phone,
+      salespersonId: adminUser.id,
+      salespersonName: adminUser.fullName,
+      paymentType: 'CASH',
+      items: [
+        {
+          id: 'line-1',
+          productId: testProduct.id,
+          productCode: testProduct.code,
+          productName: testProduct.name,
+          unit: 'PIECE',
+          unitLabel: 'قطعة',
+          quantity: 10,
+          piecesCount: 10,
+          unitPrice: 30,
+          defaultUnitPrice: 30,
+          costPrice: 20, // sale-time cost = 20
+          totalPrice: 300,
+          discount: 0,
+          lineProfit: 100,
+        },
+        {
+          id: 'line-2',
+          productId: kgProduct.id,
+          productCode: kgProduct.code,
+          productName: kgProduct.name,
+          unit: 'KG',
+          unitLabel: 'كيلو',
+          quantity: 2.5,
+          piecesCount: 1, // simulates PosSales behavior on KG lines
+          unitPrice: 60,
+          defaultUnitPrice: 60,
+          costPrice: 40,
+          totalPrice: 150,
+          discount: 0,
+          lineProfit: 50,
+        },
+      ],
+      subtotal: 450,
+      discountType: 'AMOUNT',
+      discountValue: 0,
+      discountAmount: 0,
+      total: 450,
+      paidAmount: 450,
+      remainingAmount: 0,
+      previousCustomerBalance: 0,
+      newCustomerBalance: 0,
+      totalCost: 300,
+      totalProfit: 150,
+      status: 'POSTED',
+      ...overrides,
+    };
+    const res = storage.postSalesInvoice(inv);
+    expect(res.success).toBe(true);
+    return inv;
+  }
+
+  it('1. Enforces quantity cap (sold - previouslyReturned) and supports multiple partial returns up to FULL', () => {
+    const inv = postSampleInvoice();
+    const initialInvoiceSnapshot = JSON.stringify(storage.getSalesInvoices().find(i => i.id === inv.id));
+
+    expect(storage.getInvoiceReturnSummary(inv).status).toBe('NONE');
+
+    // First partial return: 4 PIECEs of product 1
+    const r1 = storage.processSalesReturn({
+      invoiceId: inv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 4 }],
+      reason: 'CUSTOMER_CHANGED_MIND',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: cashierWithReturns,
+    });
+    expect(r1.success).toBe(true);
+    expect(r1.salesReturn?.returnNumber).toMatch(/^RET-\d{4}-00001$/);
+
+    let summary = storage.getInvoiceReturnSummary(inv);
+    expect(summary.status).toBe('PARTIAL');
+    expect(summary.totalReturnedQty).toBe(4);
+    expect(summary.returnedCount).toBe(1);
+
+    // Attempt to exceed remaining quantity (10 - 4 = 6 left; asking 7)
+    const over = storage.processSalesReturn({
+      invoiceId: inv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 7 }],
+      reason: 'DAMAGED',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: cashierWithReturns,
+    });
+    expect(over.success).toBe(false);
+    expect(over.error).toContain('تتجاوز المتاح للاسترجاع (6)');
+
+    // Second partial return returning exact remaining items (6 PIECEs + 2.5 KG) -> becomes FULL
+    const r2 = storage.processSalesReturn({
+      invoiceId: inv.id,
+      items: [
+        { invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 6 },
+        { invoiceItemId: 'line-2', productId: kgProduct.id, unit: 'KG', quantity: 2.5 },
+      ],
+      reason: 'EXPIRED',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: cashierWithReturns,
+    });
+    expect(r2.success).toBe(true);
+    expect(r2.salesReturn?.returnNumber).toMatch(/^RET-\d{4}-00002$/);
+
+    summary = storage.getInvoiceReturnSummary(inv);
+    expect(summary.status).toBe('FULL');
+    expect(summary.totalReturnedAmount).toBe(450);
+
+    // Original SalesInvoice MUST NOT be mutated or deleted
+    const afterInvoiceSnapshot = JSON.stringify(storage.getSalesInvoices().find(i => i.id === inv.id));
+    expect(afterInvoiceSnapshot).toBe(initialInvoiceSnapshot);
+  });
+
+  it('2. Restores stock ONLY when returnToStock is true; leaves stock untouched when false (damaged)', () => {
+    const inv = postSampleInvoice();
+    // Stock after invoice post: prod 1 = 100 - 10 = 90
+    expect(storage.getProducts().find(p => p.id === testProduct.id)?.stockPieces).toBe(90);
+
+    // Damaged return (returnToStock: false) for 3 pieces -> stock stays 90
+    const damagedRes = storage.processSalesReturn({
+      invoiceId: inv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 3 }],
+      reason: 'DAMAGED',
+      refundMethod: 'CASH',
+      returnToStock: false,
+      user: cashierWithReturns,
+    });
+    expect(damagedRes.success).toBe(true);
+    expect(storage.getProducts().find(p => p.id === testProduct.id)?.stockPieces).toBe(90);
+
+    // Good condition return (returnToStock: true) for 5 pieces + 2.5 kg -> prod 1 = 95, kgProduct + 2.5
+    const kgBefore = storage.getProducts().find(p => p.id === kgProduct.id)!.stockPieces;
+    const goodRes = storage.processSalesReturn({
+      invoiceId: inv.id,
+      items: [
+        { invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 5 },
+        { invoiceItemId: 'line-2', productId: kgProduct.id, unit: 'KG', quantity: 2.5 },
+      ],
+      reason: 'CUSTOMER_CHANGED_MIND',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: cashierWithReturns,
+    });
+    expect(goodRes.success).toBe(true);
+    expect(storage.getProducts().find(p => p.id === testProduct.id)?.stockPieces).toBe(95);
+    expect(storage.getProducts().find(p => p.id === kgProduct.id)?.stockPieces).toBe(kgBefore + 2.5);
+  });
+
+  it('3. CASH refund creates SALES_REFUND affecting drawer even in CAPITAL mode; CUSTOMER_CREDIT lowers customer debt without drawer outflow', async () => {
+    // Credit invoice for creditCustomer: total 300, paid 0, remaining 300
+    const creditInv = postSampleInvoice({
+      customerId: creditCustomer.id,
+      customerName: creditCustomer.name,
+      customerPhone: creditCustomer.phone,
+      paymentType: 'CREDIT',
+      items: [
+        {
+          id: 'line-c1',
+          productId: testProduct.id,
+          productCode: testProduct.code,
+          productName: testProduct.name,
+          unit: 'PIECE',
+          unitLabel: 'قطعة',
+          quantity: 10,
+          piecesCount: 10,
+          unitPrice: 30,
+          defaultUnitPrice: 30,
+          costPrice: 20,
+          totalPrice: 300,
+          discount: 0,
+          lineProfit: 100,
+        },
+      ],
+      subtotal: 300,
+      total: 300,
+      paidAmount: 0,
+      remainingAmount: 300,
+      totalCost: 200,
+      totalProfit: 100,
+    });
+    expect(storage.getCustomers().find(c => c.id === creditCustomer.id)?.currentBalance).toBe(300);
+
+    // Walk-in invoice rejects CUSTOMER_CREDIT refund
+    const walkinInv = postSampleInvoice();
+    const walkinCreditAttempt = storage.processSalesReturn({
+      invoiceId: walkinInv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 1 }],
+      reason: 'CUSTOMER_CHANGED_MIND',
+      refundMethod: 'CUSTOMER_CREDIT',
+      returnToStock: true,
+      user: cashierWithReturns,
+    });
+    expect(walkinCreditAttempt.success).toBe(false);
+
+    // Credit invoice accepts CUSTOMER_CREDIT refund -> lowers customer balance, NO cash movement
+    const movementsBefore = storage.getCashMovements().length;
+    const custCredRes = storage.processSalesReturn({
+      invoiceId: creditInv.id,
+      items: [{ invoiceItemId: 'line-c1', productId: testProduct.id, unit: 'PIECE', quantity: 4 }],
+      reason: 'WRONG_ITEM',
+      refundMethod: 'CUSTOMER_CREDIT',
+      returnToStock: true,
+      user: cashierWithReturns,
+    });
+    expect(custCredRes.success).toBe(true);
+    expect(custCredRes.salesReturn?.totalAmount).toBe(120);
+    expect(storage.getCustomers().find(c => c.id === creditCustomer.id)?.currentBalance).toBe(180);
+    expect(storage.getCashMovements().length).toBe(movementsBefore);
+
+    // Switch accountingMode to CAPITAL -> CASH sales refund MUST still affect drawer (affectsDrawer = true)
+    const shift = storage.getCurrentShift();
+    storage.saveCurrentShift({ ...shift, status: 'CLOSED' });
+    const modeSwitch = await storage.setAccountingMode('CAPITAL', adminUser, ADMIN_PASS);
+    expect(modeSwitch.success).toBe(true);
+
+    const drawerBefore = storage.calculateCurrentCashInDrawer();
+    expect(drawerBefore).toBe(450); // from walkinInv
+
+    const cashRefundRes = storage.processSalesReturn({
+      invoiceId: walkinInv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 5 }],
+      reason: 'CUSTOMER_CHANGED_MIND',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: cashierWithReturns,
+    });
+    expect(cashRefundRes.success).toBe(true);
+    expect(storage.calculateCurrentCashInDrawer()).toBe(300);
+    const refundMove = storage.getCashMovements().find(m => m.category === 'SALES_REFUND');
+    expect(refundMove).toBeDefined();
+    expect(refundMove?.type).toBe('OUT');
+    expect(refundMove?.affectsDrawer).toBe(true);
+    expect(refundMove?.amount).toBe(150);
+  });
+
+  it('4. Blocks CASH refund when drawer is insufficient & suggests CUSTOMER_CREDIT; allows Admin negative drawer override', () => {
+    // Credit invoice paid 0 -> drawer has 0 cash!
+    const creditInv = postSampleInvoice({
+      customerId: creditCustomer.id,
+      customerName: creditCustomer.name,
+      customerPhone: creditCustomer.phone,
+      paymentType: 'CREDIT',
+      paidAmount: 0,
+      remainingAmount: 450,
+    });
+    expect(storage.calculateCurrentCashInDrawer()).toBe(0);
+
+    // Cashier without negative cash perm gets blocked with suggestion for CUSTOMER_CREDIT
+    const blocked = storage.processSalesReturn({
+      invoiceId: creditInv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 2 }],
+      reason: 'DAMAGED',
+      refundMethod: 'CASH',
+      returnToStock: false,
+      user: cashierWithReturns,
+    });
+    expect(blocked.success).toBe(false);
+    expect(blocked.error).toContain('رصيد للعميل');
+    expect(storage.getSalesReturns().length).toBe(0);
+
+    // Admin overrides with fundingDetails
+    const adminOverride = storage.processSalesReturn({
+      invoiceId: creditInv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 2 }],
+      reason: 'DAMAGED',
+      refundMethod: 'CASH',
+      returnToStock: false,
+      user: adminUser,
+      allowNegativeCash: true,
+      fundingDetails: { type: 'OWNER_LOAN', label: 'سلفة من صاحب العمل' },
+    });
+    expect(adminOverride.success).toBe(true);
+    expect(storage.calculateCurrentCashInDrawer()).toBe(-60);
+  });
+
+  it('5. Enforces canProcessReturns permission, mandatory OTHER reason note, and logs AuditLog', () => {
+    const inv = postSampleInvoice();
+
+    // User without canProcessReturns is denied
+    const deniedUser = storage.processSalesReturn({
+      invoiceId: inv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 1 }],
+      reason: 'CUSTOMER_CHANGED_MIND',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: cashierNoReturns,
+    });
+    expect(deniedUser.success).toBe(false);
+    expect(deniedUser.error).toContain('صلاحية');
+
+    // OTHER without text note is denied
+    const emptyOther = storage.processSalesReturn({
+      invoiceId: inv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 1 }],
+      reason: 'OTHER',
+      reasonNote: '   ',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: cashierWithReturns,
+    });
+    expect(emptyOther.success).toBe(false);
+    expect(emptyOther.error).toContain('أخرى');
+
+    // Valid OTHER with text note succeeds & writes AuditLog
+    const ok = storage.processSalesReturn({
+      invoiceId: inv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 2 }],
+      reason: 'OTHER',
+      reasonNote: 'تغليف غير مناسب للعميل',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: cashierWithReturns,
+    });
+    expect(ok.success).toBe(true);
+    const audit = storage.getAuditLogs().find(l => l.action === 'SALES_RETURN');
+    expect(audit).toBeDefined();
+    expect(audit?.entityId).toBe(ok.salesReturn?.returnNumber);
+    expect(audit?.details).toContain('تغليف غير مناسب للعميل');
+  });
+
+  it('6. Preserves sale-time cost for profit reversal, deducts from daily summary, and preserves backup/legacy compatibility', async () => {
+    const inv = postSampleInvoice(); // unitPrice: 30, costPrice: 20
+
+    // Change current catalog product cost AFTER the invoice was posted!
+    const prods = storage.getProducts();
+    const p1 = prods.find(p => p.id === testProduct.id)!;
+    p1.costPricePerBase = 29;
+    storage.saveProduct(p1);
+
+    // Return 3 pieces -> MUST reverse profit using sale-time cost (20), NOT new catalog cost (29)
+    // Returned revenue = 3 * 30 = 90, Returned cost = 3 * 20 = 60, Profit reversed = 30
+    const retRes = storage.processSalesReturn({
+      invoiceId: inv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 3 }],
+      reason: 'CUSTOMER_CHANGED_MIND',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: cashierWithReturns,
+    });
+    expect(retRes.success).toBe(true);
+    expect(retRes.salesReturn?.totalAmount).toBe(90);
+    expect(retRes.salesReturn?.totalCost).toBe(60);
+    expect(retRes.salesReturn?.totalProfitReversed).toBe(30);
+
+    // Daily summary deducts returns from salesTotal
+    const cairoToday = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Cairo',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+    const daily = calculateDailySummaryData({
+      invoices: storage.getSalesInvoices().map(i => ({ ...i, date: cairoToday })),
+      purchases: [],
+      products: storage.getProducts(),
+      customers: storage.getCustomers(),
+      suppliers: [],
+      cashInDrawer: storage.calculateCurrentCashInDrawer(),
+      cairoDateStr: cairoToday,
+      salesReturns: storage.getSalesReturns().map(r => ({ ...r, date: cairoToday })),
+    });
+    expect(daily.salesTotal).toBe(360); // 450 - 90
+
+    // Export package includes salesReturns and restores cleanly
+    const pkg = await snapshotService.generateExportPackage();
+    expect(pkg.data.salesReturns.length).toBe(1);
+    expect(pkg.recordCounts.salesReturns).toBe(1);
+
+    storage.setItem(STORAGE_KEYS.SALES_RETURNS, []);
+    const restoredPkg = await snapshotService.restoreData(pkg);
+    expect(restoredPkg.success).toBe(true);
+    expect(storage.getSalesReturns().length).toBe(1);
+
+    // Legacy backup without salesReturns STILL passes validation and restores with []
+    const legacyData = {
+      products: storage.getProducts(),
+      customers: storage.getCustomers(),
+      suppliers: [],
+      invoices: storage.getSalesInvoices(),
+      purchases: [],
+      cashMovements: storage.getCashMovements(),
+      expenses: [],
+      auditLogs: storage.getAuditLogs(),
+      stockAdjustments: [],
+      currentShift: storage.getCurrentShift(),
+      users: storage.getUsers(),
+      parkedCarts: [],
+    };
+    const legacyChecksum = await computeDataChecksum(legacyData);
+    const legacyPkg = {
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      appVersion: '1.0.0',
+      timestamp: new Date().toISOString(),
+      recordCounts: {
+        products: legacyData.products.length,
+        customers: legacyData.customers.length,
+        suppliers: 0,
+        invoices: legacyData.invoices.length,
+        purchases: 0,
+        cashMovements: legacyData.cashMovements.length,
+        expenses: 0,
+        auditLogs: legacyData.auditLogs.length,
+        stockAdjustments: 0,
+        users: legacyData.users.length,
+        parkedCarts: 0,
+      },
+      checksum: legacyChecksum,
+      data: legacyData,
+    };
+
+    const validation = await snapshotService.validateBackup(legacyPkg);
+    expect(validation.valid).toBe(true);
+
+    const legacyRestore = await snapshotService.restoreData(legacyPkg);
+    expect(legacyRestore.success).toBe(true);
+    expect(storage.getSalesReturns()).toEqual([]);
+  });
+});

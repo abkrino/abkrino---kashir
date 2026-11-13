@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Product, Supplier, PurchaseInvoice, PurchaseItem, User } from '../../types';
+import { Product, Supplier, PurchaseInvoice, PurchaseItem, User, CashMovementFunding, CashOutEvaluation } from '../../types';
 import { storage } from '../../services/storageService';
+import { FundingSourceModal } from '../common/FundingSourceModal';
 import { 
   Truck, 
   Plus, 
@@ -75,6 +76,10 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
   // Items in active invoice
   const [invoiceItems, setInvoiceItems] = useState<PurchaseItem[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Funding Source Modal for cash purchase out-of-drawer
+  const [showFundingModal, setShowFundingModal] = useState(false);
+  const [cashEvalState, setCashEvalState] = useState<CashOutEvaluation | null>(null);
 
   // Modals
   const [isAddSuppModalOpen, setIsAddSuppModalOpen] = useState(false);
@@ -217,15 +222,7 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
   };
 
   // Submit & Save Purchase Invoice
-  const handleSubmitPurchase = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormError(null);
-
-    if (invoiceItems.length === 0) {
-      setFormError('يرجى إضافة صنف واحد على الأقل للفاتورة قبل الحفظ والترحيل');
-      return;
-    }
-
+  const executePurchaseSubmit = async (allowNegative: boolean, fundingDetails?: CashMovementFunding) => {
     const supp = suppliers.find(s => s.id === selectedSupplierId);
     if (!supp) {
       setFormError('يرجى تحديد المورد أو تاجر الجملة');
@@ -264,11 +261,17 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
       previousSupplierBalance: supp.currentBalance,
       newSupplierBalance: supp.currentBalance + remaining,
       isStockInserted: autoInsertStock,
+      fundingDetails,
     };
 
-    const res = storage.postPurchaseInvoice(newPurchase);
+    const res = storage.postPurchaseInvoice(newPurchase, {
+      user: currentUser,
+      allowNegativeCash: allowNegative,
+      fundingDetails,
+    });
     if (!res.success) {
       setFormError(res.error || 'فشل في حفظ فاتورة الشراء');
+      setShowFundingModal(false);
       return;
     }
 
@@ -284,8 +287,49 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
       return;
     }
 
+    setShowFundingModal(false);
+    setCashEvalState(null);
     setIsInvoiceModalOpen(false);
     reloadData();
+  };
+
+  const handleSubmitPurchase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setFormError(null);
+
+    if (invoiceItems.length === 0) {
+      setFormError('يرجى إضافة صنف واحد على الأقل للفاتورة قبل الحفظ والترحيل');
+      return;
+    }
+
+    const supp = suppliers.find(s => s.id === selectedSupplierId);
+    if (!supp) {
+      setFormError('يرجى تحديد المورد أو تاجر الجملة');
+      return;
+    }
+
+    const actualPaid = paymentType === 'CASH' ? invoiceNetCost : paidNow;
+
+    if (actualPaid > 0) {
+      const evalRes = storage.evaluateCashOut(actualPaid, {
+        user: currentUser,
+        operation: 'PURCHASE_CASH',
+      });
+
+      if (!evalRes.allowed) {
+        const canNegative =
+          currentUser.role === 'ADMIN' || Boolean(currentUser.permissions?.canWithdrawNegativeCash);
+        if (evalRes.requiresFundingSource && canNegative) {
+          setCashEvalState(evalRes);
+          setShowFundingModal(true);
+          return;
+        }
+        setFormError(evalRes.reason || 'الرصيد المتاح لا يكفي لإتمام الدفع النقدي للفاتورة');
+        return;
+      }
+    }
+
+    await executePurchaseSubmit(false, undefined);
   };
 
   // Handle Delete Purchase
@@ -968,6 +1012,17 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
           </div>
         </div>
       )}
+
+      {/* STRUCTURED FUNDING SOURCE MODAL FOR CASH PURCHASE */}
+      <FundingSourceModal
+        isOpen={showFundingModal}
+        amount={paymentType === 'CASH' ? invoiceNetCost : paidNow}
+        available={cashEvalState?.available ?? storage.calculateCurrentCashInDrawer()}
+        mode={cashEvalState?.mode ?? storage.getAccountingMode()}
+        operationLabel="سداد نقدي لفاتورة شراء"
+        onCancel={() => setShowFundingModal(false)}
+        onConfirm={(funding) => executePurchaseSubmit(true, funding)}
+      />
 
       {/* PRINTABLE PURCHASE VOUCHER MODAL */}
       {invoiceToPrint && (

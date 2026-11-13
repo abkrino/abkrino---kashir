@@ -38,10 +38,12 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
   const [breakdownSearch, setBreakdownSearch] = useState('');
 
   const invoices = storage.getSalesInvoices();
+  const salesReturns = storage.getSalesReturns();
   const expenses = storage.getExpenses();
   const products = storage.getProducts();
   const customers = storage.getCustomers();
   const suppliers = storage.getSuppliers();
+  const cashMovements = storage.getCashMovements();
 
   // If not authorized, access denied
   if (!isAdmin) {
@@ -69,6 +71,19 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
     }
   });
 
+  // Filter Sales Returns by Period
+  const filteredReturns = salesReturns.filter(ret => {
+    if (periodMode === 'TODAY') {
+      return ret.date === todayStr;
+    } else if (periodMode === 'MONTH') {
+      return ret.date.startsWith(currentMonthPrefix);
+    } else {
+      if (startDate && ret.date < startDate) return false;
+      if (endDate && ret.date > endDate) return false;
+      return true;
+    }
+  });
+
   // Filter Expenses by Period
   const filteredExpenses = expenses.filter(exp => {
     if (periodMode === 'TODAY') {
@@ -82,17 +97,20 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
     }
   });
 
-  // Calculate High-level Financial Metrics for Period
+  // Calculate High-level Financial Metrics for Period (net of Sales Returns at sale-time cost)
   const grossSales = filteredInvoices.reduce((sum, inv) => sum + inv.subtotal, 0);
   const totalDiscounts = filteredInvoices.reduce((sum, inv) => sum + inv.discountAmount, 0);
-  const netSalesRevenue = grossSales - totalDiscounts;
+  const totalReturnsAmount = Math.round(filteredReturns.reduce((sum, ret) => sum + (ret.totalAmount || 0), 0) * 100) / 100;
+  const totalReturnsCost = Math.round(filteredReturns.reduce((sum, ret) => sum + (ret.totalCost || 0), 0) * 100) / 100;
+  const netSalesRevenue = grossSales - totalDiscounts - totalReturnsAmount;
 
-  let totalCOGS = 0;
+  let grossCOGS = 0;
   for (const inv of filteredInvoices) {
     for (const item of inv.items) {
-      totalCOGS += (item.costPrice * item.quantity);
+      grossCOGS += (item.costPrice * item.quantity);
     }
   }
+  const totalCOGS = grossCOGS - totalReturnsCost;
 
   const grossProfit = netSalesRevenue - totalCOGS;
   const grossMarginPct = netSalesRevenue > 0 ? (grossProfit / netSalesRevenue) * 100 : 0;
@@ -100,6 +118,35 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
   const totalOperatingExpenses = filteredExpenses.reduce((sum, exp) => sum + exp.amount, 0);
   const netOperatingProfit = grossProfit - totalOperatingExpenses;
   const netProfitPct = netSalesRevenue > 0 ? (netOperatingProfit / netSalesRevenue) * 100 : 0;
+
+  // Filter Cash Movements for Period (for Funding Source & Capital Injection summary — never added to revenue/profit)
+  const filteredCashMovements = cashMovements.filter(m => {
+    if (periodMode === 'TODAY') return m.date === todayStr;
+    if (periodMode === 'MONTH') return m.date.startsWith(currentMonthPrefix);
+    if (startDate && m.date < startDate) return false;
+    if (endDate && m.date > endDate) return false;
+    return true;
+  });
+
+  const capitalInjections = filteredCashMovements.filter(m => m.category === 'CAPITAL_INJECTION');
+  const totalCapitalInjection = capitalInjections.reduce((sum, m) => sum + m.amount, 0);
+
+  const fundingBreakdownMap: Record<string, { type: string; label: string; count: number; total: number; notes: string[] }> = {};
+  for (const m of filteredCashMovements) {
+    if (m.type !== 'OUT') continue;
+    const fType = m.fundingDetails?.type || m.fundingSource || 'DRAWER';
+    const fLabel = m.fundingDetails?.label || 'نقدية الدرج المباشرة';
+    const key = `${fType}::${fLabel}`;
+    if (!fundingBreakdownMap[key]) {
+      fundingBreakdownMap[key] = { type: fType, label: fLabel, count: 0, total: 0, notes: [] };
+    }
+    fundingBreakdownMap[key].count += 1;
+    fundingBreakdownMap[key].total += m.amount;
+    if (m.fundingDetails?.note && !fundingBreakdownMap[key].notes.includes(m.fundingDetails.note)) {
+      fundingBreakdownMap[key].notes.push(m.fundingDetails.note);
+    }
+  }
+  const fundingBreakdownRows = Object.values(fundingBreakdownMap).sort((a, b) => b.total - a.total);
 
   // 1. PROFIT BY SUPPLIER / COMPANY (الربحية حسب الشركة والمورد)
   const supplierProfitMap: Record<string, { name: string; revenue: number; cost: number; profit: number; count: number }> = {};
@@ -179,6 +226,60 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
       categoryProfitMap[cat].cost += cost;
       categoryProfitMap[cat].profit += (rev - cost);
       categoryProfitMap[cat].itemsCount += item.quantity;
+    }
+  }
+
+  // Deduct period Sales Returns from all 4 breakdown maps (using sale-time cost)
+  for (const ret of filteredReturns) {
+    const netFactor = ret.subtotal > 0 ? ret.totalAmount / ret.subtotal : 1;
+    const custId = ret.customerId;
+    if (!customerProfitMap[custId]) {
+      customerProfitMap[custId] = { id: custId, name: ret.customerName, revenue: 0, cost: 0, profit: 0, invoiceCount: 0 };
+    }
+    for (const item of ret.items) {
+      const rev = item.subtotal * netFactor;
+      const cost = item.costTotal;
+      const profitRev = rev - cost;
+      const prod = products.find(p => p.id === item.productId);
+      const companyName = prod?.brand || 'شركات أخرى عامة';
+      const cat = prod?.category || 'أخرى';
+
+      if (!supplierProfitMap[companyName]) {
+        supplierProfitMap[companyName] = { name: companyName, revenue: 0, cost: 0, profit: 0, count: 0 };
+      }
+      supplierProfitMap[companyName].revenue -= rev;
+      supplierProfitMap[companyName].cost -= cost;
+      supplierProfitMap[companyName].profit -= profitRev;
+      supplierProfitMap[companyName].count -= item.quantity;
+
+      customerProfitMap[custId].revenue -= rev;
+      customerProfitMap[custId].cost -= cost;
+      customerProfitMap[custId].profit -= profitRev;
+
+      if (!productProfitMap[item.productId]) {
+        productProfitMap[item.productId] = {
+          id: item.productId,
+          name: item.productName,
+          code: item.productCode || prod?.code || '-',
+          brand: prod?.brand || 'عام',
+          revenue: 0,
+          cost: 0,
+          profit: 0,
+          qtySold: 0
+        };
+      }
+      productProfitMap[item.productId].revenue -= rev;
+      productProfitMap[item.productId].cost -= cost;
+      productProfitMap[item.productId].profit -= profitRev;
+      productProfitMap[item.productId].qtySold -= item.quantity;
+
+      if (!categoryProfitMap[cat]) {
+        categoryProfitMap[cat] = { name: cat, revenue: 0, cost: 0, profit: 0, itemsCount: 0 };
+      }
+      categoryProfitMap[cat].revenue -= rev;
+      categoryProfitMap[cat].cost -= cost;
+      categoryProfitMap[cat].profit -= profitRev;
+      categoryProfitMap[cat].itemsCount -= item.quantity;
     }
   }
 
@@ -303,7 +404,7 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
             <span className="text-xs text-slate-500 dark:text-slate-400 mr-1.5 font-bold">ج.م</span>
           </div>
           <span className="text-[10px] text-slate-400 dark:text-slate-500 block mt-1">
-            من {filteredInvoices.length} فاتورة في الفترة
+            من {filteredInvoices.length} فاتورة في الفترة (بعد خصم المرتجعات)
           </span>
         </div>
 
@@ -317,7 +418,7 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
             <span className="text-xs text-slate-500 dark:text-slate-400 mr-1.5 font-bold">ج.م</span>
           </div>
           <span className="text-[10px] text-slate-400 dark:text-slate-500 block mt-1 font-medium">
-            تكلفة الشراء الفعلية للأصناف
+            تكلفة الشراء الصافية بعد خصم تكلفة المرتجعات ({totalReturnsCost.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م)
           </span>
         </div>
 
@@ -347,6 +448,19 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
           <span className="text-[10px] text-slate-500 dark:text-slate-400 block mt-1">
             بعد خصم {totalOperatingExpenses.toLocaleString()} ج.م مصروفات الفترة
           </span>
+        </div>
+      </div>
+
+      {/* Standalone Sales Returns Line */}
+      <div className="bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 rounded-xl px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+        <div className="flex items-center gap-2 font-bold text-amber-900 dark:text-amber-200">
+          <span>مرتجعات المبيعات في الفترة ({filteredReturns.length} إيصال):</span>
+          <span className="font-mono font-black text-rose-700 dark:text-rose-400">
+            - {totalReturnsAmount.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م
+          </span>
+        </div>
+        <div className="text-[11px] text-amber-800 dark:text-amber-300 font-medium">
+          تكلفة المرتجعات وقت البيع: <strong className="font-mono">{totalReturnsCost.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</strong> • الربح المخصوم: <strong className="font-mono">{(totalReturnsAmount - totalReturnsCost).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</strong>
         </div>
       </div>
 
@@ -583,6 +697,55 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
                     </tr>
                   );
                 })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Funding Sources & Capital Injections Report Section */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4 transition-colors">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-200 dark:border-slate-800">
+          <div>
+            <h3 className="font-black text-base text-slate-900 dark:text-white">تقرير مصادر التمويل وحركات رأس المال</h3>
+            <p className="text-xs text-slate-500">توزيع المدفوعات والمصروفات حسب مصدر التمويل، مع فصل إيداعات رأس المال عن الإيرادات والأرباح</p>
+          </div>
+          <div className="px-3 py-1.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 border border-indigo-200 dark:border-indigo-800 text-xs">
+            <span className="text-indigo-700 dark:text-indigo-300 font-bold">إيداعات رأس المال (غير إيرادية): </span>
+            <span className="font-mono font-black text-indigo-800 dark:text-indigo-200">
+              {totalCapitalInjection.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م
+            </span>
+          </div>
+        </div>
+
+        {fundingBreakdownRows.length === 0 ? (
+          <p className="text-xs text-slate-500 py-4 text-center">لا توجد حركات صرف نقدية مسجلة في هذه الفترة.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-right text-xs">
+              <thead>
+                <tr className="bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 font-bold text-[11px]">
+                  <th className="p-3">مصدر التمويل</th>
+                  <th className="p-3 text-center">النوع القياسي</th>
+                  <th className="p-3 text-center">عدد الحركات</th>
+                  <th className="p-3 text-center">إجمالي المصروف</th>
+                  <th className="p-3">ملاحظات المصادر المخصصة</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                {fundingBreakdownRows.map((row, idx) => (
+                  <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 text-slate-800 dark:text-slate-200">
+                    <td className="p-3 font-bold text-slate-900 dark:text-white">{row.label}</td>
+                    <td className="p-3 text-center font-mono text-[11px] text-slate-500">{row.type}</td>
+                    <td className="p-3 text-center font-mono font-bold">{row.count}</td>
+                    <td className="p-3 text-center font-mono font-black text-rose-600 dark:text-rose-400">
+                      {row.total.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م
+                    </td>
+                    <td className="p-3 text-slate-600 dark:text-slate-400">
+                      {row.notes.length > 0 ? row.notes.join(' • ') : '—'}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
