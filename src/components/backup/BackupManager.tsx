@@ -349,7 +349,11 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
             <Cloud className="w-5 h-5 text-emerald-300" />
             <h3 className="font-black text-sm sm:text-base">النسخ الاحتياطي والمزامنة السحابية</h3>
             <span className="text-[10px] bg-emerald-400/20 text-emerald-200 border border-emerald-300/30 px-2.5 py-0.5 rounded-full font-bold">
-              {cloudService.isUserAuthenticated() && cloudService.isOnline() ? 'متصل ومؤمن ✓' : 'وضع محلي'}
+              {!cloudService.isConfigured()
+                ? 'السحابة غير مُعدّة بعد'
+                : cloudService.isUserAuthenticated() && cloudService.isOnline()
+                ? 'متصل ومؤمن ✓'
+                : 'وضع محلي'}
             </span>
           </div>
           <p className="text-xs text-emerald-100 max-w-xl leading-relaxed">

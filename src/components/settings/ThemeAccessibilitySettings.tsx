@@ -349,7 +349,11 @@ export const ThemeAccessibilitySettings: React.FC = () => {
             </p>
           </div>
           <span className="text-xs font-mono font-bold px-3 py-1 rounded-full bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-700">
-            {cloudService.isUserAuthenticated() && cloudService.isOnline() ? 'متصل بالسحابة ✓' : 'وضع محلي'}
+            {!cloudService.isConfigured()
+              ? 'السحابة غير مُعدّة بعد'
+              : cloudService.isUserAuthenticated() && cloudService.isOnline()
+              ? 'متصل بالسحابة ✓'
+              : 'وضع محلي'}
           </span>
         </div>
 

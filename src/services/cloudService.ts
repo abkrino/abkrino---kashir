@@ -1,26 +1,29 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
+import { initializeApp, getApps, getApp, FirebaseApp } from 'firebase/app';
 import { 
   getAuth, 
+  Auth,
   signOut as firebaseSignOut, 
   onAuthStateChanged, 
   User as FirebaseUser 
 } from 'firebase/auth';
 import { 
+  initializeFirestore,
   getFirestore, 
+  Firestore,
+  FirestoreSettings,
   doc, 
   getDocFromServer, 
   getDoc, 
   setDoc, 
-  updateDoc, 
   deleteDoc, 
   collection, 
-  getDocs, 
-  onSnapshot, 
-  query, 
-  orderBy, 
-  limit 
+  getDocs
 } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
+import {
+  firebaseConfig,
+  firestoreDatabaseId,
+  isFirebaseConfigComplete,
+} from '../config/firebaseConfig';
 import { storage } from './storageService';
 import { 
   CloudBackupItem, 
@@ -32,24 +35,44 @@ import {
 import { isStoreActivated, licenseService } from './licenseService';
 import { orgSyncService } from './orgSyncService';
 
-// Initialize Firebase App
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+// Disable Fetch streaming in WebChannel to prevent Chrome AbortError ("signal is aborted without reason")
+// when Firestore closes an active Listen/RPC stream on error or teardown.
+export const FIRESTORE_SETTINGS: FirestoreSettings & { useFetchStreams: boolean } = {
+  experimentalAutoDetectLongPolling: true,
+  useFetchStreams: false,
+};
 
-// CRITICAL: Firestore database instance using configured firestoreDatabaseId
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
-
-// Verification test on startup as per Firebase integration standard
-async function testConnection() {
+export function createFirestoreInstance(
+  targetApp: FirebaseApp,
+  databaseId: string = firestoreDatabaseId
+): Firestore {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn("Cloud: Currently offline, operating in local-first mode.");
-    }
+    return initializeFirestore(targetApp, FIRESTORE_SETTINGS, databaseId);
+  } catch {
+    return getFirestore(targetApp, databaseId);
   }
 }
-testConnection();
+
+export const isCloudConfigured: boolean = isFirebaseConfigComplete(firebaseConfig, firestoreDatabaseId);
+
+let appInstance: FirebaseApp | null = null;
+let dbInstance: Firestore | null = null;
+let authInstance: Auth | null = null;
+
+if (isCloudConfigured) {
+  try {
+    appInstance = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+    dbInstance = createFirestoreInstance(appInstance, firestoreDatabaseId);
+    authInstance = getAuth(appInstance);
+  } catch {
+    appInstance = null;
+    dbInstance = null;
+    authInstance = null;
+  }
+}
+
+export const db: Firestore | null = dbInstance;
+export const auth: Auth | null = authInstance;
 
 // --- FIRESTORE ERROR HANDLING ---
 enum OperationType {
@@ -82,12 +105,12 @@ function handleFirestoreError(error: unknown, operationType: OperationType, path
   const errInfo: FirestoreErrorInfo = {
     error: error instanceof Error ? error.message : String(error),
     authInfo: {
-      userId: auth.currentUser?.uid,
-      email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified,
-      isAnonymous: auth.currentUser?.isAnonymous,
-      tenantId: auth.currentUser?.tenantId,
-      providerInfo: auth.currentUser?.providerData?.map(provider => ({
+      userId: auth?.currentUser?.uid,
+      email: auth?.currentUser?.email,
+      emailVerified: auth?.currentUser?.emailVerified,
+      isAnonymous: auth?.currentUser?.isAnonymous,
+      tenantId: auth?.currentUser?.tenantId,
+      providerInfo: auth?.currentUser?.providerData?.map(provider => ({
         providerId: provider.providerId,
         email: provider.email,
       })) || []
@@ -112,7 +135,7 @@ const LOCAL_STORAGE_KEYS = {
 export const LEGACY_STORE_SYNC = false;
 
 class CloudService {
-  private isOnlineStatus: boolean = navigator.onLine;
+  private isOnlineStatus: boolean = typeof navigator !== 'undefined' ? navigator.onLine : true;
   private syncInProgress: boolean = false;
   private currentFirebaseUser: FirebaseUser | null = null;
   private listeners: (() => void)[] = [];
@@ -132,15 +155,23 @@ class CloudService {
         this.logCrash('انقطاع الاتصال بالإنترنت - التبديل التلقائي للوضع المحلي أوفلاين', 'Network', 'LOW');
       });
 
-      // Listen to Firebase Auth state
-      onAuthStateChanged(auth, (user) => {
-        this.currentFirebaseUser = user;
-        this.notifyListeners();
-      });
+      // Listen to persisted local Firebase Auth state ONLY when Firebase is configured
+      if (isCloudConfigured && auth) {
+        try {
+          onAuthStateChanged(auth, (user) => {
+            this.currentFirebaseUser = user;
+            this.notifyListeners();
+          });
+        } catch {}
+      }
 
       // Seed initial alerts if empty
       this.initDefaultAlerts();
     }
+  }
+
+  public isConfigured(): boolean {
+    return isCloudConfigured && db !== null && auth !== null;
   }
 
   // --- SETTINGS ("ضبط الكلود وحفظ النسخة بعد كل عملية") ---
@@ -269,7 +300,9 @@ class CloudService {
 
   public async signOut(): Promise<void> {
     try {
-      await firebaseSignOut(auth);
+      if (this.isConfigured() && auth) {
+        await firebaseSignOut(auth);
+      }
       this.currentFirebaseUser = null;
       localStorage.removeItem(LOCAL_STORAGE_KEYS.AUTH_CACHE);
       this.notifyListeners();
@@ -339,6 +372,9 @@ class CloudService {
   public async syncLocalToCloud(showToast: boolean = true): Promise<{ success: boolean; error?: string }> {
     if (!LEGACY_STORE_SYNC) {
       return { success: true };
+    }
+    if (!this.isConfigured() || !db) {
+      return { success: false, error: 'السحابة غير مُعدّة بعد.' };
     }
     if (this.syncInProgress) return { success: true };
     this.syncInProgress = true;
@@ -414,7 +450,7 @@ class CloudService {
 
   // --- DUAL BACKUP & RESTORE ("استرداد أي نسخة محفوظة سواء علي الكلود او علي الجهاز") ---
   public async getCloudBackupsList(): Promise<CloudBackupItem[]> {
-    if (!this.isOnline()) {
+    if (!this.isConfigured() || !db || !this.isOnline() || !this.isUserAuthenticated()) {
       return this.getLocalCachedBackups();
     }
 
@@ -442,7 +478,7 @@ class CloudService {
       const duration = Math.round(performance.now() - startTime);
       this.logPerformance('Backup:GetList', duration, 'SUCCESS');
       return list;
-    } catch (err) {
+    } catch {
       const duration = Math.round(performance.now() - startTime);
       this.logPerformance('Backup:GetList', duration, 'SLOW');
       return this.getLocalCachedBackups();
@@ -481,9 +517,11 @@ class CloudService {
         createdBy: note ? `${this.getCurrentUserEmail()} (${note})` : this.getCurrentUserEmail(),
       };
 
-      if (this.isOnline()) {
-        const backupRef = doc(db, `stores/${this.getStoreDocId()}/cloudBackups`, backupId);
-        await setDoc(backupRef, backup);
+      if (this.isConfigured() && db && this.isOnline() && this.isUserAuthenticated()) {
+        try {
+          const backupRef = doc(db, `stores/${this.getStoreDocId()}/cloudBackups`, backupId);
+          await setDoc(backupRef, backup);
+        } catch {}
       }
 
       // Cache locally as metadata ONLY, capped at last 20 items
@@ -517,12 +555,14 @@ class CloudService {
     try {
       let backup: CloudBackupItem | null = null;
 
-      if (this.isOnline()) {
-        const backupRef = doc(db, `stores/${this.getStoreDocId()}/cloudBackups`, backupId);
-        const snap = await getDoc(backupRef);
-        if (snap.exists()) {
-          backup = snap.data() as CloudBackupItem;
-        }
+      if (this.isConfigured() && db && this.isOnline() && this.isUserAuthenticated()) {
+        try {
+          const backupRef = doc(db, `stores/${this.getStoreDocId()}/cloudBackups`, backupId);
+          const snap = await getDoc(backupRef);
+          if (snap.exists()) {
+            backup = snap.data() as CloudBackupItem;
+          }
+        } catch {}
       }
 
       if (!backup) {
@@ -561,9 +601,11 @@ class CloudService {
 
   public async deleteCloudBackup(backupId: string): Promise<boolean> {
     try {
-      if (this.isOnline()) {
-        const backupRef = doc(db, `stores/${this.getStoreDocId()}/cloudBackups`, backupId);
-        await deleteDoc(backupRef);
+      if (this.isConfigured() && db && this.isOnline() && this.isUserAuthenticated()) {
+        try {
+          const backupRef = doc(db, `stores/${this.getStoreDocId()}/cloudBackups`, backupId);
+          await deleteDoc(backupRef);
+        } catch {}
       }
       const localCached = this.getLocalCachedBackups().filter(b => b.id !== backupId);
       try {
@@ -602,10 +644,12 @@ class CloudService {
     } catch {}
     this.notifyListeners();
 
-    // Async push to Cloud if online
-    if (this.isOnline()) {
-      const alertRef = doc(db, `stores/${this.getStoreDocId()}/cloudAlerts`, newAlert.id);
-      setDoc(alertRef, newAlert).catch(() => {});
+    // Async push to Cloud only if configured, authenticated, and online
+    if (this.isConfigured() && db && this.isOnline() && this.isUserAuthenticated()) {
+      try {
+        const alertRef = doc(db, `stores/${this.getStoreDocId()}/cloudAlerts`, newAlert.id);
+        setDoc(alertRef, newAlert).catch(() => {});
+      } catch {}
     }
   }
 
@@ -670,9 +714,11 @@ class CloudService {
     } catch {}
     this.notifyListeners();
 
-    if (this.isOnline()) {
-      const crashRef = doc(db, `stores/${this.getStoreDocId()}/crashReports`, newCrash.id);
-      setDoc(crashRef, newCrash).catch(() => {});
+    if (this.isConfigured() && db && this.isOnline() && this.isUserAuthenticated()) {
+      try {
+        const crashRef = doc(db, `stores/${this.getStoreDocId()}/crashReports`, newCrash.id);
+        setDoc(crashRef, newCrash).catch(() => {});
+      } catch {}
     }
   }
 
@@ -709,16 +755,18 @@ class CloudService {
     } catch {}
     this.notifyListeners();
 
-    if (this.isOnline() && metrics.length % 5 === 0) {
-      const metricRef = doc(db, `stores/${this.getStoreDocId()}/performanceMetrics`, newMetric.id);
-      setDoc(metricRef, newMetric).catch(() => {});
+    if (this.isConfigured() && db && this.isOnline() && this.isUserAuthenticated() && metrics.length % 5 === 0) {
+      try {
+        const metricRef = doc(db, `stores/${this.getStoreDocId()}/performanceMetrics`, newMetric.id);
+        setDoc(metricRef, newMetric).catch(() => {});
+      } catch {}
     }
   }
 
   public async measureCloudLatency(): Promise<number> {
     const t0 = performance.now();
     try {
-      if (!this.isOnline()) return 0;
+      if (!this.isConfigured() || !db || !this.isOnline() || !this.isUserAuthenticated()) return 0;
       await getDocFromServer(doc(db, 'test', 'connection'));
       const latency = Math.round(performance.now() - t0);
       this.logPerformance('Ping:FirestoreLatency', latency, 'SUCCESS');

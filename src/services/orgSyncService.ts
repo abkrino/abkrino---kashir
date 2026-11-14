@@ -1,6 +1,7 @@
 import { doc, updateDoc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
-import { signInWithEmailAndPassword, signOut as fbSignOut } from 'firebase/auth';
-import { db, auth } from './cloudService';
+import { signInWithEmailAndPassword, signOut as fbSignOut, onAuthStateChanged } from 'firebase/auth';
+import { db, auth, isCloudConfigured } from './cloudService';
+import { translateFirebaseError } from './firebaseErrorTranslator';
 import { licenseService } from './licenseService';
 import { detectEnvironment } from './environmentService';
 import { storage } from './storageService';
@@ -10,6 +11,7 @@ import { APP_VERSION } from '../config/appConfig';
 
 export type SyncState = 
   | 'idle'
+  | 'unconfigured'
   | 'syncing'
   | 'synced'
   | 'needs-login'
@@ -125,6 +127,7 @@ class OrgSyncService {
   private lastDailySummaryDate: Date | null = null;
   private lastDailySummaryPushMs: number = 0;
   private statusMessage: string | null = null;
+  private lastError: string | null = null;
   private listeners: (() => void)[] = [];
 
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -148,6 +151,11 @@ class OrgSyncService {
     if (this.isRunning) return;
     this.isRunning = true;
     this.initListeners();
+    if (!isCloudConfigured || !db || !auth) {
+      this.syncState = 'unconfigured';
+      this.notifyListeners();
+      return;
+    }
     if (typeof navigator !== 'undefined' && navigator.onLine) {
       this.sendHeartbeat().catch(() => {});
     }
@@ -225,7 +233,7 @@ class OrgSyncService {
     const unsubLicense = licenseService.subscribe(() => {
       if (this.isSubPaused) {
         this.resetSubscriptionPause();
-        if (typeof navigator !== 'undefined' && navigator.onLine) {
+        if (isCloudConfigured && db && auth && typeof navigator !== 'undefined' && navigator.onLine) {
           this.sendHeartbeat().catch(() => {});
           this.pushDailySummary(false).catch(() => {});
         }
@@ -234,6 +242,45 @@ class OrgSyncService {
       }
     });
     this.cleanupFns.push(unsubLicense);
+
+    // Restore & observe persisted local Firebase Auth session ONLY if configured
+    if (isCloudConfigured && auth) {
+      try {
+        const unsubAuth = onAuthStateChanged(auth, (user) => {
+          const context = this.getContext();
+          if (!user) {
+            if (context && (this.syncState === 'synced' || this.syncState === 'wrong-account')) {
+              this.syncState = 'needs-login';
+            }
+            this.notifyListeners();
+            return;
+          }
+
+          if (context && user.uid !== context.orgId) {
+            this.syncState = 'wrong-account';
+            this.lastError = 'الحساب المسجّل لا يطابق معرّف المنشأة (orgId) في ترخيص الجهاز.';
+            this.notifyListeners();
+            return;
+          }
+
+          if (context && user.uid === context.orgId) {
+            if (this.syncState === 'needs-login' || this.syncState === 'idle') {
+              this.syncState = 'idle';
+              this.lastError = null;
+              this.notifyListeners();
+              if (navigator.onLine && storage.isStorageReady()) {
+                this.sendHeartbeat().catch(() => {});
+              }
+            } else {
+              this.notifyListeners();
+            }
+          } else {
+            this.notifyListeners();
+          }
+        });
+        this.cleanupFns.push(unsubAuth);
+      } catch {}
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -260,7 +307,7 @@ class OrgSyncService {
     const context = this.getContext();
     if (!context) return 'needs-login';
 
-    const currentUser = auth.currentUser;
+    const currentUser = auth?.currentUser || null;
     if (!currentUser) {
       return 'needs-login';
     }
@@ -273,9 +320,17 @@ class OrgSyncService {
   }
 
   // -------------------------------------------------------------------------
-  // 3. Store Login with signInWithEmailAndPassword ONLY
+  // 3. Store Login with signInWithEmailAndPassword ONLY (never stores password)
   // -------------------------------------------------------------------------
   public async signInStore(email: string, pass: string): Promise<{ success: boolean; error?: string }> {
+    if (!isCloudConfigured || !auth) {
+      const msg = 'السحابة غير مُعدّة بعد. يرجى إدخال إعدادات Firebase أولاً.';
+      this.syncState = 'unconfigured';
+      this.lastError = msg;
+      this.notifyListeners();
+      return { success: false, error: msg };
+    }
+
     const cleanEmail = email.trim();
     if (!cleanEmail || !pass) {
       return { success: false, error: 'يرجى إدخال البريد الإلكتروني وكلمة المرور.' };
@@ -283,34 +338,39 @@ class OrgSyncService {
 
     const context = this.getContext();
     if (!context) {
-      return {
-        success: false,
-        error: 'لا يوجد ترخيص أوفلاين سارٍ أو فعال على هذا الجهاز لتحديد هوية المحل والفرع.',
-      };
+      const msg = 'لا يوجد ترخيص سارٍ على هذا الجهاز لتحديد معرّف المنشأة (orgId) والفرع (branchId).';
+      this.lastError = msg;
+      return { success: false, error: msg };
     }
 
     try {
       this.syncState = 'syncing';
+      this.lastError = null;
       this.notifyListeners();
 
       // Reset subscription pause on any new sign-in attempt
       this.resetSubscriptionPause();
 
-      // STRICT REQUIREMENT: signInWithEmailAndPassword ONLY for store sync login.
+      // STRICT REQUIREMENT: signInWithEmailAndPassword ONLY for store sync login. Password is never persisted.
       const cred = await signInWithEmailAndPassword(auth, cleanEmail, pass);
       const user = cred.user;
 
       // Verify that logged-in user UID matches the orgId in active license
       if (user.uid !== context.orgId) {
-        await fbSignOut(auth);
+        try {
+          await fbSignOut(auth);
+        } catch {}
+        const mismatchMsg = 'هذا الحساب لا يطابق ترخيص الجهاز (معرّف المنشأة orgId غير متطابق).';
         this.syncState = 'wrong-account';
-        this.statusMessage = 'هذا الحساب لا يطابق ترخيص الجهاز';
+        this.statusMessage = mismatchMsg;
+        this.lastError = mismatchMsg;
         this.notifyListeners();
-        return { success: false, error: 'هذا الحساب لا يطابق ترخيص الجهاز' };
+        return { success: false, error: mismatchMsg };
       }
 
       this.syncState = 'synced';
       this.statusMessage = 'تم تسجيل دخول المحل للمزامنة بنجاح.';
+      this.lastError = null;
       this.notifyListeners();
 
       // Trigger initial heartbeat and summary
@@ -319,21 +379,10 @@ class OrgSyncService {
 
       return { success: true };
     } catch (err: unknown) {
-      const errObj = err as { code?: string; message?: string };
-      let errorMsg = 'فشل تسجيل الدخول. يرجى التأكد من البريد الإلكتروني وكلمة المرور.';
-
-      if (
-        errObj.code === 'auth/wrong-password' ||
-        errObj.code === 'auth/invalid-credential' ||
-        errObj.code === 'auth/user-not-found'
-      ) {
-        errorMsg = 'فشل تسجيل الدخول: كلمة المرور أو البريد الإلكتروني غير صحيح.';
-      } else if (errObj.code === 'auth/network-request-failed') {
-        errorMsg = 'تعذر الاتصال بخوادم السحابة. تحقق من اتصال الإنترنت.';
-      }
-
+      const errorMsg = translateFirebaseError(err);
       this.syncState = 'error';
       this.statusMessage = errorMsg;
+      this.lastError = errorMsg;
       this.notifyListeners();
       return { success: false, error: errorMsg };
     }
@@ -341,10 +390,13 @@ class OrgSyncService {
 
   public async signOutStore(): Promise<void> {
     try {
-      await fbSignOut(auth);
+      if (isCloudConfigured && auth) {
+        await fbSignOut(auth);
+      }
     } catch {}
-    this.syncState = 'needs-login';
+    this.syncState = isCloudConfigured ? 'needs-login' : 'unconfigured';
     this.statusMessage = null;
+    this.lastError = null;
     this.notifyListeners();
   }
 
@@ -352,27 +404,38 @@ class OrgSyncService {
   // 4. sendHeartbeat(): updateDoc with serverTimestamp() + clock reconcile
   // -------------------------------------------------------------------------
   public async sendHeartbeat(): Promise<{ success: boolean; error?: string }> {
-    if (this.isSubPaused) return { success: false, error: 'subscription-paused' };
     if (!storage.isStorageReady()) return { success: false, error: 'storage-not-ready' };
+    if (!isCloudConfigured || !db || !auth) {
+      this.syncState = 'unconfigured';
+      this.notifyListeners();
+      return { success: false, error: 'السحابة غير مُعدّة بعد.' };
+    }
+    if (this.isSubPaused) return { success: false, error: 'subscription-paused' };
 
     const context = this.getContext();
     if (!context) {
       this.syncState = 'no-license';
       this.notifyListeners();
-      return { success: false, error: 'no-valid-license' };
+      return { success: false, error: 'لا يوجد ترخيص سارٍ لتحديد المحل والفرع.' };
     }
 
     if (typeof navigator !== 'undefined' && !navigator.onLine) {
       this.syncState = 'offline';
       this.notifyListeners();
-      return { success: false, error: 'offline' };
+      return { success: false, error: 'لا يوجد اتصال بالإنترنت حالياً.' };
     }
 
     const authCheck = this.ensureSignedIn();
     if (authCheck !== 'ok') {
       this.syncState = authCheck;
       this.notifyListeners();
-      return { success: false, error: authCheck };
+      return {
+        success: false,
+        error:
+          authCheck === 'wrong-account'
+            ? 'الحساب المسجّل لا يطابق ترخيص الجهاز (orgId).'
+            : 'يجب تسجيل دخول المحل للمزامنة أولاً.',
+      };
     }
 
     try {
@@ -418,6 +481,7 @@ class OrgSyncService {
       }
 
       this.lastHeartbeatDate = new Date();
+      this.lastError = null;
       if (this.syncState !== 'syncing') {
         this.syncState = 'synced';
       }
@@ -425,6 +489,43 @@ class OrgSyncService {
       return { success: true };
     } catch (err: unknown) {
       return this.handleSyncError(err, 'sendHeartbeat');
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 4b. Manual single-heartbeat test ("اختبار الاتصال")
+  // -------------------------------------------------------------------------
+  public async testConnection(): Promise<{ success: boolean; message: string }> {
+    try {
+      if (!isCloudConfigured || !db || !auth) {
+        const msg = 'السحابة غير مُعدّة بعد.';
+        this.syncState = 'unconfigured';
+        this.lastError = msg;
+        this.notifyListeners();
+        return { success: false, message: msg };
+      }
+
+      if (this.isSubPaused) {
+        this.resetSubscriptionPause();
+      }
+
+      const res = await this.sendHeartbeat();
+      if (res.success) {
+        return {
+          success: true,
+          message: 'نجح الاتصال بالسحابة وتم إرسال نبضة الفرع بنجاح ✓',
+        };
+      }
+
+      return {
+        success: false,
+        message: this.lastError || res.error || 'فشل الاتصال بالسحابة.',
+      };
+    } catch (err: unknown) {
+      const msg = translateFirebaseError(err);
+      this.lastError = msg;
+      this.notifyListeners();
+      return { success: false, message: msg };
     }
   }
 
@@ -446,6 +547,11 @@ class OrgSyncService {
 
   public async pushDailySummary(forceImmediate: boolean = false): Promise<{ success: boolean; error?: string }> {
     if (!storage.isStorageReady()) return { success: false, error: 'storage-not-ready' };
+    if (!isCloudConfigured || !db || !auth) {
+      this.syncState = 'unconfigured';
+      this.notifyListeners();
+      return { success: false, error: 'السحابة غير مُعدّة بعد.' };
+    }
     if (this.isSubPaused) return { success: false, error: 'subscription-paused' };
 
     const context = this.getContext();
@@ -548,6 +654,7 @@ class OrgSyncService {
 
       this.lastDailySummaryDate = new Date();
       this.lastDailySummaryPushMs = now;
+      this.lastError = null;
       this.syncState = 'synced';
       this.notifyListeners();
       return { success: true };
@@ -588,30 +695,35 @@ class OrgSyncService {
   // -------------------------------------------------------------------------
   private handleSyncError(err: unknown, op: string): { success: boolean; error: string } {
     const errObj = err as { code?: string; message?: string };
-    const errCode = errObj.code || '';
-    const errMessage = errObj.message || String(err);
+    const errCode = (errObj?.code || '').toLowerCase();
+    const errMessage = (errObj?.message || String(err)).toLowerCase();
+    const translated = translateFirebaseError(err);
 
-    console.warn(`OrgSyncService [${op}] encountered issue:`, errMessage);
+    console.warn(`OrgSyncService [${op}] encountered issue:`, errObj?.message || String(err));
 
-    if (errCode.includes('permission-denied') || errMessage.includes('permission-denied')) {
+    if (errCode.includes('permission-denied') || errMessage.includes('permission-denied') || errMessage.includes('insufficient permissions')) {
       this.isSubPaused = true;
       this.syncState = 'subscription-paused';
-      this.statusMessage = 'تم إيقاف المزامنة السحابية: اشتراك المنشأة منتهٍ أو معلق. يرجى تجديد الاشتراك للمتابعة.';
+      this.statusMessage = translated;
+      this.lastError = translated;
       this.schedulePermissionRetry();
       this.notifyListeners();
-      return { success: false, error: 'subscription-paused' };
+      return { success: false, error: translated };
     }
 
-    if (errCode.includes('unavailable') || errMessage.includes('offline') || errCode.includes('network-request-failed')) {
+    if (errCode.includes('unavailable') || errMessage.includes('offline') || errCode.includes('network-request-failed') || errMessage.includes('unavailable')) {
       this.syncState = 'offline';
+      this.statusMessage = translated;
+      this.lastError = translated;
       this.notifyListeners();
-      return { success: false, error: 'offline' };
+      return { success: false, error: translated };
     }
 
     this.syncState = 'error';
-    this.statusMessage = `تعذر استكمال المزامنة السحابية مؤقتاً: ${errMessage}`;
+    this.statusMessage = translated;
+    this.lastError = translated;
     this.notifyListeners();
-    return { success: false, error: errMessage };
+    return { success: false, error: translated };
   }
 
   // -------------------------------------------------------------------------
@@ -631,6 +743,10 @@ class OrgSyncService {
 
   public getStatusMessage(): string | null {
     return this.statusMessage;
+  }
+
+  public getLastError(): string | null {
+    return this.lastError;
   }
 
   public isSubscriptionPaused(): boolean {

@@ -414,4 +414,20 @@ describe('Cleanup, Monthly Pool Capital Injection Toggle & Africa/Cairo Boundary
     // During November in Cairo -> includes 2026-10-31T23:30:00.000Z (750)
     expect(storage.calculateMonthlyPoolAvailable(new Date('2026-11-15T12:00:00.000Z'))).toBe(750);
   });
+
+  it('د: تهيئة Firestore تعطّل useFetchStreams لمنع خطأ AbortError عند إغلاق القنوات', async () => {
+    const { FIRESTORE_SETTINGS, createFirestoreInstance } = await import('./cloudService');
+    expect(FIRESTORE_SETTINGS.useFetchStreams).toBe(false);
+    expect(FIRESTORE_SETTINGS.experimentalAutoDetectLongPolling).toBe(true);
+
+    const { initializeApp } = await import('firebase/app');
+    const testApp = initializeApp(
+      { apiKey: 'test-key', projectId: 'test-proj', appId: 'test-app' },
+      'settings-verify-app'
+    );
+    const testDb = createFirestoreInstance(testApp, '(default)');
+    const settings = (testDb as unknown as { _getSettings: () => { useFetchStreams?: boolean; experimentalAutoDetectLongPolling?: boolean } })._getSettings();
+    expect(settings.useFetchStreams).toBe(false);
+    expect(settings.experimentalAutoDetectLongPolling).toBe(true);
+  });
 });

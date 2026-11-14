@@ -50,6 +50,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
   const [activeSubTab, setActiveSubTab] = useState<'ACCOUNT_LOGIN' | 'BACKUPS' | 'SETTINGS'>('ACCOUNT_LOGIN');
   
   // Cloud service reactive state
+  const [isCloudConfigured] = useState<boolean>(cloudService.isConfigured());
   const [isOnline, setIsOnline] = useState<boolean>(cloudService.isOnline());
   const [isSyncing, setIsSyncing] = useState<boolean>(cloudService.isSyncing());
   const [cloudSettings, setCloudSettings] = useState<CloudSettings>(cloudService.getCloudSettings());
@@ -62,14 +63,16 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
   const [lastHeartbeat, setLastHeartbeat] = useState<Date | null>(orgSyncService.getLastHeartbeatDate());
   const [lastSummary, setLastSummary] = useState<Date | null>(orgSyncService.getLastDailySummaryDate());
   const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(orgSyncService.getStatusMessage());
+  const [lastSyncError, setLastSyncError] = useState<string | null>(orgSyncService.getLastError());
   const [orgContext, setOrgContext] = useState(orgSyncService.getContext());
-  const [firebaseUser, setFirebaseUser] = useState(auth.currentUser);
+  const [firebaseUser, setFirebaseUser] = useState(auth?.currentUser || null);
 
-  // Email & Password Login Form State
+  // Email & Password Login Form State (password kept strictly in component memory, never persisted)
   const [emailInput, setEmailInput] = useState<string>(cloudService.getLinkedStore().ownerEmail || '');
   const [passwordInput, setPasswordInput] = useState<string>('');
   const [isAuthenticating, setIsAuthenticating] = useState<boolean>(false);
-  const [authOfflineBanner, setAuthOfflineBanner] = useState<boolean>(false);
+  const [isTestingConnection, setIsTestingConnection] = useState<boolean>(false);
+  const [connectionTestResult, setConnectionTestResult] = useState<{ success: boolean; message: string } | null>(null);
 
   // Backup states
   const [statusMessage, setStatusMessage] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
@@ -87,8 +90,9 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
     setLastHeartbeat(orgSyncService.getLastHeartbeatDate());
     setLastSummary(orgSyncService.getLastDailySummaryDate());
     setSyncStatusMsg(orgSyncService.getStatusMessage());
+    setLastSyncError(orgSyncService.getLastError());
     setOrgContext(orgSyncService.getContext());
-    setFirebaseUser(auth.currentUser);
+    setFirebaseUser(auth?.currentUser || null);
 
     const backups = await cloudService.getCloudBackupsList();
     setCloudBackups(backups);
@@ -104,26 +108,36 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
       setLastHeartbeat(orgSyncService.getLastHeartbeatDate());
       setLastSummary(orgSyncService.getLastDailySummaryDate());
       setSyncStatusMsg(orgSyncService.getStatusMessage());
+      setLastSyncError(orgSyncService.getLastError());
       setOrgContext(orgSyncService.getContext());
-      setFirebaseUser(auth.currentUser);
+      setFirebaseUser(auth?.currentUser || null);
+      setIsAuthenticated(cloudService.isUserAuthenticated());
+      setLinkedStore(cloudService.getLinkedStore());
     });
     return () => {
       unsubscribe();
       unsubscribeOrg();
+      setPasswordInput('');
     };
   }, []);
 
   // Handle Store Login for Sync (Strictly signInWithEmailAndPassword, no password storage, UID must match orgId)
   const handleEmailPasswordLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!isCloudConfigured) {
+      setStatusMessage({ type: 'error', text: 'السحابة غير مُعدّة بعد.' });
+      return;
+    }
+
+    const submittedPassword = passwordInput;
+    setPasswordInput('');
     setIsAuthenticating(true);
     setStatusMessage({ type: 'info', text: 'جاري تسجيل دخول المحل والتحقق من ترخيص الجهاز...' });
 
-    const res = await orgSyncService.signInStore(emailInput, passwordInput);
+    const res = await orgSyncService.signInStore(emailInput, submittedPassword);
     setIsAuthenticating(false);
 
     if (res.success) {
-      setPasswordInput('');
       setStatusMessage({ 
         type: 'success', 
         text: 'تم تسجيل دخول المحل للمزامنة بنجاح ومطابقة ترخيص الجهاز!' 
@@ -139,8 +153,21 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
 
   const handleSignOutStore = async () => {
     await orgSyncService.signOutStore();
+    setConnectionTestResult(null);
     setStatusMessage({ type: 'info', text: 'تم تسجيل الخروج من جلسة المزامنة السحابية.' });
     onRefreshAll();
+  };
+
+  const handleTestConnection = async () => {
+    setIsTestingConnection(true);
+    setConnectionTestResult(null);
+    const result = await orgSyncService.testConnection();
+    setIsTestingConnection(false);
+    setConnectionTestResult(result);
+    setStatusMessage({
+      type: result.success ? 'success' : 'error',
+      text: result.message,
+    });
   };
 
   // Handle Manual Immediate Sync
@@ -273,12 +300,16 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                 مركز إدارة وتشغيل المزامنة السحابية
               </h2>
               <span className="bg-emerald-500/30 text-emerald-200 border border-emerald-400/40 text-xs px-3 py-1 rounded-full font-mono font-bold flex items-center gap-1.5">
-                <span className={`w-2 h-2 rounded-full ${isOnline ? 'bg-emerald-400 animate-ping' : 'bg-amber-400'}`}></span>
-                {isOnline ? 'السحابة متصلة ومؤمنة ✓' : 'الوضع المحلي (أوفلاين)'}
+                <span className={`w-2 h-2 rounded-full ${!isCloudConfigured ? 'bg-slate-300' : isOnline ? 'bg-emerald-400 animate-ping' : 'bg-amber-400'}`}></span>
+                {!isCloudConfigured
+                  ? 'السحابة غير مُعدّة بعد'
+                  : isOnline
+                  ? (isAuthenticated ? 'السحابة متصلة ومؤمنة ✓' : 'متصل بالإنترنت — بانتظار تسجيل الدخول')
+                  : 'الوضع المحلي (أوفلاين)'}
               </span>
             </div>
             <p className="text-xs sm:text-sm text-emerald-100/90 font-medium max-w-2xl leading-relaxed">
-              إدارة حساب المالك، ربط المحل والفرع، وحالة الاشتراك الفعلية والنسخ السحابي والمحلي.
+              إدارة حساب المحل للمزامنة، ربط المنشأة والفرع بالترخيص، واختبار الاتصال ومتابعة النبضات والملخص اليومي.
             </p>
           </div>
 
@@ -286,8 +317,18 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
           <div className="flex items-center gap-2.5 flex-wrap w-full lg:w-auto justify-end">
             <button
               type="button"
+              onClick={handleTestConnection}
+              disabled={!isCloudConfigured || isTestingConnection || !isOnline}
+              className="px-4 py-2.5 bg-white text-emerald-900 hover:bg-emerald-50 disabled:opacity-50 text-xs sm:text-sm font-black rounded-xl cursor-pointer shadow-md flex items-center gap-2 transition-all active:scale-95"
+            >
+              <Activity className={`w-4 h-4 ${isTestingConnection ? 'animate-spin' : ''}`} />
+              <span>{isTestingConnection ? 'جاري اختبار الاتصال...' : 'اختبار الاتصال'}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={handleTriggerSync}
-              disabled={isSyncing || !isOnline}
+              disabled={!isCloudConfigured || isSyncing || !isOnline || !isAuthenticated}
               className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs sm:text-sm font-black rounded-xl cursor-pointer shadow-md flex items-center gap-2 transition-all active:scale-95"
             >
               <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} />
@@ -295,8 +336,8 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
             </button>
 
             <div className="bg-white/10 backdrop-blur-md px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-2 border border-white/20">
-              <div className={`w-2.5 h-2.5 rounded-full ${linkedStore.ownerEmail ? 'bg-emerald-400' : 'bg-amber-400'}`}></div>
-              <span className="font-mono">{linkedStore.ownerEmail || 'غير مرتبط بحساب'}</span>
+              <div className={`w-2.5 h-2.5 rounded-full ${firebaseUser?.email ? 'bg-emerald-400' : 'bg-amber-400'}`}></div>
+              <span className="font-mono">{firebaseUser?.email || 'غير مسجّل'}</span>
             </div>
           </div>
         </div>
@@ -305,18 +346,20 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mt-5 pt-4 border-t border-white/15 text-xs">
           <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl flex items-center gap-2.5">
             <Store className="w-5 h-5 text-emerald-300 shrink-0" />
-            <div>
-              <span className="text-emerald-200 block text-[11px]">المحل المربوط بالحساب:</span>
-              <span className="font-bold text-xs text-white block mt-0.5">{linkedStore.storeName}</span>
+            <div className="min-w-0">
+              <span className="text-emerald-200 block text-[11px]">حالة الترخيص (orgId):</span>
+              <span className="font-mono font-bold text-xs text-white block mt-0.5 truncate">
+                {orgContext ? orgContext.orgId : 'غير مرخص'}
+              </span>
             </div>
           </div>
 
           <div className="bg-white/10 backdrop-blur-md p-2.5 rounded-xl flex items-center gap-2.5">
             <Building2 className="w-5 h-5 text-cyan-300 shrink-0" />
-            <div>
-              <span className="text-emerald-200 block text-[11px]">الفرع / المنشأة:</span>
-              <span className="font-bold text-xs text-white block mt-0.5">
-                {linkedStore.branchName || linkedStore.chainName}
+            <div className="min-w-0">
+              <span className="text-emerald-200 block text-[11px]">معرّف الفرع (branchId):</span>
+              <span className="font-mono font-bold text-xs text-white block mt-0.5 truncate">
+                {orgContext ? orgContext.branchId : 'غير محدد'}
               </span>
             </div>
           </div>
@@ -332,6 +375,19 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Unconfigured Cloud Banner */}
+      {!isCloudConfigured && (
+        <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 flex items-start gap-3 shadow-xs">
+          <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+          <div className="space-y-1 text-xs">
+            <p className="font-black text-sm">السحابة غير مُعدّة بعد</p>
+            <p className="leading-relaxed">
+              لم يتم إدخال إعدادات Firebase بعد في <code className="font-mono bg-amber-100 dark:bg-amber-900/60 px-1.5 py-0.5 rounded">src/config/firebaseConfig.ts</code>. جميع نداءات السحابة معطّلة حالياً ويعمل النظام محلياً بأمان بدون أخطاء. راجع <code className="font-mono bg-amber-100 dark:bg-amber-900/60 px-1.5 py-0.5 rounded">docs/CLOUD_SETUP.md</code> لخطوات الربط.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Status Message Alert */}
       {statusMessage && (
@@ -392,17 +448,33 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
             <div className="border-b border-slate-200 dark:border-slate-800 pb-3">
               <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
                 <Lock className="w-5 h-5 text-emerald-600" />
-                <span>تسجيل دخول حساب المالك (إيميل وباسورد)</span>
+                <span>تسجيل دخول المحل للمزامنة</span>
               </h3>
               <p className="text-xs text-slate-500 mt-1">
-                نافذة تسجيل الدخول للمحل المربوط. يتم ربط هذا الإيميل بالمحل وسلسلة المحلات للاشتراك في أي باقة موحدة.
+                دخول بالبريد الإلكتروني وكلمة المرور فقط (لا تُحفظ كلمة المرور نهائياً، وتُستخدم جلسة Firebase المحلية تلقائياً).
               </p>
             </div>
+
+            {firebaseUser && (
+              <div className="flex items-center justify-between p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 rounded-xl text-xs">
+                <div>
+                  <span className="text-emerald-900 dark:text-emerald-200 font-bold block">جلسة الدخول النشطة للمزامنة:</span>
+                  <span className="font-mono text-emerald-700 dark:text-emerald-300 font-black">{firebaseUser.email}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSignOutStore}
+                  className="px-3 py-1.5 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg font-bold cursor-pointer transition-colors"
+                >
+                  تسجيل الخروج
+                </button>
+              </div>
+            )}
 
             <form onSubmit={handleEmailPasswordLogin} className="space-y-4">
               <div>
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">
-                  البريد الإلكتروني المعتمد للمحل / سلسلة المحلات:
+                  البريد الإلكتروني المعتمد للمحل:
                 </label>
                 <div className="relative">
                   <Mail className="w-4 h-4 text-slate-400 absolute right-3.5 top-3 pointer-events-none" />
@@ -410,9 +482,10 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                     type="email"
                     value={emailInput}
                     onChange={(e) => setEmailInput(e.target.value)}
+                    disabled={!isCloudConfigured}
                     required
                     placeholder="name@example.com"
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl pr-10 pl-3 py-2.5 text-xs sm:text-sm font-bold text-slate-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500 shadow-inner"
+                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl pr-10 pl-3 py-2.5 text-xs sm:text-sm font-bold text-slate-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500 shadow-inner disabled:opacity-50"
                   />
                 </div>
               </div>
@@ -427,9 +500,10 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                     type="password"
                     value={passwordInput}
                     onChange={(e) => setPasswordInput(e.target.value)}
+                    disabled={!isCloudConfigured}
                     required
                     placeholder="اكتب كلمة المرور..."
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl pr-10 pl-3 py-2.5 text-xs sm:text-sm font-bold text-slate-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500 shadow-inner"
+                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl pr-10 pl-3 py-2.5 text-xs sm:text-sm font-bold text-slate-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500 shadow-inner disabled:opacity-50"
                   />
                 </div>
               </div>
@@ -438,32 +512,16 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
               <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 rounded-xl text-xs space-y-1">
                 <span className="font-black text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5">
                   <Wifi className="w-4 h-4 text-emerald-600" />
-                  <span>دخول بالإنترنت أول مرة فقط:</span>
+                  <span>جلسة محلية آمنة:</span>
                 </span>
                 <p className="text-emerald-800 dark:text-emerald-300 text-[11px] leading-relaxed">
-                  يلزم الاتصال بالإنترنت عند تسجيل الدخول للمرة الأولى لتفعيل الحساب ومطابقة المحل، وبعد ذلك يتم حفظ جلسة الحساب وبيانات المحل في نسخة محلية على هذا الجهاز ليعمل الكاشير بالكامل بدون نت (أوفلاين).
+                  لا يتم تخزين كلمة المرور مطلقاً. بعد تسجيل الدخول الأول، تحفظ Firebase جلسة المصادقة محلياً لاستئناف المزامنة تلقائياً عند توفر الشبكة.
                 </p>
               </div>
 
-              {firebaseUser && (
-                <div className="flex items-center justify-between p-3 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-300 dark:border-emerald-800 rounded-xl text-xs">
-                  <div>
-                    <span className="text-emerald-900 dark:text-emerald-200 font-bold block">جلسة الدخول النشطة للمزامنة:</span>
-                    <span className="font-mono text-emerald-700 dark:text-emerald-300 font-black">{firebaseUser.email}</span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleSignOutStore}
-                    className="px-3 py-1 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 rounded-lg font-bold cursor-pointer transition-colors"
-                  >
-                    تسجيل الخروج
-                  </button>
-                </div>
-              )}
-
               <button
                 type="submit"
-                disabled={isAuthenticating}
+                disabled={!isCloudConfigured || isAuthenticating}
                 className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black rounded-xl text-xs sm:text-sm cursor-pointer shadow-md flex items-center justify-center gap-2 transition-all active:scale-95"
               >
                 <ShieldCheck className="w-4 h-4" />
@@ -472,88 +530,131 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
             </form>
           </div>
 
-          {/* Linked Store & Chain Architecture Details Card */}
+          {/* Linked Store & Sync Status Card */}
           <div className="lg:col-span-6 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xs space-y-4">
-            <div className="border-b border-slate-200 dark:border-slate-800 pb-3">
-              <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
-                <Store className="w-5 h-5 text-blue-600" />
-                <span>حالة المزامنة السحابية ومعلومات الترخيص</span>
-              </h3>
-              <p className="text-xs text-slate-500 mt-1">
-                متابعة الاتصال اللحظي ونبضات الفروع والملخص اليومي المشفر
-              </p>
+            <div className="border-b border-slate-200 dark:border-slate-800 pb-3 flex items-center justify-between gap-2">
+              <div>
+                <h3 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
+                  <Store className="w-5 h-5 text-blue-600" />
+                  <span>حالة ربط المحل والمزامنة السحابية</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-1">
+                  معلومات الترخيص، حالة الدخول، آخر نبضة، آخر ملخص يومي، ونتيجة اختبار الاتصال
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={!isCloudConfigured || isTestingConnection || !isOnline}
+                className="px-3 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl text-xs font-black cursor-pointer flex items-center gap-1.5 shrink-0 shadow-xs"
+              >
+                <Activity className={`w-3.5 h-3.5 ${isTestingConnection ? 'animate-spin' : ''}`} />
+                <span>{isTestingConnection ? 'جاري الاختبار...' : 'اختبار الاتصال'}</span>
+              </button>
             </div>
 
-            <div className="space-y-3 text-xs">
-              {/* 1. Login Status */}
-              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
-                <span className="font-bold text-slate-600 dark:text-slate-400">حالة الدخول:</span>
-                <span className={`font-bold ${firebaseUser ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
-                  {firebaseUser ? `مسجل دخول (${firebaseUser.email})` : 'غير مسجل دخول للمزامنة'}
+            {connectionTestResult && (
+              <div
+                className={`p-3 rounded-xl border text-xs font-bold flex items-center gap-2 ${
+                  connectionTestResult.success
+                    ? 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-200'
+                    : 'bg-rose-50 dark:bg-rose-950/60 border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200'
+                }`}
+              >
+                {connectionTestResult.success ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                )}
+                <span>{connectionTestResult.message}</span>
+              </div>
+            )}
+
+            <div className="space-y-2.5 text-xs">
+              {/* 1. License State: orgId & branchId */}
+              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 space-y-1">
+                <div className="flex justify-between items-center">
+                  <span className="font-bold text-slate-600 dark:text-slate-400">حالة الترخيص:</span>
+                  <span className={`font-black ${orgContext ? 'text-emerald-700 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}`}>
+                    {orgContext ? linkedStore.subscriptionStatusLabel : 'غير مرخص'}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-3 text-[11px] font-mono text-slate-700 dark:text-slate-300 pt-1">
+                  <span>orgId: <strong>{orgContext?.orgId || 'غير متوفر'}</strong></span>
+                  <span>branchId: <strong>{orgContext?.branchId || 'غير متوفر'}</strong></span>
+                </div>
+              </div>
+
+              {/* 2. Store Login Status */}
+              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center gap-2">
+                <span className="font-bold text-slate-600 dark:text-slate-400">حالة تسجيل دخول المحل:</span>
+                <span className={`font-bold font-mono truncate ${firebaseUser ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                  {firebaseUser?.email || 'غير مسجّل'}
                 </span>
               </div>
 
-              {/* 2. Last Successful Heartbeat */}
+              {/* 3. Last Successful Heartbeat */}
               <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
                 <span className="font-bold text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
                   <Activity className="w-3.5 h-3.5 text-blue-500" />
-                  <span>وقت آخر نبضة اتصال ناجحة:</span>
+                  <span>آخر نبضة ناجحة:</span>
                 </span>
                 <span className="font-mono font-bold text-slate-900 dark:text-white">
-                  {lastHeartbeat ? lastHeartbeat.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم تُرسل بعد'}
+                  {lastHeartbeat ? lastHeartbeat.toLocaleString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم تُرسل بعد'}
                 </span>
               </div>
 
-              {/* 3. Last Daily Summary */}
+              {/* 4. Last Daily Summary */}
               <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
                 <span className="font-bold text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
                   <Clock className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>وقت آخر ملخص يومي (بتوقيت القاهرة):</span>
+                  <span>آخر ملخص يومي:</span>
                 </span>
                 <span className="font-mono font-bold text-slate-900 dark:text-white">
-                  {lastSummary ? lastSummary.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم يُرفع بعد'}
+                  {lastSummary ? lastSummary.toLocaleString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم يُرفع بعد'}
                 </span>
               </div>
 
-              {/* 4. Sync State Badge */}
+              {/* 5. Sync State Badge */}
               <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
                 <span className="font-bold text-slate-600 dark:text-slate-400">حالة المزامنة:</span>
                 <span className={`px-2.5 py-0.5 rounded-full font-bold text-[11px] border ${
-                  syncState === 'synced'
+                  !isCloudConfigured || syncState === 'unconfigured'
+                    ? 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border-amber-300'
+                    : syncState === 'synced'
                     ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border-emerald-300'
                     : syncState === 'syncing'
                     ? 'bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 border-blue-300'
-                    : syncState === 'subscription-paused'
-                    ? 'bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 border-rose-300'
-                    : syncState === 'wrong-account'
+                    : syncState === 'subscription-paused' || syncState === 'wrong-account' || syncState === 'error'
                     ? 'bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 border-rose-300'
                     : syncState === 'offline'
                     ? 'bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-300 border-slate-300'
                     : 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border-amber-300'
                 }`}>
-                  {syncState === 'synced' ? 'متزامن بنجاح ✓' :
+                  {!isCloudConfigured || syncState === 'unconfigured' ? 'السحابة غير مُعدّة بعد' :
+                   syncState === 'synced' ? 'متزامن بنجاح ✓' :
                    syncState === 'syncing' ? 'جاري المزامنة...' :
-                   syncState === 'subscription-paused' ? 'تم إيقاف المزامنة: الاشتراك منتهٍ' :
-                   syncState === 'wrong-account' ? 'الحساب لا يطابق ترخيص الجهاز' :
+                   syncState === 'subscription-paused' ? 'تم رفض الصلاحية / اشتراك متوقف' :
+                   syncState === 'wrong-account' ? 'الحساب لا يطابق orgId بالترخيص' :
                    syncState === 'offline' ? 'أوفلاين (محلي)' :
-                   syncState === 'no-license' ? 'لا يوجد ترخيص سارٍ' : 'يلزم تسجيل الدخول'}
+                   syncState === 'no-license' ? 'لا يوجد ترخيص سارٍ' :
+                   syncState === 'error' ? 'تعذر إتمام المزامنة' : 'يلزم تسجيل الدخول'}
                 </span>
               </div>
 
-              {/* Linked Store & Branch from Context */}
-              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
-                <span className="font-bold text-slate-600 dark:text-slate-400">المحل المربوط بالترخيص:</span>
-                <span className="font-black text-slate-900 dark:text-white">
-                  {orgContext ? `المنشأة: ${orgContext.orgId} • الفرع: ${orgContext.branchId}` : linkedStore.storeName}
-                </span>
+              {/* 6. Last Error */}
+              <div className={`p-3 rounded-xl border space-y-1 ${
+                lastSyncError || syncStatusMsg
+                  ? 'bg-rose-50/70 dark:bg-rose-950/30 border-rose-200 dark:border-rose-800'
+                  : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800'
+              }`}>
+                <span className="font-bold text-slate-600 dark:text-slate-400 block">آخر خطأ / ملاحظة:</span>
+                <p className={`text-xs font-bold leading-relaxed ${
+                  lastSyncError ? 'text-rose-700 dark:text-rose-300' : 'text-slate-700 dark:text-slate-300'
+                }`}>
+                  {lastSyncError || syncStatusMsg || 'لا توجد أخطاء'}
+                </p>
               </div>
-            </div>
-
-            <div className="p-3 bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-800 rounded-xl text-blue-900 dark:text-blue-200 text-xs">
-              <span className="font-black block mb-0.5">جاهزية التوسع لسلسلة الفروع:</span>
-              <p className="text-[11px] leading-relaxed text-blue-800 dark:text-blue-300">
-                تمت هندسة قاعدة البيانات لتمكين ربط فروع أخرى أو مستودعات متعددة تحت مظلة نفس الإيميل المعتمد عند إعداد باقات الاشتراك المشتركة.
-              </p>
             </div>
           </div>
         </div>
