@@ -21,8 +21,17 @@ if (typeof globalThis.localStorage === 'undefined') {
   });
 }
 
-import { isFirebaseConfigComplete, firebaseConfig, firestoreDatabaseId } from '../config/firebaseConfig';
+import { isFirebaseConfigComplete, firestoreDatabaseId } from '../config/firebaseConfig';
 import { translateFirebaseError } from './firebaseErrorTranslator';
+
+const UNCONFIGURED_MOCK_CONFIG = {
+  apiKey: 'PUT_HERE',
+  authDomain: 'PUT_HERE',
+  projectId: 'PUT_HERE',
+  storageBucket: 'PUT_HERE',
+  messagingSenderId: 'PUT_HERE',
+  appId: 'PUT_HERE',
+};
 
 describe('Cloud Config, Error Translation, Password Safety & No Boot Network Requests', () => {
   beforeEach(() => {
@@ -31,6 +40,8 @@ describe('Cloud Config, Error Translation, Password Safety & No Boot Network Req
   });
 
   afterEach(() => {
+    vi.doUnmock('../config/firebaseConfig');
+    vi.doUnmock('firebase/auth');
     vi.restoreAllMocks();
   });
 
@@ -40,6 +51,14 @@ describe('Cloud Config, Error Translation, Password Safety & No Boot Network Req
     });
 
     vi.resetModules();
+    vi.doMock('../config/firebaseConfig', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../config/firebaseConfig')>();
+      return {
+        ...actual,
+        firebaseConfig: { ...UNCONFIGURED_MOCK_CONFIG },
+      };
+    });
+
     const mod = await import('./cloudService');
 
     expect(mod.isCloudConfigured).toBe(false);
@@ -59,7 +78,11 @@ describe('Cloud Config, Error Translation, Password Safety & No Boot Network Req
 
   it('2) غياب أو عدم اكتمال إعدادات Firebase (PUT_HERE أو فارغ) يعطّل نداءات orgSyncService بلا أخطاء', async () => {
     expect(firestoreDatabaseId).toBe('(default)');
-    expect(isFirebaseConfigComplete(firebaseConfig, firestoreDatabaseId)).toBe(false);
+
+    // 1. كائن فيه PUT_HERE
+    expect(isFirebaseConfigComplete(UNCONFIGURED_MOCK_CONFIG, '(default)')).toBe(false);
+
+    // 2. كائن بقيمة فارغة
     expect(
       isFirebaseConfigComplete(
         {
@@ -74,6 +97,7 @@ describe('Cloud Config, Error Translation, Password Safety & No Boot Network Req
       )
     ).toBe(false);
 
+    // 3. كائن مكتمل
     expect(
       isFirebaseConfigComplete(
         {
@@ -87,6 +111,15 @@ describe('Cloud Config, Error Translation, Password Safety & No Boot Network Req
         '(default)'
       )
     ).toBe(true);
+
+    vi.resetModules();
+    vi.doMock('../config/firebaseConfig', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../config/firebaseConfig')>();
+      return {
+        ...actual,
+        firebaseConfig: { ...UNCONFIGURED_MOCK_CONFIG },
+      };
+    });
 
     const { storage } = await import('./storageService');
     await storage.init();

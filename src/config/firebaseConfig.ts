@@ -17,12 +17,12 @@ export interface FirebaseWebConfig {
 
 // [الصق هنا الـ firebaseConfig من Firebase Console بزرار النسخ]
 export const firebaseConfig: FirebaseWebConfig = {
-  apiKey: 'PUT_HERE',
-  authDomain: 'PUT_HERE',
-  projectId: 'PUT_HERE',
-  storageBucket: 'PUT_HERE',
-  messagingSenderId: 'PUT_HERE',
-  appId: 'PUT_HERE',
+  apiKey: 'AIzaSyB1ZFacPpu4QcZnotMLZBthM0Hl6GaI9OQ',
+  authDomain: 'abkrino-ai.firebaseapp.com',
+  projectId: 'abkrino-ai',
+  storageBucket: 'abkrino-ai.firebasestorage.app',
+  messagingSenderId: '980088047949',
+  appId: '1:980088047949:web:ab2058bb179fcc81b9cf04',
 };
 
 export const firestoreDatabaseId = '(default)';
