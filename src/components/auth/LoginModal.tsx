@@ -3,7 +3,8 @@ import { User } from '../../types';
 import { storage } from '../../services/storageService';
 import { 
   authSecurityService, 
-  isKnownDefaultPin, 
+  isKnownDefaultPin,
+  userHasCredentials,
   LockoutStatus 
 } from '../../services/authSecurityService';
 import { 
@@ -44,7 +45,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   isLockScreen = false,
 }) => {
   const activeUsers = users.filter(u => u.isActive !== false);
-  const initialUserId = (currentUser && activeUsers.some(u => u.id === currentUser.id))
+  const credentialsResetRequired = authSecurityService.isCredentialsResetRequired();
+  const initialPostRestoreAdmin = credentialsResetRequired
+    ? activeUsers.find(u => u.role === 'ADMIN' && !userHasCredentials(u))
+    : undefined;
+  const initialUserId = initialPostRestoreAdmin
+    ? initialPostRestoreAdmin.id
+    : (currentUser && activeUsers.some(u => u.id === currentUser.id))
     ? currentUser.id
     : (activeUsers[0]?.id || users[0]?.id || '');
 
@@ -63,6 +70,10 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const [forcedNewPin, setForcedNewPin] = useState<string>('');
   const [forcedConfirmPin, setForcedConfirmPin] = useState<string>('');
 
+  // Post-restore Admin Password Setup State
+  const [postRestoreAdminPassword, setPostRestoreAdminPassword] = useState<string>('');
+  const [postRestoreAdminConfirm, setPostRestoreAdminConfirm] = useState<string>('');
+
   // Normal Change PIN Form state
   const [isChangingPin, setIsChangingPin] = useState<boolean>(false);
   const [oldPin, setOldPin] = useState<string>('');
@@ -75,6 +86,17 @@ export const LoginModal: React.FC<LoginModalProps> = ({
   const enteredPinRef = useRef<string>('');
 
   const selectedUser = users.find(u => u.id === selectedUserId) || users[0];
+  const needsPostRestoreAdminSetup = Boolean(
+    credentialsResetRequired &&
+    selectedUser &&
+    selectedUser.role === 'ADMIN' &&
+    !userHasCredentials(selectedUser)
+  );
+  const isCashierMissingPin = Boolean(
+    selectedUser &&
+    selectedUser.role !== 'ADMIN' &&
+    !userHasCredentials(selectedUser)
+  );
 
   // Poll lockout timer every second for currently selected user
   useEffect(() => {
@@ -171,6 +193,36 @@ export const LoginModal: React.FC<LoginModalProps> = ({
     } catch {
       enteredPinRef.current = '';
       setError('حدث خطأ أثناء التحقق من الرقم السري');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handlePostRestoreAdminSetupSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedUser) return;
+    setError(null);
+
+    const cleanNew = normalizeArabicDigits(postRestoreAdminPassword).trim();
+    const cleanConfirm = normalizeArabicDigits(postRestoreAdminConfirm).trim();
+
+    if (cleanNew !== cleanConfirm) {
+      setError('كلمة المرور وتأكيدها غير متطابقين');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const res = await authSecurityService.completePostRestoreAdminSetup(selectedUser.id, cleanNew);
+      if (res.success && res.user) {
+        setPostRestoreAdminPassword('');
+        setPostRestoreAdminConfirm('');
+        onLoginSuccess(res.user);
+      } else {
+        setError(res.error || 'تعذر حفظ كلمة مرور المدير الجديدة');
+      }
+    } catch {
+      setError('حدث خطأ أثناء إعداد كلمة مرور المدير');
     } finally {
       setIsLoading(false);
     }
@@ -353,14 +405,18 @@ export const LoginModal: React.FC<LoginModalProps> = ({
             {lockout.isLocked ? <ShieldAlert className="w-7 h-7" /> : <Lock className="w-7 h-7" />}
           </div>
           <h2 className="text-lg font-bold text-white">
-            {isForcedChangePin
+            {needsPostRestoreAdminSetup
+              ? 'إعداد كلمة مرور المدير بعد الاستعادة السحابية'
+              : isForcedChangePin
               ? 'تغيير الرقم السري إجباري'
               : isLockScreen
               ? 'شاشة الأمان وقفل البرنامج'
               : 'تسجيل دخول المستخدم'}
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
-            {isForcedChangePin
+            {needsPostRestoreAdminSetup
+              ? 'تمت استعادة النسخة السحابية بدون كلمات مرور لحماية حسابات المحل، يلزم تعيين كلمة مرور جديدة للمدير'
+              : isForcedChangePin
               ? 'لحماية أموال وبيانات المحل، يرجى تعيين رقم سري جديد وخاص بك'
               : 'اختر المستخدم واكتب الرقم السري'}
           </p>
@@ -387,6 +443,7 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           <div className="my-4 grid grid-cols-2 gap-2">
             {users.map(u => {
               const uLock = authSecurityService.getLockoutStatus(u.id);
+              const missingCreds = !userHasCredentials(u);
 
               return (
                 <button
@@ -399,6 +456,8 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                     setPendingMigratedUser(null);
                     setForcedNewPin('');
                     setForcedConfirmPin('');
+                    setPostRestoreAdminPassword('');
+                    setPostRestoreAdminConfirm('');
                     setSelectedUserId(u.id);
                     setPin('');
                     setError(null);
@@ -416,7 +475,13 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                   <div className="overflow-hidden">
                     <span className="font-bold text-xs text-slate-100 block truncate">{u.fullName}</span>
                     <span className="text-[10px] text-slate-400 block font-mono">
-                      {uLock.isLocked ? '🔒 مقفول مؤقتاً' : u.role === 'ADMIN' ? 'مدير عام' : 'كاشير مبيعات'}
+                      {uLock.isLocked
+                        ? '🔒 مقفول مؤقتاً'
+                        : missingCreds
+                        ? (u.role === 'ADMIN' ? '🔑 يحتاج كلمة مرور' : '🔑 يحتاج تعيين PIN')
+                        : u.role === 'ADMIN'
+                        ? 'مدير عام'
+                        : 'كاشير مبيعات'}
                     </span>
                   </div>
                 </button>
@@ -439,8 +504,53 @@ export const LoginModal: React.FC<LoginModalProps> = ({
           </div>
         )}
 
-        {/* FORCED PIN CHANGE FORM (Requirement 6) */}
-        {isForcedChangePin && pendingMigratedUser ? (
+        {/* POST-RESTORE ADMIN PASSWORD SETUP OR FORCED PIN CHANGE */}
+        {needsPostRestoreAdminSetup && selectedUser ? (
+          <form onSubmit={handlePostRestoreAdminSetupSubmit} className="space-y-3.5 my-3 text-xs">
+            <div className="p-3 bg-emerald-950/40 border border-emerald-700/70 rounded-xl text-emerald-200 text-[11px] leading-relaxed">
+              🛡️ <strong>إكمال الاستعادة السحابية:</strong> تم استرجاع البيانات مع حذف كلمات المرور السابقة لأمان الحسابات. يرجى تعيين كلمة مرور جديدة لحساب المدير <strong>({selectedUser.fullName})</strong> (6 خانات على الأقل)، وبعد الدخول يمكنك تعيين PIN للكاشيرية من شاشة إدارة المستخدمين.
+            </div>
+
+            <div>
+              <label className="text-slate-300 block mb-1 font-bold">
+                كلمة مرور المدير الجديدة (6 خانات على الأقل):
+              </label>
+              <input
+                type="password"
+                required
+                autoFocus
+                value={postRestoreAdminPassword}
+                onChange={(e) => setPostRestoreAdminPassword(normalizeArabicDigits(e.target.value))}
+                placeholder="اكتب كلمة المرور الجديدة"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white font-mono text-center tracking-widest text-sm text-emerald-400 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            <div>
+              <label className="text-slate-300 block mb-1 font-bold">
+                تأكيد كلمة مرور المدير:
+              </label>
+              <input
+                type="password"
+                required
+                value={postRestoreAdminConfirm}
+                onChange={(e) => setPostRestoreAdminConfirm(normalizeArabicDigits(e.target.value))}
+                placeholder="أعد كتابة كلمة المرور للتأكيد"
+                className="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white font-mono text-center tracking-widest text-sm text-emerald-400 focus:outline-none focus:border-emerald-500"
+              />
+            </div>
+
+            <div className="pt-2">
+              <button
+                type="submit"
+                disabled={isLoading}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-2.5 rounded-xl cursor-pointer shadow-md transition-all disabled:opacity-50"
+              >
+                {isLoading ? 'جاري التشفير والحفظ...' : 'حفظ كلمة المرور ودخول النظام'}
+              </button>
+            </div>
+          </form>
+        ) : isForcedChangePin && pendingMigratedUser ? (
           <form onSubmit={handleForcedPinChangeSubmit} className="space-y-3.5 my-3 text-xs">
             <div className="p-3 bg-amber-950/40 border border-amber-800/80 rounded-xl text-amber-300 text-[11px] leading-relaxed">
               ⚠️ <strong>تنبيه أمني هام:</strong> حسابك <strong>({pendingMigratedUser.fullName})</strong> كان يستخدم رقماً سرياً افتراضياً قديماً. تم تشفير بياناتك، ويلزم تعيين رقم سري جديد وخاص بك قبل المتابعة.
@@ -488,6 +598,11 @@ export const LoginModal: React.FC<LoginModalProps> = ({
         ) : !isChangingPin ? (
           /* STANDARD LOGIN FORM */
           <div>
+            {isCashierMissingPin && (
+              <div className="mb-3 p-3 rounded-xl bg-amber-950/60 border border-amber-700 text-amber-200 text-xs leading-relaxed">
+                <strong>يحتاج تعيين PIN:</strong> لم يتم تعيين رقم سري لهذا الكاشير بعد استعادة النسخة السحابية. يجب دخول المدير أولاً وتعيين PIN من شاشة إدارة المستخدمين.
+              </div>
+            )}
             {/* Input Field */}
             <div className="bg-slate-950 border border-slate-800 rounded-xl p-3 my-2 text-center relative">
               <span className="text-[11px] text-slate-400 block mb-1">

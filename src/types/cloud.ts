@@ -103,14 +103,24 @@ export interface DailySummaryDoc {
 // 5. Chunked Backups (orgs/{orgId}/branches/{branchId}/backups/{id})
 // Split into chunks to support large databases within Firestore 1MB doc limits.
 // ---------------------------------------------------------------------------
+export type CloudBackupStatus = 'uploading' | 'complete';
+export type CloudBackupTrigger = 'daily' | 'shift_close' | 'manual';
+
 export interface BackupMetadata {
+  status?: CloudBackupStatus;
   createdAt: CloudTimestamp;
   sizeBytes: number;
   appVersion: string;
   note?: string;
   totalInvoices?: number;
   totalProducts?: number;
+  totalCustomers?: number;
   totalChunks: number;
+  checksum?: string;
+  dataChecksum?: string;
+  compressed?: boolean;
+  schemaVersion?: number;
+  trigger?: CloudBackupTrigger;
 }
 
 // Backup Metadata Document (stored at orgs/{orgId}/branches/{branchId}/backups/{id})
@@ -123,7 +133,7 @@ export interface BackupDoc {
 // Each chunk contains serialized string data with max 900,000 bytes.
 export interface BackupChunkDoc {
   chunkIndex: number;
-  data: string;                 // Serialized JSON chunk <= 900,000 bytes
+  data: string;                 // Serialized chunk <= 700,000 chars (<= 900,000 bytes rule limit)
   createdAt?: CloudTimestamp;
 }
 

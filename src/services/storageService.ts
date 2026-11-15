@@ -35,6 +35,7 @@ export const STORAGE_KEYS = {
   FUNDING_SOURCES: 'sm_funding_sources_v1',
   SALES_RETURNS: 'sm_sales_returns_v1',
   DOCUMENT_SEQUENCES: 'sm_doc_sequences_v1',
+  CREDENTIALS_RESET_REQUIRED: 'sm_credentials_reset_required_v1',
 };
 
 export const BUSINESS_KEYS = [
@@ -957,6 +958,27 @@ class StorageService {
         localStorage.setItem(STORAGE_KEYS.ACTIVE_USER_ID, userId);
       } catch {}
     }
+  }
+
+  public clearActiveUser(): void {
+    this.cache.delete(STORAGE_KEYS.ACTIVE_USER_ID);
+    this.pendingWrites.delete(STORAGE_KEYS.ACTIVE_USER_ID);
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.removeItem(STORAGE_KEYS.ACTIVE_USER_ID);
+      } catch {}
+    }
+    if (typeof indexedDB !== 'undefined') {
+      idb.kv.delete(STORAGE_KEYS.ACTIVE_USER_ID).catch(() => {});
+    }
+  }
+
+  public getCredentialsResetRequired(): boolean {
+    return Boolean(this.getItem<boolean>(STORAGE_KEYS.CREDENTIALS_RESET_REQUIRED, false));
+  }
+
+  public setCredentialsResetRequired(required: boolean): void {
+    this.setItem(STORAGE_KEYS.CREDENTIALS_RESET_REQUIRED, Boolean(required));
   }
 
   public saveUser(user: User): { success: boolean; error?: string } {

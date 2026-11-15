@@ -119,7 +119,7 @@ service cloud.firestore {
         // Each chunk must not exceed 900,000 bytes.
         // ---------------------------------------------------------------------
         match /backups/{backupId} {
-          allow read: if isOrgOwner(orgId) || isAdmin();
+          allow read: if isOrgOwner(orgId);
           allow create, update: if isOrgOwner(orgId) &&
             isOrgActive(orgId) &&
             isValidId(backupId) &&
@@ -130,7 +130,7 @@ service cloud.firestore {
           allow delete: if isOrgOwner(orgId) && isOrgActive(orgId);
 
           match /chunks/{chunkIndex} {
-            allow read: if isOrgOwner(orgId) && isOrgActive(orgId);
+            allow read: if isOrgOwner(orgId);
             allow create, update: if isOrgOwner(orgId) &&
               isOrgActive(orgId) &&
               request.resource.data.data is string &&

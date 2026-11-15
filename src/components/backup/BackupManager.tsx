@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { storage } from '../../services/storageService';
 import { cloudService } from '../../services/cloudService';
+import { cloudBackupService, CloudBackupSummary } from '../../services/cloudBackupService';
 import { snapshotService, BackupPreview, REQUIRED_COLLECTIONS } from '../../services/snapshotService';
 import { SnapshotRecord } from '../../services/idbStore';
 import {
@@ -46,6 +47,10 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
   const [pendingRestore, setPendingRestore] = useState<PendingRestore | null>(null);
   const [isDoubleConfirmed, setIsDoubleConfirmed] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
+  const [lastCloudBackup, setLastCloudBackup] = useState<CloudBackupSummary | null>(() =>
+    cloudBackupService.getLastSuccessfulBackup()
+  );
+  const [isCreatingCloudBackup, setIsCreatingCloudBackup] = useState(false);
 
   const loadSnapshots = useCallback(async () => {
     setIsLoadingSnapshots(true);
@@ -64,6 +69,13 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
   useEffect(() => {
     storage.getStorageStatus().then(status => setStorageStatus(status)).catch(() => {});
     loadSnapshots();
+    const unsubCloudBackup = cloudBackupService.subscribe(() => {
+      setLastCloudBackup(cloudBackupService.getLastSuccessfulBackup());
+      setIsCreatingCloudBackup(cloudBackupService.isUploadInProgress());
+    });
+    return () => {
+      unsubCloudBackup();
+    };
   }, [loadSnapshots]);
 
   const handleRequestPersistence = async () => {
@@ -344,8 +356,8 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
 
       {/* Cloud Backup Hero Card */}
       <div className="bg-gradient-to-r from-emerald-800 to-teal-900 text-white rounded-2xl p-5 shadow-lg border border-emerald-500/30 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 flex-wrap">
             <Cloud className="w-5 h-5 text-emerald-300" />
             <h3 className="font-black text-sm sm:text-base">النسخ الاحتياطي والمزامنة السحابية</h3>
             <span className="text-[10px] bg-emerald-400/20 text-emerald-200 border border-emerald-300/30 px-2.5 py-0.5 rounded-full font-bold">
@@ -357,18 +369,34 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
             </span>
           </div>
           <p className="text-xs text-emerald-100 max-w-xl leading-relaxed">
-            يتم حفظ لقطات كاملة من قاعدة البيانات سحابياً تلقائياً بعد كل عملية. يمكنك حفظ نسخة سحابية فورية أو استرجاع أي نسخة سابقة.
+            {lastCloudBackup ? (
+              <>
+                توجد نسخة سحابية حديثة بتاريخ{' '}
+                <strong className="font-mono text-white">
+                  {new Date(lastCloudBackup.createdAtMs).toLocaleString('ar-EG', { dateStyle: 'medium', timeStyle: 'short' })}
+                </strong>{' '}
+                ({lastCloudBackup.totalProducts} صنف، {lastCloudBackup.totalInvoices} فاتورة، {(lastCloudBackup.sizeBytes / 1024).toFixed(1)} ك.ب).
+              </>
+            ) : (
+              'لا توجد نسخة احتياطية سحابية مرفوعة من هذا الجهاز بعد. تُرفع تلقائياً يومياً وعند إغلاق الوردية عند الاتصال وتسجيل دخول المحل.'
+            )}
           </p>
         </div>
 
         <button
           type="button"
+          disabled={isCreatingCloudBackup}
           onClick={async () => {
-            const res = await cloudService.createManualCloudBackup('نسخة من شاشة النسخ الاحتياطي');
+            setIsCreatingCloudBackup(true);
+            const res = await cloudBackupService.createAndUploadBackup('manual', 'نسخة من شاشة النسخ الاحتياطي');
+            setIsCreatingCloudBackup(false);
             if (res.success) {
+              setLastCloudBackup(cloudBackupService.getLastSuccessfulBackup());
               setStatusMessage({
                 type: 'success',
-                text: 'تم حفظ نسخة سحابية متكاملة بنجاح!',
+                text: res.skipped
+                  ? (res.message || 'البيانات لم تتغير منذ آخر نسخة سحابية ناجحة.')
+                  : 'تم رفع النسخة الاحتياطية السحابية بنجاح!',
               });
             } else {
               setStatusMessage({
@@ -377,10 +405,10 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
               });
             }
           }}
-          className="px-4 py-2.5 bg-white text-emerald-900 hover:bg-emerald-50 active:scale-95 text-xs font-black rounded-xl cursor-pointer shadow-md flex items-center gap-2 transition-all shrink-0"
+          className="px-4 py-2.5 bg-white text-emerald-900 hover:bg-emerald-50 disabled:opacity-50 active:scale-95 text-xs font-black rounded-xl cursor-pointer shadow-md flex items-center gap-2 transition-all shrink-0"
         >
           <CloudCheck className="w-4 h-4 text-emerald-700" />
-          <span>حفظ نسخة سحابية جديدة الآن</span>
+          <span>{isCreatingCloudBackup ? 'جاري الرفع للسحابة...' : 'حفظ نسخة سحابية جديدة الآن'}</span>
         </button>
       </div>
 

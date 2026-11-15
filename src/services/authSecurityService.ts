@@ -133,6 +133,11 @@ export function isKnownDefaultPin(pin: string): boolean {
   return KNOWN_DEFAULT_PINS.includes(clean);
 }
 
+export function userHasCredentials(user: User | null | undefined): boolean {
+  if (!user) return false;
+  return Boolean((user.pinHash && user.pinSalt) || (user.pinCode && user.pinCode.trim()));
+}
+
 // --- CENTRALIZED PERMISSIONS CHECK ---
 export function checkUserPermission(
   user: User | null | undefined,
@@ -535,7 +540,101 @@ class AuthSecurityService {
     }
 
     // No password set at all
+    if (user.role === 'SALES') {
+      return {
+        success: false,
+        error: 'لم يتم تعيين رقم سري (PIN) لهذا الكاشير بعد. يرجى من المدير تعيين رقم سري من شاشة إدارة المستخدمين.',
+      };
+    }
+    if (this.isCredentialsResetRequired()) {
+      return {
+        success: false,
+        error: 'يلزم تعيين كلمة مرور جديدة لحساب المدير لإكمال الاستعادة السحابية.',
+      };
+    }
     return { success: false, error: 'لم يتم تعيين رقم سري لهذا المستخدم بعد' };
+  }
+
+  public isCredentialsResetRequired(): boolean {
+    return storage.getCredentialsResetRequired();
+  }
+
+  public setCredentialsResetRequired(required: boolean): void {
+    storage.setCredentialsResetRequired(required);
+  }
+
+  /**
+   * Post-cloud-restore Admin password onboarding.
+   * Strictly permitted ONLY when `credentialsResetRequired` is true AND the target active ADMIN has no stored credentials.
+   */
+  public async completePostRestoreAdminSetup(
+    adminUserId: string,
+    newPassword: string
+  ): Promise<{ success: boolean; error?: string; user?: User }> {
+    if (!this.isCredentialsResetRequired()) {
+      return {
+        success: false,
+        error: 'هذه العملية متاحة فقط بعد استعادة نسخة سحابية تتطلب إعداد كلمة مرور جديدة للمدير.',
+      };
+    }
+
+    const users = storage.getUsers();
+    const target = users.find(u => u.id === adminUserId);
+    if (!target) {
+      return { success: false, error: 'حساب المدير المحدد غير موجود' };
+    }
+    if (target.isActive === false) {
+      return { success: false, error: 'حساب المدير المحدد معطل حالياً' };
+    }
+    if (target.role !== 'ADMIN') {
+      return { success: false, error: 'تعيين كلمة المرور بعد الاستعادة مقتصر على حساب المدير العام فقط' };
+    }
+    if (userHasCredentials(target)) {
+      return { success: false, error: 'هذا الحساب يمتلك كلمة مرور مسجلة بالفعل' };
+    }
+
+    const cleanNew = normalizeArabicDigits(newPassword || '').trim();
+    if (cleanNew.length < 6) {
+      return { success: false, error: 'كلمة مرور المدير يجب ألا تقل عن 6 خانات' };
+    }
+    if (isKnownDefaultPin(cleanNew)) {
+      return {
+        success: false,
+        error: 'لا يمكن استخدام كلمة مرور افتراضية شائعة (مثل 1234 أو 1111 أو 123456). يرجى اختيار كلمة مرور قوية.',
+      };
+    }
+
+    const { hashHex, saltHex } = await hashPasswordWithPbkdf2(cleanNew);
+    const updatedAdmin: User = {
+      ...target,
+      pinHash: hashHex,
+      pinSalt: saltHex,
+    };
+    delete updatedAdmin.pinCode;
+    delete updatedAdmin.mustChangePin;
+
+    const saveRes = storage.saveUser(updatedAdmin);
+    if (!saveRes.success) {
+      return { success: false, error: saveRes.error || 'تعذر حفظ كلمة مرور المدير' };
+    }
+
+    // Clear reset flag now that an active admin has valid credentials set
+    storage.setCredentialsResetRequired(false);
+    this.recordSuccessfulLogin(updatedAdmin);
+
+    try {
+      await storage.flush();
+    } catch {}
+
+    storage.addAuditLog(
+      'AUTH',
+      'إعداد كلمة مرور المدير بعد الاستعادة السحابية',
+      'الأمان',
+      updatedAdmin.id,
+      `تم تعيين كلمة مرور جديدة مشفرة بـ PBKDF2 لحساب المدير (${updatedAdmin.fullName}) بعد استعادة النسخة السحابية`
+    );
+
+    return { success: true, user: updatedAdmin };
   }
 
   /**

@@ -27,12 +27,13 @@ import { LicenseGate } from './components/license/LicenseGate';
 import { CloudDashboard } from './components/cloud/CloudDashboard';
 import { cloudService } from './services/cloudService';
 import { licenseService } from './services/licenseService';
-import { canAccessTab, authSecurityService } from './services/authSecurityService';
+import { canAccessTab, authSecurityService, userHasCredentials } from './services/authSecurityService';
 import { UnauthorizedState } from './components/common/FeedbackStates';
 import { UnifiedSettings, SettingsSubTab } from './components/settings/UnifiedSettings';
 import { tabLockService } from './services/tabLockService';
 import { orgSyncService } from './services/orgSyncService';
 import { snapshotService } from './services/snapshotService';
+import { cloudBackupService } from './services/cloudBackupService';
 import { LayoutDashboard, ShoppingCart, Receipt, Boxes, Menu } from 'lucide-react';
 
 export default function App() {
@@ -73,7 +74,11 @@ export default function App() {
 
   // Sync Data
   const refreshAll = React.useCallback(() => {
-    const active = storage.getActiveUser();
+    let active = storage.getActiveUser();
+    if (active && authSecurityService.isCredentialsResetRequired() && !userHasCredentials(active)) {
+      storage.clearActiveUser();
+      active = null;
+    }
     const allUsers = storage.getUsers();
     setCurrentUser(active);
     setUsers(allUsers);
@@ -129,6 +134,9 @@ export default function App() {
           console.warn('Daily snapshot error:', err);
         });
 
+        // Trigger non-blocking daily cloud backup (once per Cairo calendar day)
+        cloudBackupService.checkAndCreateDailyBackup().catch(() => {});
+
         // 4) Check backup reminder (7 days without manual export) (Requirement ثانياً: 4)
         const reminder = snapshotService.getReminderStatus();
         if (reminder.needsReminder) {
@@ -168,6 +176,13 @@ export default function App() {
     const unsubLicense = licenseService.subscribe(() => {
       setLicenseState(licenseService.getLicenseState());
       setIsStoreActivated(licenseService.isStoreActivated());
+      cloudBackupService.resetPermissionPause();
+    });
+
+    const unsubOrgSync = orgSyncService.subscribe(() => {
+      if (orgSyncService.ensureSignedIn() === 'ok' && storage.isStorageReady()) {
+        cloudBackupService.checkAndCreateDailyBackup().catch(() => {});
+      }
     });
 
     const unsubAction = storage.onAction((actionName) => {
@@ -176,6 +191,7 @@ export default function App() {
         snapshotService.createSnapshot('shift_close').catch(err => {
           console.warn('Shift close snapshot error:', err);
         });
+        cloudBackupService.onShiftClosed().catch(() => {});
       }
     });
 
@@ -206,6 +222,7 @@ export default function App() {
       isMounted = false;
       window.removeEventListener('keydown', handleKeyDown);
       unsubLicense();
+      unsubOrgSync();
       unsubAction();
       unsubWriteError();
       unsubDropAlert();

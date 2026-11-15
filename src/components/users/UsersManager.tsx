@@ -3,7 +3,8 @@ import { User, Role, UserPermissions } from '../../types';
 import { storage } from '../../services/storageService';
 import { 
   authSecurityService, 
-  isKnownDefaultPin 
+  isKnownDefaultPin,
+  userHasCredentials
 } from '../../services/authSecurityService';
 import { 
   Users, 
@@ -430,9 +431,15 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
                       </div>
                     </td>
                     <td className="py-3 px-3 font-mono font-medium text-slate-400 text-xs">
-                      <span className="bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 px-2 py-0.5 rounded tracking-widest text-[11px]">
-                        ••••••
-                      </span>
+                      {userHasCredentials(u) ? (
+                        <span className="bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 px-2 py-0.5 rounded tracking-widest text-[11px]">
+                          ••••••
+                        </span>
+                      ) : (
+                        <span className="bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700 px-2 py-0.5 rounded font-sans font-bold text-[11px]">
+                          يحتاج تعيين PIN
+                        </span>
+                      )}
                     </td>
                     <td className="py-3 px-3 text-slate-500 dark:text-slate-400 font-mono">{u.phone || '-'}</td>
                     <td className="py-3 px-3 text-[11px]">

@@ -1,0 +1,1162 @@
+import {
+  doc,
+  collection,
+  getDoc,
+  getDocs,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  writeBatch,
+  serverTimestamp,
+  Firestore,
+} from 'firebase/firestore';
+import { db, auth, isCloudConfigured } from './cloudService';
+import { orgSyncService } from './orgSyncService';
+import { translateFirebaseError } from './firebaseErrorTranslator';
+import {
+  snapshotService,
+  computeDataChecksum,
+  CURRENT_SCHEMA_VERSION,
+  ExportBackupPackage,
+  BackupPreview,
+} from './snapshotService';
+import { storage, getCairoDateString } from './storageService';
+import { APP_VERSION } from '../config/appConfig';
+import { BackupMetadata, CloudBackupTrigger } from '../types/cloud';
+import { User } from '../types';
+
+export const CHUNK_MAX_CHARS = 700_000;
+export const MAX_BATCH_BYTES = 3 * 1024 * 1024; // 3 MB safe limit per writeBatch
+export const CLOUD_BACKUP_KEEP_COUNT = 7;
+export const STALE_INCOMPLETE_BACKUP_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+const LOCAL_KEYS = {
+  LAST_DAILY_CAIRO_DATE: 'sm_cloud_backup_last_date_v1',
+  LAST_DATA_CHECKSUM: 'sm_cloud_backup_last_data_checksum_v1',
+  LAST_BACKUP_META: 'sm_cloud_backup_last_meta_v1',
+};
+
+export interface CloudBackupSummary {
+  id: string;
+  createdAtIso: string;
+  createdAtMs: number;
+  sizeBytes: number;
+  appVersion: string;
+  totalChunks: number;
+  totalProducts: number;
+  totalInvoices: number;
+  totalCustomers: number;
+  checksum: string;
+  dataChecksum?: string;
+  compressed: boolean;
+  schemaVersion: number;
+  trigger?: CloudBackupTrigger;
+  note?: string;
+  status: 'complete';
+}
+
+export interface CloudBackupOperationResult {
+  success: boolean;
+  skipped?: boolean;
+  reason?:
+    | 'unconfigured'
+    | 'offline'
+    | 'no_license'
+    | 'needs_login'
+    | 'wrong_account'
+    | 'permission_paused'
+    | 'in_progress'
+    | 'no_changes'
+    | 'empty_data'
+    | 'suspicious_drop'
+    | 'error';
+  message?: string;
+  error?: string;
+  backup?: CloudBackupSummary;
+}
+
+export interface CloudRestoreDownloadProgress {
+  loadedChunks: number;
+  totalChunks: number;
+  percent: number;
+}
+
+export interface CloudDownloadValidationResult {
+  success: boolean;
+  error?: string;
+  warning?: string;
+  backup?: CloudBackupSummary;
+  preview?: BackupPreview;
+  validatedData?: Record<string, any>;
+}
+
+// ---------------------------------------------------------------------------
+// Pure Helpers (Exported for Unit Tests)
+// ---------------------------------------------------------------------------
+
+/**
+ * Removes all login credentials (pinHash, pinSalt, pinCode, mustChangePin, and any password/hash fields)
+ * from every user object in the backup payload without mutating original storage arrays.
+ */
+export function stripUserCredentialsFromData(data: Record<string, any>): Record<string, any> {
+  const clonedData: Record<string, any> = { ...data };
+  if (Array.isArray(data.users)) {
+    clonedData.users = data.users.map((u: User & Record<string, any>) => {
+      const cleanUser: Record<string, any> = {};
+      for (const key of Object.keys(u)) {
+        const lower = key.toLowerCase();
+        if (
+          key === 'pinHash' ||
+          key === 'pinSalt' ||
+          key === 'pinCode' ||
+          key === 'mustChangePin' ||
+          lower.includes('password') ||
+          lower.includes('hash') ||
+          lower.includes('salt')
+        ) {
+          continue;
+        }
+        cleanUser[key] = u[key];
+      }
+      return cleanUser;
+    });
+  }
+  return clonedData;
+}
+
+/**
+ * Chunked Uint8Array -> Base64 converter safe for large payloads (no spread call-stack overflow).
+ */
+export function uint8ArrayToBase64(bytes: Uint8Array): string {
+  const sliceSize = 0x8000;
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += sliceSize) {
+    const sub = bytes.subarray(i, Math.min(i + sliceSize, bytes.length));
+    let part = '';
+    for (let j = 0; j < sub.length; j++) {
+      part += String.fromCharCode(sub[j]);
+    }
+    binary += part;
+  }
+  return btoa(binary);
+}
+
+/**
+ * Base64 -> Uint8Array converter.
+ */
+export function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+
+/**
+ * Compresses UTF-8 string using native gzip CompressionStream (Chrome 108 / Firefox 115+)
+ * with automatic uncompressed Base64 fallback if CompressionStream is unavailable.
+ */
+export async function compressStringToBase64(
+  text: string,
+  options?: { forceDisableCompression?: boolean }
+): Promise<{ encoded: string; compressed: boolean }> {
+  const rawBytes = new TextEncoder().encode(text);
+
+  if (
+    !options?.forceDisableCompression &&
+    typeof CompressionStream !== 'undefined' &&
+    typeof ReadableStream !== 'undefined' &&
+    typeof Response !== 'undefined'
+  ) {
+    try {
+      const source = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(rawBytes);
+          controller.close();
+        },
+      });
+      const gzipStream = source.pipeThrough(
+        new CompressionStream('gzip') as unknown as TransformStream<Uint8Array, Uint8Array>
+      );
+      const compressedBuf = await new Response(gzipStream).arrayBuffer();
+      return {
+        encoded: uint8ArrayToBase64(new Uint8Array(compressedBuf)),
+        compressed: true,
+      };
+    } catch {
+      // Fall back gracefully without compression
+    }
+  }
+
+  return {
+    encoded: uint8ArrayToBase64(rawBytes),
+    compressed: false,
+  };
+}
+
+/**
+ * Reverses compressStringToBase64.
+ */
+export async function decompressBase64ToString(
+  encoded: string,
+  compressed: boolean
+): Promise<string> {
+  const bytes = base64ToUint8Array(encoded);
+  if (compressed) {
+    if (
+      typeof DecompressionStream === 'undefined' ||
+      typeof ReadableStream === 'undefined' ||
+      typeof Response === 'undefined'
+    ) {
+      throw new Error('المتصفح الحالي لا يدعم فك ضغط gzip للنسخة الاحتياطية.');
+    }
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+    const gunzipStream = source.pipeThrough(
+      new DecompressionStream('gzip') as unknown as TransformStream<Uint8Array, Uint8Array>
+    );
+    const outBuf = await new Response(gunzipStream).arrayBuffer();
+    return new TextDecoder().decode(new Uint8Array(outBuf));
+  }
+
+  return new TextDecoder().decode(bytes);
+}
+
+/**
+ * Splits serialized string into chunks of at most maxChars characters (default 700,000).
+ */
+export function splitIntoChunks(
+  encoded: string,
+  maxChars: number = CHUNK_MAX_CHARS
+): string[] {
+  if (!encoded) return [''];
+  const chunks: string[] = [];
+  for (let i = 0; i < encoded.length; i += maxChars) {
+    chunks.push(encoded.slice(i, i + maxChars));
+  }
+  return chunks;
+}
+
+/**
+ * Computes SHA-256 hex digest of a string (for payload checksum after compression).
+ */
+export async function computeTextSha256Hex(text: string): Promise<string> {
+  const bytes = new TextEncoder().encode(text);
+  if (typeof crypto !== 'undefined' && crypto.subtle && typeof crypto.subtle.digest === 'function') {
+    const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
+    return Array.from(new Uint8Array(hashBuffer))
+      .map(b => b.toString(16).padStart(2, '0'))
+      .join('');
+  }
+  let h = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    h = ((h << 5) - h + bytes[i]) | 0;
+  }
+  return Math.abs(h).toString(16).padStart(64, '0');
+}
+
+export function extractTimestampMs(ts: unknown): number {
+  if (!ts) return 0;
+  if (typeof ts === 'number') return ts;
+  if (ts instanceof Date) return ts.getTime();
+  if (typeof ts === 'string') {
+    const parsed = Date.parse(ts);
+    return Number.isNaN(parsed) ? 0 : parsed;
+  }
+  if (typeof ts === 'object') {
+    const obj = ts as { toMillis?: () => number; toDate?: () => Date; seconds?: number };
+    if (typeof obj.toMillis === 'function') return obj.toMillis();
+    if (typeof obj.toDate === 'function') return obj.toDate().getTime();
+    if (typeof obj.seconds === 'number') return obj.seconds * 1000;
+  }
+  return 0;
+}
+
+function isPermissionDeniedError(err: unknown): boolean {
+  const obj = (err && typeof err === 'object' ? err : {}) as { code?: unknown; message?: unknown };
+  const code = typeof obj.code === 'string' ? obj.code.toLowerCase() : '';
+  const msg = typeof obj.message === 'string' ? obj.message.toLowerCase() : String(err ?? '').toLowerCase();
+  return (
+    code.includes('permission-denied') ||
+    msg.includes('permission-denied') ||
+    msg.includes('missing or insufficient permissions')
+  );
+}
+
+function isTransientNetworkError(err: unknown): boolean {
+  const obj = (err && typeof err === 'object' ? err : {}) as { code?: unknown; message?: unknown };
+  const code = typeof obj.code === 'string' ? obj.code.toLowerCase() : '';
+  const msg = typeof obj.message === 'string' ? obj.message.toLowerCase() : String(err ?? '').toLowerCase();
+  return (
+    code.includes('unavailable') ||
+    code.includes('network-request-failed') ||
+    code.includes('deadline-exceeded') ||
+    code.includes('aborted') ||
+    msg.includes('unavailable') ||
+    msg.includes('network') ||
+    msg.includes('offline') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('timeout')
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Cloud Backup Service
+// ---------------------------------------------------------------------------
+
+class CloudBackupService {
+  private isUploading = false;
+  private permissionPaused = false;
+  private lastError: string | null = null;
+  private dropAlert: string | null = null;
+  private listeners: (() => void)[] = [];
+  private retryBaseDelayMs = 400;
+
+  public setRetryDelayMsForTesting(delayMs: number): void {
+    this.retryBaseDelayMs = delayMs;
+  }
+
+  public resetInternalStateForTesting(): void {
+    this.isUploading = false;
+    this.permissionPaused = false;
+    this.lastError = null;
+    this.dropAlert = null;
+  }
+
+  public subscribe(cb: () => void): () => void {
+    this.listeners.push(cb);
+    return () => {
+      this.listeners = this.listeners.filter(l => l !== cb);
+    };
+  }
+
+  private notifyListeners(): void {
+    for (const cb of this.listeners) {
+      try { cb(); } catch {}
+    }
+  }
+
+  public isUploadInProgress(): boolean {
+    return this.isUploading;
+  }
+
+  public isPermissionPaused(): boolean {
+    return this.permissionPaused;
+  }
+
+  public resetPermissionPause(): void {
+    if (this.permissionPaused) {
+      this.permissionPaused = false;
+      this.notifyListeners();
+    }
+  }
+
+  public getLastError(): string | null {
+    return this.lastError;
+  }
+
+  public getDropAlert(): string | null {
+    return this.dropAlert;
+  }
+
+  public clearDropAlert(): void {
+    this.dropAlert = null;
+    this.notifyListeners();
+  }
+
+  public getLastSuccessfulBackup(): CloudBackupSummary | null {
+    if (typeof localStorage === 'undefined') return null;
+    try {
+      const raw = localStorage.getItem(LOCAL_KEYS.LAST_BACKUP_META);
+      return raw ? (JSON.parse(raw) as CloudBackupSummary) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private saveLastSuccessfulBackup(summary: CloudBackupSummary, dataChecksum: string, cairoDate: string): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(LOCAL_KEYS.LAST_BACKUP_META, JSON.stringify(summary));
+      localStorage.setItem(LOCAL_KEYS.LAST_DATA_CHECKSUM, dataChecksum);
+      localStorage.setItem(LOCAL_KEYS.LAST_DAILY_CAIRO_DATE, cairoDate);
+    } catch {}
+  }
+
+  private getLastUploadedDataChecksum(): string | null {
+    if (typeof localStorage === 'undefined') return null;
+    try {
+      return localStorage.getItem(LOCAL_KEYS.LAST_DATA_CHECKSUM);
+    } catch {
+      return null;
+    }
+  }
+
+  private async runWithTransientRetry<T>(fn: () => Promise<T>, maxRetries: number = 2): Promise<T> {
+    let attempt = 0;
+    while (true) {
+      try {
+        return await fn();
+      } catch (err) {
+        if (isPermissionDeniedError(err) || !isTransientNetworkError(err) || attempt >= maxRetries) {
+          throw err;
+        }
+        attempt++;
+        const delayMs = this.retryBaseDelayMs * Math.pow(2, attempt - 1);
+        if (delayMs > 0) {
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+        }
+      }
+    }
+  }
+
+  private async deleteBackupAndChunks(
+    firestoreDb: Firestore,
+    orgId: string,
+    branchId: string,
+    backupId: string
+  ): Promise<void> {
+    const chunksCol = collection(
+      firestoreDb,
+      'orgs',
+      orgId,
+      'branches',
+      branchId,
+      'backups',
+      backupId,
+      'chunks'
+    );
+    const chunkSnap = await getDocs(chunksCol);
+    const chunkDocs = chunkSnap.docs || [];
+
+    // Delete chunks in batches <= 400 first
+    for (let i = 0; i < chunkDocs.length; i += 400) {
+      const batch = writeBatch(firestoreDb);
+      const slice = chunkDocs.slice(i, i + 400);
+      for (const cDoc of slice) {
+        batch.delete(cDoc.ref);
+      }
+      await batch.commit();
+    }
+
+    // Then delete metadata doc
+    const backupRef = doc(firestoreDb, 'orgs', orgId, 'branches', branchId, 'backups', backupId);
+    await deleteDoc(backupRef);
+  }
+
+  private toSummary(id: string, meta: BackupMetadata): CloudBackupSummary {
+    const ms = extractTimestampMs(meta.createdAt) || Date.now();
+    return {
+      id,
+      createdAtIso: new Date(ms).toISOString(),
+      createdAtMs: ms,
+      sizeBytes: Number(meta.sizeBytes) || 0,
+      appVersion: meta.appVersion || APP_VERSION,
+      totalChunks: Number(meta.totalChunks) || 1,
+      totalProducts: Number(meta.totalProducts) || 0,
+      totalInvoices: Number(meta.totalInvoices) || 0,
+      totalCustomers: Number(meta.totalCustomers) || 0,
+      checksum: meta.checksum || '',
+      dataChecksum: meta.dataChecksum,
+      compressed: Boolean(meta.compressed),
+      schemaVersion: Number(meta.schemaVersion) || CURRENT_SCHEMA_VERSION,
+      trigger: meta.trigger,
+      note: meta.note,
+      status: 'complete',
+    };
+  }
+
+  /**
+   * Lists complete cloud backups (sorted newest first).
+   * Excludes any incomplete backups (`status !== 'complete'`).
+   * Cleans up stale incomplete backups older than 24h in background.
+   */
+  public async listCompleteBackups(): Promise<{
+    success: boolean;
+    backups: CloudBackupSummary[];
+    error?: string;
+  }> {
+    if (!isCloudConfigured || !db || !auth) {
+      return { success: false, backups: [], error: 'السحابة غير مُعدّة بعد.' };
+    }
+    const context = orgSyncService.getContext();
+    if (!context) {
+      return { success: false, backups: [], error: 'لا يوجد ترخيص سارٍ لتحديد المنشأة والفرع.' };
+    }
+    const authStatus = orgSyncService.ensureSignedIn();
+    if (authStatus !== 'ok') {
+      return {
+        success: false,
+        backups: [],
+        error:
+          authStatus === 'wrong-account'
+            ? 'الحساب المسجّل لا يطابق ترخيص الجهاز.'
+            : 'يجب تسجيل دخول المحل للسحابة أولاً.',
+      };
+    }
+
+    try {
+      const backupsCol = collection(db, 'orgs', context.orgId, 'branches', context.branchId, 'backups');
+      const snap = await this.runWithTransientRetry(() => getDocs(backupsCol));
+
+      const completeList: CloudBackupSummary[] = [];
+      const staleIncompleteIds: string[] = [];
+      const nowMs = Date.now();
+
+      for (const docSnap of snap.docs) {
+        const raw = docSnap.data() as { metadata?: BackupMetadata };
+        const meta = raw?.metadata;
+        if (!meta) continue;
+
+        if (meta.status !== 'complete') {
+          const createdMs = extractTimestampMs(meta.createdAt);
+          if (createdMs > 0 && nowMs - createdMs > STALE_INCOMPLETE_BACKUP_MS) {
+            staleIncompleteIds.push(docSnap.id);
+          }
+          continue;
+        }
+
+        completeList.push(this.toSummary(docSnap.id, meta));
+      }
+
+      completeList.sort((a, b) => {
+        if (b.createdAtMs !== a.createdAtMs) return b.createdAtMs - a.createdAtMs;
+        return b.id.localeCompare(a.id);
+      });
+
+      if (completeList.length > 0 && typeof localStorage !== 'undefined') {
+        try {
+          localStorage.setItem(LOCAL_KEYS.LAST_BACKUP_META, JSON.stringify(completeList[0]));
+        } catch {}
+      }
+
+      // Best-effort cleanup of stale incomplete backups (> 24h)
+      if (staleIncompleteIds.length > 0 && !this.permissionPaused) {
+        for (const staleId of staleIncompleteIds) {
+          this.deleteBackupAndChunks(db, context.orgId, context.branchId, staleId).catch(() => {});
+        }
+      }
+
+      return { success: true, backups: completeList };
+    } catch (err) {
+      const translated = translateFirebaseError(err);
+      if (isPermissionDeniedError(err)) {
+        this.permissionPaused = true;
+      }
+      this.lastError = translated;
+      this.notifyListeners();
+      return { success: false, backups: [], error: translated };
+    }
+  }
+
+  /**
+   * Checks daily backup status and creates today's backup once per Cairo calendar day.
+   * Non-blocking for app startup.
+   */
+  public async checkAndCreateDailyBackup(): Promise<CloudBackupOperationResult> {
+    if (!storage.isStorageReady()) {
+      return { success: false, skipped: true, reason: 'in_progress' };
+    }
+    const todayCairo = getCairoDateString(new Date());
+    if (typeof localStorage !== 'undefined') {
+      try {
+        if (localStorage.getItem(LOCAL_KEYS.LAST_DAILY_CAIRO_DATE) === todayCairo) {
+          return { success: true, skipped: true, reason: 'no_changes', message: 'تم أخذ النسخة السحابية اليومية لهذا اليوم مسبقاً.' };
+        }
+      } catch {}
+    }
+
+    return this.createAndUploadBackup('daily');
+  }
+
+  /**
+   * Triggered automatically after shift closure.
+   */
+  public async onShiftClosed(): Promise<CloudBackupOperationResult> {
+    return this.createAndUploadBackup('shift_close', 'إغلاق وردية تلقائي');
+  }
+
+  /**
+   * Creates, strips credentials, gzips, chunks (<= 700k chars), and uploads backup to Firestore.
+   */
+  public async createAndUploadBackup(
+    trigger: CloudBackupTrigger = 'manual',
+    note?: string,
+    options?: { forceDisableCompression?: boolean; forceIgnoreDrop?: boolean }
+  ): Promise<CloudBackupOperationResult> {
+    if (this.isUploading) {
+      return { success: false, skipped: true, reason: 'in_progress', error: 'عملية رفع نسخة احتياطية جارية بالفعل.' };
+    }
+    if (!isCloudConfigured || !db || !auth) {
+      return { success: false, skipped: true, reason: 'unconfigured', error: 'السحابة غير مُعدّة بعد.' };
+    }
+    if (this.permissionPaused && trigger !== 'manual') {
+      return { success: false, skipped: true, reason: 'permission_paused' };
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return { success: false, skipped: true, reason: 'offline', error: 'لا يوجد اتصال بالإنترنت حالياً.' };
+    }
+
+    const context = orgSyncService.getContext();
+    if (!context) {
+      return { success: false, skipped: true, reason: 'no_license', error: 'لا يوجد ترخيص سارٍ لتحديد المنشأة والفرع.' };
+    }
+
+    const authStatus = orgSyncService.ensureSignedIn();
+    if (authStatus !== 'ok') {
+      return {
+        success: false,
+        skipped: true,
+        reason: authStatus === 'wrong-account' ? 'wrong_account' : 'needs_login',
+        error:
+          authStatus === 'wrong-account'
+            ? 'الحساب المسجّل لا يطابق ترخيص الجهاز (orgId).'
+            : 'يجب تسجيل دخول المحل للسحابة أولاً.',
+      };
+    }
+
+    this.isUploading = true;
+    this.notifyListeners();
+
+    try {
+      const rawData = snapshotService.getCurrentBusinessData();
+      const sanitizedData = stripUserCredentialsFromData(rawData);
+
+      const totalProducts = Array.isArray(sanitizedData.products) ? sanitizedData.products.length : 0;
+      const totalInvoices = Array.isArray(sanitizedData.invoices) ? sanitizedData.invoices.length : 0;
+      const totalCustomers = Array.isArray(sanitizedData.customers) ? sanitizedData.customers.length : 0;
+
+      // 1. Refuse empty data
+      if (totalProducts === 0 && totalInvoices === 0 && totalCustomers === 0) {
+        return {
+          success: false,
+          reason: 'empty_data',
+          error: 'بيانات المحل فارغة، تم إيقاف الرفع السحابي لحماية النسخ الاحتياطية.',
+        };
+      }
+
+      // 2. Compare change-detection fingerprint against last successful cloud backup
+      // Exclude self-generated cloud-backup audit entries so logging a backup doesn't force an extra upload
+      const sanitizedForFingerprint: Record<string, any> = {
+        ...sanitizedData,
+        auditLogs: Array.isArray(sanitizedData.auditLogs)
+          ? sanitizedData.auditLogs.filter((entry: any) => entry?.entity !== 'النسخ السحابي')
+          : sanitizedData.auditLogs,
+      };
+      const changeChecksum = await computeDataChecksum(sanitizedForFingerprint);
+      const lastDataChecksum = this.getLastUploadedDataChecksum();
+      const todayCairo = getCairoDateString(new Date());
+
+      if (lastDataChecksum && lastDataChecksum === changeChecksum) {
+        if (trigger === 'daily' && typeof localStorage !== 'undefined') {
+          try {
+            localStorage.setItem(LOCAL_KEYS.LAST_DAILY_CAIRO_DATE, todayCairo);
+          } catch {}
+        }
+        return {
+          success: true,
+          skipped: true,
+          reason: 'no_changes',
+          message: 'لا توجد تغييرات في البيانات منذ آخر نسخة سحابية ناجحة.',
+        };
+      }
+
+      // 3. Check > 30% drop compared to the newest healthy complete cloud backup
+      if (!options?.forceIgnoreDrop) {
+        let baseline = this.getLastSuccessfulBackup();
+        if (!baseline) {
+          const remoteList = await this.listCompleteBackups();
+          if (remoteList.success && remoteList.backups.length > 0) {
+            baseline = remoteList.backups[0];
+          }
+        }
+
+        if (baseline) {
+          const checks = [
+            { oldVal: baseline.totalProducts, newVal: totalProducts, label: 'الأصناف' },
+            { oldVal: baseline.totalInvoices, newVal: totalInvoices, label: 'الفواتير' },
+            { oldVal: baseline.totalCustomers, newVal: totalCustomers, label: 'العملاء' },
+          ];
+
+          for (const c of checks) {
+            if (c.oldVal > 0 && c.newVal < c.oldVal) {
+              const dropRatio = (c.oldVal - c.newVal) / c.oldVal;
+              if (dropRatio > 0.3) {
+                const pct = Math.round(dropRatio * 100);
+                const msg = `تحذير: انخفض عدد ${c.label} بنسبة ${pct}% مقارنة بآخر نسخة سحابية مكتملة (${c.oldVal} ← ${c.newVal})، تم إيقاف الرفع السحابي لحماية النسخة السليمة.`;
+                this.dropAlert = msg;
+                this.lastError = msg;
+                this.notifyListeners();
+                return {
+                  success: false,
+                  reason: 'suspicious_drop',
+                  error: msg,
+                };
+              }
+            }
+          }
+        }
+      }
+
+      this.dropAlert = null;
+
+      // 4. Package JSON with inner SHA-256 checksum (compatible with snapshotService.validateBackup)
+      const fullPackageDataChecksum = await computeDataChecksum(sanitizedData);
+      const pkg: ExportBackupPackage = {
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        appVersion: APP_VERSION,
+        timestamp: new Date().toISOString(),
+        recordCounts: {
+          products: totalProducts,
+          invoices: totalInvoices,
+          customers: totalCustomers,
+          suppliers: Array.isArray(sanitizedData.suppliers) ? sanitizedData.suppliers.length : 0,
+          purchases: Array.isArray(sanitizedData.purchases) ? sanitizedData.purchases.length : 0,
+          cashMovements: Array.isArray(sanitizedData.cashMovements) ? sanitizedData.cashMovements.length : 0,
+          expenses: Array.isArray(sanitizedData.expenses) ? sanitizedData.expenses.length : 0,
+          auditLogs: Array.isArray(sanitizedData.auditLogs) ? sanitizedData.auditLogs.length : 0,
+          stockAdjustments: Array.isArray(sanitizedData.stockAdjustments) ? sanitizedData.stockAdjustments.length : 0,
+          users: Array.isArray(sanitizedData.users) ? sanitizedData.users.length : 0,
+          parkedCarts: Array.isArray(sanitizedData.parkedCarts) ? sanitizedData.parkedCarts.length : 0,
+          salesReturns: Array.isArray(sanitizedData.salesReturns) ? sanitizedData.salesReturns.length : 0,
+        },
+        checksum: fullPackageDataChecksum,
+        data: sanitizedData,
+      };
+
+      const jsonStr = JSON.stringify(pkg);
+      const { encoded, compressed } = await compressStringToBase64(jsonStr, {
+        forceDisableCompression: options?.forceDisableCompression,
+      });
+
+      const payloadChecksum = await computeTextSha256Hex(encoded);
+      const chunks = splitIntoChunks(encoded, CHUNK_MAX_CHARS);
+      const sizeBytes = new TextEncoder().encode(encoded).length;
+
+      const backupId = `backup_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const backupRef = doc(
+        db,
+        'orgs',
+        context.orgId,
+        'branches',
+        context.branchId,
+        'backups',
+        backupId
+      );
+
+      // 5a. Write metadata document with status: 'uploading'
+      const metadataPayload: Record<string, any> = {
+        status: 'uploading',
+        createdAt: serverTimestamp(),
+        sizeBytes,
+        appVersion: APP_VERSION,
+        totalChunks: chunks.length,
+        totalProducts,
+        totalInvoices,
+        totalCustomers,
+        checksum: payloadChecksum,
+        dataChecksum: changeChecksum,
+        compressed,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        trigger,
+      };
+      if (note && note.trim()) {
+        metadataPayload.note = note.trim();
+      }
+
+      await this.runWithTransientRetry(() =>
+        setDoc(backupRef, {
+          id: backupId,
+          metadata: metadataPayload,
+        })
+      );
+
+      // 5b. Upload chunks in writeBatch commits <= 3 MB each
+      let batch = writeBatch(db);
+      let currentBatchBytes = 0;
+      let currentBatchOps = 0;
+
+      for (let i = 0; i < chunks.length; i++) {
+        const chunkData = chunks[i];
+        const estimatedBytes = chunkData.length + 256;
+
+        if (currentBatchOps > 0 && (currentBatchBytes + estimatedBytes > MAX_BATCH_BYTES || currentBatchOps >= 400)) {
+          const batchToCommit = batch;
+          await this.runWithTransientRetry(() => batchToCommit.commit());
+          batch = writeBatch(db);
+          currentBatchBytes = 0;
+          currentBatchOps = 0;
+        }
+
+        const chunkRef = doc(
+          db,
+          'orgs',
+          context.orgId,
+          'branches',
+          context.branchId,
+          'backups',
+          backupId,
+          'chunks',
+          String(i)
+        );
+        batch.set(chunkRef, {
+          chunkIndex: i,
+          data: chunkData,
+        });
+        currentBatchBytes += estimatedBytes;
+        currentBatchOps++;
+      }
+
+      if (currentBatchOps > 0) {
+        const finalBatch = batch;
+        await this.runWithTransientRetry(() => finalBatch.commit());
+      }
+
+      // 5c. Mark backup metadata complete
+      await this.runWithTransientRetry(() =>
+        updateDoc(backupRef, {
+          'metadata.status': 'complete',
+        })
+      );
+
+      const summary: CloudBackupSummary = {
+        id: backupId,
+        createdAtIso: new Date().toISOString(),
+        createdAtMs: Date.now(),
+        sizeBytes,
+        appVersion: APP_VERSION,
+        totalChunks: chunks.length,
+        totalProducts,
+        totalInvoices,
+        totalCustomers,
+        checksum: payloadChecksum,
+        dataChecksum: changeChecksum,
+        compressed,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        trigger,
+        note: note?.trim() || undefined,
+        status: 'complete',
+      };
+
+      this.permissionPaused = false;
+      this.lastError = null;
+      this.saveLastSuccessfulBackup(summary, changeChecksum, todayCairo);
+
+      // 6. Enforce retention: keep newest 7 complete backups (never delete the latest complete backup)
+      //    and clean up stale incomplete backups (> 24h)
+      await this.enforceRetentionAndCleanup(
+        context.orgId,
+        context.branchId,
+        CLOUD_BACKUP_KEEP_COUNT,
+        backupId
+      );
+
+      storage.addAuditLog(
+        'BACKUP',
+        'نسخة احتياطية سحابية',
+        'النسخ السحابي',
+        backupId,
+        `تم رفع نسخة احتياطية سحابية مقسمة إلى ${chunks.length} قطعة (${(sizeBytes / 1024).toFixed(1)} ك.ب${compressed ? ' مضغوطة' : ''})`
+      );
+
+      this.notifyListeners();
+      return {
+        success: true,
+        backup: summary,
+        message: 'تم رفع النسخة الاحتياطية السحابية وتأمينها بنجاح.',
+      };
+    } catch (err) {
+      const translated = translateFirebaseError(err);
+      if (isPermissionDeniedError(err)) {
+        this.permissionPaused = true;
+      }
+      this.lastError = translated;
+      this.notifyListeners();
+      return {
+        success: false,
+        reason: isPermissionDeniedError(err) ? 'permission_paused' : 'error',
+        error: translated,
+      };
+    } finally {
+      this.isUploading = false;
+      this.notifyListeners();
+    }
+  }
+
+  /**
+   * Keeps newest 7 complete backups (NEVER deletes the newest complete backup)
+   * and removes stale incomplete backups older than 24 hours.
+   */
+  public async enforceRetentionAndCleanup(
+    orgId: string,
+    branchId: string,
+    keepCount: number = CLOUD_BACKUP_KEEP_COUNT,
+    protectedLatestId?: string
+  ): Promise<{ deletedCompleteCount: number; deletedStaleCount: number }> {
+    if (!db) return { deletedCompleteCount: 0, deletedStaleCount: 0 };
+
+    let deletedCompleteCount = 0;
+    let deletedStaleCount = 0;
+
+    try {
+      const backupsCol = collection(db, 'orgs', orgId, 'branches', branchId, 'backups');
+      const snap = await getDocs(backupsCol);
+
+      const completeDocs: { id: string; createdAtMs: number }[] = [];
+      const staleIncompleteIds: string[] = [];
+      const nowMs = Date.now();
+
+      for (const docSnap of snap.docs) {
+        const raw = docSnap.data() as { metadata?: BackupMetadata };
+        const meta = raw?.metadata;
+        if (!meta) continue;
+        let createdAtMs = extractTimestampMs(meta.createdAt);
+        if (createdAtMs === 0) {
+          const idTsMatch = docSnap.id.match(/^backup_(\d+)_/);
+          if (idTsMatch) {
+            createdAtMs = Number(idTsMatch[1]) || 0;
+          }
+        }
+
+        if (meta.status === 'complete') {
+          completeDocs.push({
+            id: docSnap.id,
+            createdAtMs: docSnap.id === protectedLatestId ? Math.max(createdAtMs, nowMs) : createdAtMs,
+          });
+        } else if (createdAtMs > 0 && nowMs - createdAtMs > STALE_INCOMPLETE_BACKUP_MS) {
+          staleIncompleteIds.push(docSnap.id);
+        }
+      }
+
+      // Sort newest first; NEVER delete index 0 (newest complete backup)
+      completeDocs.sort((a, b) => {
+        if (b.createdAtMs !== a.createdAtMs) return b.createdAtMs - a.createdAtMs;
+        return b.id.localeCompare(a.id);
+      });
+
+      const safeKeep = Math.max(1, keepCount);
+      const excess = completeDocs
+        .slice(safeKeep)
+        .filter(item => item.id !== protectedLatestId);
+      for (const item of excess) {
+        try {
+          await this.deleteBackupAndChunks(db, orgId, branchId, item.id);
+          deletedCompleteCount++;
+        } catch (err) {
+          if (isPermissionDeniedError(err)) {
+            this.permissionPaused = true;
+            break;
+          }
+        }
+      }
+
+      for (const staleId of staleIncompleteIds) {
+        try {
+          await this.deleteBackupAndChunks(db, orgId, branchId, staleId);
+          deletedStaleCount++;
+        } catch (err) {
+          if (isPermissionDeniedError(err)) {
+            this.permissionPaused = true;
+            break;
+          }
+        }
+      }
+    } catch {
+      // Best effort cleanup
+    }
+
+    return { deletedCompleteCount, deletedStaleCount };
+  }
+
+  /**
+   * Deletes a specific cloud backup (refuses to delete the latest complete backup).
+   */
+  public async deleteCloudBackup(backupId: string): Promise<{ success: boolean; error?: string }> {
+    if (!isCloudConfigured || !db || !auth) {
+      return { success: false, error: 'السحابة غير مُعدّة بعد.' };
+    }
+    const context = orgSyncService.getContext();
+    if (!context) {
+      return { success: false, error: 'لا يوجد ترخيص سارٍ.' };
+    }
+    if (orgSyncService.ensureSignedIn() !== 'ok') {
+      return { success: false, error: 'يجب تسجيل دخول المحل أولاً.' };
+    }
+
+    try {
+      const listRes = await this.listCompleteBackups();
+      if (listRes.success && listRes.backups.length > 0 && listRes.backups[0].id === backupId) {
+        return {
+          success: false,
+          error: 'لا يمكن حذف أحدث نسخة احتياطية مكتملة حمايةً لبيانات المحل.',
+        };
+      }
+
+      await this.deleteBackupAndChunks(db, context.orgId, context.branchId, backupId);
+      return { success: true };
+    } catch (err) {
+      return { success: false, error: translateFirebaseError(err) };
+    }
+  }
+
+  /**
+   * Downloads backup metadata and all chunks with progress, verifies SHA-256 checksum,
+   * decompresses payload, and validates via snapshotService.validateBackup.
+   */
+  public async downloadAndValidateBackup(
+    backupId: string,
+    onProgress?: (progress: CloudRestoreDownloadProgress) => void
+  ): Promise<CloudDownloadValidationResult> {
+    if (!isCloudConfigured || !db || !auth) {
+      return { success: false, error: 'السحابة غير مُعدّة بعد.' };
+    }
+    const context = orgSyncService.getContext();
+    if (!context) {
+      return { success: false, error: 'لا يوجد ترخيص سارٍ لتحديد المنشأة والفرع.' };
+    }
+    const authStatus = orgSyncService.ensureSignedIn();
+    if (authStatus !== 'ok') {
+      return {
+        success: false,
+        error:
+          authStatus === 'wrong-account'
+            ? 'الحساب المسجّل لا يطابق ترخيص الجهاز.'
+            : 'يجب تسجيل دخول المحل للسحابة أولاً.',
+      };
+    }
+
+    try {
+      const backupRef = doc(
+        db,
+        'orgs',
+        context.orgId,
+        'branches',
+        context.branchId,
+        'backups',
+        backupId
+      );
+      const backupSnap = await this.runWithTransientRetry(() => getDoc(backupRef));
+      if (!backupSnap.exists()) {
+        return { success: false, error: 'النسخة السحابية المطلوبة غير موجودة.' };
+      }
+
+      const raw = backupSnap.data() as { metadata?: BackupMetadata };
+      const meta = raw?.metadata;
+      if (!meta || meta.status !== 'complete') {
+        return {
+          success: false,
+          error: 'هذه النسخة غير مكتملة الرفع ولا يمكن استعادتها.',
+        };
+      }
+
+      const totalChunks = Number(meta.totalChunks) || 0;
+      if (totalChunks <= 0) {
+        return { success: false, error: 'بيانات عدد القطع في النسخة السحابية غير صالحة.' };
+      }
+
+      const chunkStrings: string[] = [];
+      for (let i = 0; i < totalChunks; i++) {
+        const chunkRef = doc(
+          db,
+          'orgs',
+          context.orgId,
+          'branches',
+          context.branchId,
+          'backups',
+          backupId,
+          'chunks',
+          String(i)
+        );
+        const chunkSnap = await this.runWithTransientRetry(() => getDoc(chunkRef));
+        if (!chunkSnap.exists()) {
+          return {
+            success: false,
+            error: `القطعة رقم (${i + 1} من ${totalChunks}) مفقودة من السحابة، النسخة غير مكتملة.`,
+          };
+        }
+        const chunkData = (chunkSnap.data() as { data?: unknown })?.data;
+        if (typeof chunkData !== 'string') {
+          return {
+            success: false,
+            error: `تنسيق القطعة رقم (${i + 1}) غير صالح.`,
+          };
+        }
+        chunkStrings.push(chunkData);
+
+        if (onProgress) {
+          onProgress({
+            loadedChunks: i + 1,
+            totalChunks,
+            percent: Math.round(((i + 1) / totalChunks) * 100),
+          });
+        }
+      }
+
+      const reassembled = chunkStrings.join('');
+
+      if (meta.checksum) {
+        const computedPayloadChecksum = await computeTextSha256Hex(reassembled);
+        if (computedPayloadChecksum !== meta.checksum) {
+          return {
+            success: false,
+            error: 'فشل التحقق من التوقيع الرقمي (SHA-256) للنسخة السحابية. البيانات تالفة أو ناقصة.',
+          };
+        }
+      }
+
+      const jsonStr = await decompressBase64ToString(reassembled, Boolean(meta.compressed));
+      const validation = await snapshotService.validateBackup(jsonStr);
+      if (!validation.valid || !validation.validatedData || !validation.preview) {
+        return {
+          success: false,
+          error: validation.error || 'فشل التحقق من بنية النسخة السحابية.',
+        };
+      }
+
+      return {
+        success: true,
+        warning: validation.warning,
+        backup: this.toSummary(backupSnap.id, meta),
+        preview: validation.preview,
+        validatedData: validation.validatedData,
+      };
+    } catch (err) {
+      const translated = translateFirebaseError(err);
+      return { success: false, error: translated };
+    }
+  }
+
+  /**
+   * Executes transactional restore via snapshotService and triggers post-restore
+   * credential setup (`credentialsResetRequired = true`, clears active user).
+   */
+  public async executeCloudRestore(
+    validatedData: Record<string, any>,
+    sourceLabel: string = 'النسخة السحابية',
+    options?: {
+      simulateFailureInTransaction?: boolean;
+      simulatePreRestoreFailure?: boolean;
+    }
+  ): Promise<{ success: boolean; error?: string }> {
+    const res = await snapshotService.restoreData(validatedData, sourceLabel, options);
+    if (!res.success) {
+      return res;
+    }
+
+    storage.setCredentialsResetRequired(true);
+    storage.clearActiveUser();
+    try {
+      await storage.flush();
+    } catch {}
+
+    this.notifyListeners();
+    return { success: true };
+  }
+}
+
+export const cloudBackupService = new CloudBackupService();
