@@ -134,8 +134,9 @@ export default function App() {
           console.warn('Daily snapshot error:', err);
         });
 
-        // Trigger non-blocking daily cloud backup (once per Cairo calendar day)
+        // Trigger non-blocking daily cloud backup (once per Cairo calendar day) and start 30-min periodic backup
         cloudBackupService.checkAndCreateDailyBackup().catch(() => {});
+        cloudBackupService.startPeriodicBackup();
 
         // 4) Check backup reminder (7 days without manual export) (Requirement ثانياً: 4)
         const reminder = snapshotService.getReminderStatus();
@@ -186,7 +187,6 @@ export default function App() {
     });
 
     const unsubAction = storage.onAction((actionName) => {
-      cloudService.triggerAutoSyncOnAction(actionName);
       if (actionName === 'SHIFT_CLOSED') {
         snapshotService.createSnapshot('shift_close').catch(err => {
           console.warn('Shift close snapshot error:', err);
@@ -227,6 +227,7 @@ export default function App() {
       unsubWriteError();
       unsubDropAlert();
       orgSyncService.stopService();
+      cloudBackupService.stopPeriodicBackup();
       // Requirement 2: Do NOT call tabLockService.releaseLock() in useEffect cleanup.
       // The lock is released by the browser on window/tab close.
     };

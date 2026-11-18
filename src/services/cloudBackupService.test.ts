@@ -260,8 +260,10 @@ import {
   compressStringToBase64,
   decompressBase64ToString,
   splitIntoChunks,
+  selectBackupsToKeepAndDelete,
   CHUNK_MAX_CHARS,
   MAX_BATCH_BYTES,
+  PERIODIC_BACKUP_INTERVAL_MS,
   STALE_INCOMPLETE_BACKUP_MS,
 } from './cloudBackupService';
 import { snapshotService } from './snapshotService';
@@ -535,18 +537,20 @@ describe('Cloud Backup Service — Chunked Gzip Backup, Retention, Integrity & C
     expect(dlIncomplete.error).toContain('غير مكتملة');
   });
 
-  // 4. Retention policy (keep newest 7, delete chunks before metadata doc, never delete newest)
-  it('(4) الاحتفاظ بآخر 7 نسخ مكتملة فقط وحذف chunks قبل وثيقة النسخة وعدم حذف أحدث نسخة أبداً', async () => {
-    const now = Date.now();
+  // 4. New retention policy: latest of each day for last 7 days + latest 6 inside today, delete chunks before doc, never delete newest
+  it('(4) سياسة الاحتفاظ الجديدة: آخر نسخة من كل يوم لآخر 7 أيام + آخر 6 نسخ لليوم الحالي وحذف الأقدم دون حذف أحدث نسخة أبداً', async () => {
     const basePrefix = 'orgs/org_test_1/branches/main/backups';
+    // Pin a fixed Cairo midday anchor: 2026-11-15T10:00:00Z (12:00 PM Cairo)
+    const todayNoonMs = Date.parse('2026-11-15T10:00:00Z');
+    const todayCairo = '2026-11-15';
+    const dayMs = 24 * 60 * 60 * 1000;
 
-    for (let i = 1; i <= 9; i++) {
-      const id = `backup_ret_${i}`;
+    const addMockBackup = (id: string, createdAtMs: number) => {
       firestoreMockState.docs.set(`${basePrefix}/${id}`, {
         id,
         metadata: {
           status: 'complete',
-          createdAt: { __timestampMs: now - (10 - i) * 3_600_000 },
+          createdAt: { __timestampMs: createdAtMs },
           sizeBytes: 500,
           appVersion: '2.0.0',
           totalChunks: 2,
@@ -560,23 +564,62 @@ describe('Cloud Backup Service — Chunked Gzip Backup, Retention, Integrity & C
       });
       firestoreMockState.docs.set(`${basePrefix}/${id}/chunks/0`, { chunkIndex: 0, data: 'c0' });
       firestoreMockState.docs.set(`${basePrefix}/${id}/chunks/1`, { chunkIndex: 1, data: 'c1' });
+    };
+
+    // Today: 8 backups (oldest 2: today_1, today_2 should be deleted; newest 6: today_3..today_8 kept)
+    for (let i = 1; i <= 8; i++) {
+      addMockBackup(`backup_today_${i}`, todayNoonMs - (9 - i) * 60_000);
     }
+
+    // Yesterday (day -1): 3 backups -> only newest (day1_3) kept; day1_1 & day1_2 deleted
+    addMockBackup('backup_day1_1', todayNoonMs - 1 * dayMs - 120_000);
+    addMockBackup('backup_day1_2', todayNoonMs - 1 * dayMs - 60_000);
+    addMockBackup('backup_day1_3', todayNoonMs - 1 * dayMs);
+
+    // Days -2 .. -6 (within last 7 days window): 1 per day -> all kept
+    for (let d = 2; d <= 6; d++) {
+      addMockBackup(`backup_day${d}`, todayNoonMs - d * dayMs);
+    }
+
+    // Days -7, -8, -9 (older than 7 days): all deleted
+    addMockBackup('backup_old_7', todayNoonMs - 7 * dayMs);
+    addMockBackup('backup_old_8', todayNoonMs - 8 * dayMs);
+    addMockBackup('backup_old_9', todayNoonMs - 9 * dayMs);
 
     const cleanupRes = await cloudBackupService.enforceRetentionAndCleanup(
       'org_test_1',
       'main',
       7,
-      'backup_ret_9'
+      'backup_today_8',
+      todayCairo
     );
-    expect(cleanupRes.deletedCompleteCount).toBe(2);
+    // Deleted: 2 from today + 2 from day-1 + 3 older (>7d) = 7
+    expect(cleanupRes.deletedCompleteCount).toBe(7);
 
-    // Oldest 2 backups and all their chunks must be gone
-    for (const oldId of ['backup_ret_1', 'backup_ret_2']) {
+    // Verify kept: 6 from today + 1 from day-1 + 5 from days -2..-6 = 12
+    for (let i = 3; i <= 8; i++) {
+      expect(firestoreMockState.docs.has(`${basePrefix}/backup_today_${i}`)).toBe(true);
+    }
+    expect(firestoreMockState.docs.has(`${basePrefix}/backup_day1_3`)).toBe(true);
+    for (let d = 2; d <= 6; d++) {
+      expect(firestoreMockState.docs.has(`${basePrefix}/backup_day${d}`)).toBe(true);
+    }
+
+    // Verify deleted + chunks deleted BEFORE metadata doc
+    const expectedDeleted = [
+      'backup_today_1',
+      'backup_today_2',
+      'backup_day1_1',
+      'backup_day1_2',
+      'backup_old_7',
+      'backup_old_8',
+      'backup_old_9',
+    ];
+    for (const oldId of expectedDeleted) {
       expect(firestoreMockState.docs.has(`${basePrefix}/${oldId}`)).toBe(false);
       expect(firestoreMockState.docs.has(`${basePrefix}/${oldId}/chunks/0`)).toBe(false);
       expect(firestoreMockState.docs.has(`${basePrefix}/${oldId}/chunks/1`)).toBe(false);
 
-      // Verify chunk deletion happened BEFORE metadata doc deletion
       const batchDelIdx = firestoreMockState.operationLog.findIndex(
         e => e.op === 'batchDelete' && e.path.startsWith(`${basePrefix}/${oldId}/chunks/`)
       );
@@ -587,20 +630,22 @@ describe('Cloud Backup Service — Chunked Gzip Backup, Retention, Integrity & C
       expect(docDelIdx).toBeGreaterThan(batchDelIdx);
     }
 
-    // Newest 7 remain intact
-    for (let i = 3; i <= 9; i++) {
-      expect(firestoreMockState.docs.has(`${basePrefix}/backup_ret_${i}`)).toBe(true);
-    }
+    // Edge case: even if ALL backups are older than 7 days, newest complete backup MUST NEVER be deleted
+    const oldOnlySelection = selectBackupsToKeepAndDelete(
+      [
+        { id: 'very_old_newest', createdAtMs: todayNoonMs - 14 * dayMs },
+        { id: 'very_old_older', createdAtMs: todayNoonMs - 15 * dayMs },
+      ],
+      todayCairo
+    );
+    expect(oldOnlySelection.keepIds).toContain('very_old_newest');
+    expect(oldOnlySelection.deleteIds).toContain('very_old_older');
 
-    // Even if keepCount is passed as 0, newest complete backup MUST NEVER be deleted
-    await cloudBackupService.enforceRetentionAndCleanup('org_test_1', 'main', 0, 'backup_ret_9');
-    expect(firestoreMockState.docs.has(`${basePrefix}/backup_ret_9`)).toBe(true);
-
-    // And deleteCloudBackup must refuse deleting the newest complete backup
-    const deleteLatestAttempt = await cloudBackupService.deleteCloudBackup('backup_ret_9');
+    // deleteCloudBackup refuses deleting newest complete backup
+    const deleteLatestAttempt = await cloudBackupService.deleteCloudBackup('backup_today_8');
     expect(deleteLatestAttempt.success).toBe(false);
     expect(deleteLatestAttempt.error).toContain('أحدث نسخة');
-    expect(firestoreMockState.docs.has(`${basePrefix}/backup_ret_9`)).toBe(true);
+    expect(firestoreMockState.docs.has(`${basePrefix}/backup_today_8`)).toBe(true);
   });
 
   // 5. Pre-upload safety guards (empty DB, unchanged checksum, >30% drop protection)
@@ -801,5 +846,65 @@ describe('Cloud Backup Service — Chunked Gzip Backup, Retention, Integrity & C
     // Authenticating with the newly set password works normally
     const loginCheck = await authSecurityService.authenticate(origAdmin.id, 'NewDevice2StrongPass!');
     expect(loginCheck.success).toBe(true);
+  });
+
+  // 8. Periodic 30-minute auto backup: uploads only when data changed + preconditions met
+  it('(8) النسخة السحابية الدورية كل 30 دقيقة لا ترفع عند عدم تغير البيانات وترفع عند وجود تغييرات وتوفر الشروط', async () => {
+    storage.loadDemoData();
+
+    // First periodic run -> uploads complete backup with trigger='periodic'
+    const firstPeriodic = await cloudBackupService.runPeriodicBackupCheck();
+    expect(firstPeriodic.success).toBe(true);
+    expect(firstPeriodic.backup?.trigger).toBe('periodic');
+
+    const docsAfterFirst = firestoreMockState.operationLog.filter(o => o.op === 'setDoc').length;
+    expect(docsAfterFirst).toBe(1);
+
+    // Second periodic run with NO changes -> skipped with no_changes and zero Firestore writes
+    const unchangedPeriodic = await cloudBackupService.runPeriodicBackupCheck();
+    expect(unchangedPeriodic.success).toBe(true);
+    expect(unchangedPeriodic.skipped).toBe(true);
+    expect(unchangedPeriodic.reason).toBe('no_changes');
+    expect(firestoreMockState.operationLog.filter(o => o.op === 'setDoc').length).toBe(docsAfterFirst);
+
+    // Mutate data + verify precondition guards (no license / not signed in / offline) skip cleanly
+    const products = storage.getProducts();
+    storage.setItem(STORAGE_KEYS.PRODUCTS, [
+      ...products,
+      { ...products[0], id: 'p_periodic_1', name: 'صنف دوري جديد', barcode: '6220009998881' },
+    ]);
+
+    orgSyncMockState.context = null;
+    const noLicRes = await cloudBackupService.runPeriodicBackupCheck();
+    expect(noLicRes.skipped).toBe(true);
+    expect(noLicRes.reason).toBe('no_license');
+
+    orgSyncMockState.context = { orgId: 'org_test_1', branchId: 'main', mode: 'offline' };
+    orgSyncMockState.signInStatus = 'needs-login' as any;
+    const notSignedRes = await cloudBackupService.runPeriodicBackupCheck();
+    expect(notSignedRes.skipped).toBe(true);
+    expect(notSignedRes.reason).toBe('needs_login');
+
+    // Restore preconditions and verify 30-minute interval timer invokes periodic backup upload
+    orgSyncMockState.signInStatus = 'ok';
+    const periodicSpy = vi.spyOn(cloudBackupService, 'runPeriodicBackupCheck');
+    vi.useFakeTimers();
+    try {
+      cloudBackupService.startPeriodicBackup(PERIODIC_BACKUP_INTERVAL_MS);
+      expect(cloudBackupService.isPeriodicBackupRunning()).toBe(true);
+
+      await vi.advanceTimersByTimeAsync(PERIODIC_BACKUP_INTERVAL_MS);
+      expect(periodicSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      cloudBackupService.stopPeriodicBackup();
+      vi.useRealTimers();
+    }
+
+    const timerResult = await periodicSpy.mock.results[0].value;
+    expect(timerResult.success).toBe(true);
+    expect(timerResult.backup?.trigger).toBe('periodic');
+    const docsAfterTimer = firestoreMockState.operationLog.filter(o => o.op === 'setDoc').length;
+    expect(docsAfterTimer).toBe(2);
+    periodicSpy.mockRestore();
   });
 });

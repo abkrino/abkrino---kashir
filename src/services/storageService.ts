@@ -36,6 +36,7 @@ export const STORAGE_KEYS = {
   SALES_RETURNS: 'sm_sales_returns_v1',
   DOCUMENT_SEQUENCES: 'sm_doc_sequences_v1',
   CREDENTIALS_RESET_REQUIRED: 'sm_credentials_reset_required_v1',
+  SUMMARY_DIRTY: 'sm_summary_dirty_v1',
 };
 
 export const BUSINESS_KEYS = [
@@ -114,6 +115,24 @@ class StorageService {
     return () => {
       this.onActionCallbacks = this.onActionCallbacks.filter(c => c !== cb);
     };
+  }
+
+  public getSummaryDirty(): boolean {
+    return Boolean(this.getItem<boolean>(STORAGE_KEYS.SUMMARY_DIRTY, false));
+  }
+
+  public setSummaryDirty(dirty: boolean): void {
+    const val = Boolean(dirty);
+    this.setItem<boolean>(STORAGE_KEYS.SUMMARY_DIRTY, val);
+    if (typeof indexedDB !== 'undefined' && !this.isFallback) {
+      idb.kv
+        .put({
+          key: STORAGE_KEYS.SUMMARY_DIRTY,
+          value: val,
+          updatedAt: Date.now(),
+        })
+        .catch(() => {});
+    }
   }
 
   public notifyAction(actionName: string): void {

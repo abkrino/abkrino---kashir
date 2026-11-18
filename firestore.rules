@@ -27,10 +27,23 @@ service cloud.firestore {
       return isSignedIn() && request.auth.uid == orgId;
     }
 
-    // Check if the organization has an active status and valid subscription
+    // Default grace period is 7 days if graceDays is omitted from orgs/{orgId}
+    function getOrgGraceDays(org) {
+      return ('graceDays' in org && org.graceDays is int && org.graceDays >= 0) ? org.graceDays : 7;
+    }
+
+    // Check if the organization has an active status and valid subscription (including graceDays)
     function isOrgActive(orgId) {
       let org = get(/databases/$(database)/documents/orgs/$(orgId)).data;
-      return org.status == 'active' && org.validUntil > request.time;
+      return org.status == 'active' &&
+        (org.validUntil + duration.value(getOrgGraceDays(org), 'd')) > request.time;
+    }
+
+    // Check if the organization is within the 30-day post-expiry cloud restore window
+    function isWithinRestoreWindow(orgId) {
+      let org = get(/databases/$(database)/documents/orgs/$(orgId)).data;
+      return (org.status in ['active', 'suspended']) &&
+        (org.validUntil + duration.value(30, 'd')) > request.time;
     }
 
     function isValidId(id) {
@@ -113,13 +126,12 @@ service cloud.firestore {
 
         // ---------------------------------------------------------------------
         // Backups Subcollection (Metadata Doc + chunks Subcollection)
-        // Metadata Read: Owner or Admin.
-        // Metadata Write: Owner with active subscription and metadata schema validation.
-        // Chunks Read/Write: Owner ONLY with active subscription (Admin has NO access).
-        // Each chunk must not exceed 900,000 bytes.
+        // Metadata & Chunks Read: Owner ONLY within 30-day restore window.
+        // Metadata Write/Delete: Owner with active subscription (incl. graceDays).
+        // Chunks Write/Delete: Owner with active subscription (<= 900,000 bytes).
         // ---------------------------------------------------------------------
         match /backups/{backupId} {
-          allow read: if isOrgOwner(orgId);
+          allow read: if isOrgOwner(orgId) && isWithinRestoreWindow(orgId);
           allow create, update: if isOrgOwner(orgId) &&
             isOrgActive(orgId) &&
             isValidId(backupId) &&
@@ -130,7 +142,7 @@ service cloud.firestore {
           allow delete: if isOrgOwner(orgId) && isOrgActive(orgId);
 
           match /chunks/{chunkIndex} {
-            allow read: if isOrgOwner(orgId);
+            allow read: if isOrgOwner(orgId) && isWithinRestoreWindow(orgId);
             allow create, update: if isOrgOwner(orgId) &&
               isOrgActive(orgId) &&
               request.resource.data.data is string &&

@@ -77,6 +77,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
 
   // Organization Sync Reactive State
   const [syncState, setSyncState] = useState<SyncState>(orgSyncService.getSyncState());
+  const [isSummaryDirty, setIsSummaryDirty] = useState<boolean>(() => orgSyncService.isSummaryDirty());
   const [lastHeartbeat, setLastHeartbeat] = useState<Date | null>(orgSyncService.getLastHeartbeatDate());
   const [lastSummary, setLastSummary] = useState<Date | null>(orgSyncService.getLastDailySummaryDate());
   const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(orgSyncService.getStatusMessage());
@@ -114,6 +115,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
     setIsAuthenticated(cloudService.isUserAuthenticated());
     setLinkedStore(cloudService.getLinkedStore());
     setSyncState(orgSyncService.getSyncState());
+    setIsSummaryDirty(orgSyncService.isSummaryDirty());
     setLastHeartbeat(orgSyncService.getLastHeartbeatDate());
     setLastSummary(orgSyncService.getLastDailySummaryDate());
     setSyncStatusMsg(orgSyncService.getStatusMessage());
@@ -143,6 +145,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
     });
     const unsubscribeOrg = orgSyncService.subscribe(() => {
       setSyncState(orgSyncService.getSyncState());
+      setIsSummaryDirty(orgSyncService.isSummaryDirty());
       setLastHeartbeat(orgSyncService.getLastHeartbeatDate());
       setLastSummary(orgSyncService.getLastDailySummaryDate());
       setSyncStatusMsg(orgSyncService.getStatusMessage());
@@ -716,14 +719,21 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
               </div>
 
               {/* 4. Last Daily Summary */}
-              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
+              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center gap-2">
                 <span className="font-bold text-slate-600 dark:text-slate-400 flex items-center gap-1.5">
                   <Clock className="w-3.5 h-3.5 text-emerald-500" />
                   <span>آخر ملخص يومي:</span>
                 </span>
-                <span className="font-mono font-bold text-slate-900 dark:text-white">
-                  {lastSummary ? lastSummary.toLocaleString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم يُرفع بعد'}
-                </span>
+                <div className="flex items-center gap-2 flex-wrap justify-end">
+                  {isSummaryDirty && (
+                    <span className="px-2 py-0.5 rounded-full text-[11px] font-black bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
+                      ملخص معلّق
+                    </span>
+                  )}
+                  <span className="font-mono font-bold text-slate-900 dark:text-white">
+                    {lastSummary ? lastSummary.toLocaleString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم يُرفع بعد'}
+                  </span>
+                </div>
               </div>
 
               {/* 5. Last Successful Cloud Backup */}

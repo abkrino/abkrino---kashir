@@ -68,6 +68,7 @@ describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('Firestore Multi-Tenant Se
           maxBranches: 3,
           status: 'active',
           validUntil: futureDate,
+          graceDays: 7,
           createdAt: new Date(),
         });
 
@@ -289,15 +290,17 @@ describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('Firestore Multi-Tenant Se
     const validChunkRef = doc(ownerADb, 'orgs', 'orgA', 'branches', 'branch_1', 'backups', 'backup_1', 'chunks', '0');
     const hugeChunkRef = doc(ownerADb, 'orgs', 'orgA', 'branches', 'branch_1', 'backups', 'backup_1', 'chunks', '1');
 
-    // Owner creates backup metadata
+    // Owner creates backup metadata wrapped inside metadata map
     await assertSucceeds(
       setDoc(backupDocRef, {
         id: 'backup_1',
-        createdAt: new Date(),
-        totalChunks: 2,
-        totalBytes: 500000,
-        appVersion: '1.0.0',
-        deviceId: 'dev-101',
+        metadata: {
+          status: 'complete',
+          createdAt: new Date(),
+          totalChunks: 2,
+          sizeBytes: 500000,
+          appVersion: '1.0.0',
+        },
       })
     );
 
@@ -305,7 +308,7 @@ describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('Firestore Multi-Tenant Se
     const validData = 'a'.repeat(5000);
     await assertSucceeds(
       setDoc(validChunkRef, {
-        index: 0,
+        chunkIndex: 0,
         data: validData,
       })
     );
@@ -314,7 +317,7 @@ describe.skipIf(!process.env.FIRESTORE_EMULATOR_HOST)('Firestore Multi-Tenant Se
     const hugeData = 'a'.repeat(900001);
     await assertFails(
       setDoc(hugeChunkRef, {
-        index: 1,
+        chunkIndex: 1,
         data: hugeData,
       })
     );

@@ -9,7 +9,10 @@ import { DailySummaryDoc } from '../types/cloud';
 import { SalesInvoice, PurchaseInvoice, Product, Customer, Supplier, SalesReturn } from '../types';
 import { APP_VERSION } from '../config/appConfig';
 
-export type SyncState = 
+export const SUMMARY_DEBOUNCE_MS = 3000;
+export const SUMMARY_MIN_INTERVAL_MS = 3000;
+
+export type SyncState =
   | 'idle'
   | 'unconfigured'
   | 'syncing'
@@ -104,13 +107,13 @@ export function calculateDailySummaryData(input: RawStorageDailySummaryInput): O
 }
 
 // ---------------------------------------------------------------------------
-// Pure Helper: Debounce & Rate-Limiting Decision Logic
-// Minimum 10 minutes between two consecutive writes, unless forceImmediate is true.
+// Pure Helper: Rate-Limiting Decision Logic
+// Maximum 1 write per minIntervalMs (default 3 seconds), unless forceImmediate is true.
 // ---------------------------------------------------------------------------
 export function shouldPushSummary(
   currentTimeMs: number,
   lastPushTimeMs: number,
-  minIntervalMs: number = 10 * 60 * 1000,
+  minIntervalMs: number = SUMMARY_MIN_INTERVAL_MS,
   forceImmediate: boolean = false
 ): boolean {
   if (forceImmediate) return true;
@@ -136,15 +139,22 @@ class OrgSyncService {
   private permissionRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private isSubPaused: boolean = false;
   private isRunning: boolean = false;
+  private isPushInFlight: boolean = false;
+  private pendingRescheduleAfterPush: boolean = false;
+  private actionSeq: number = 0;
   private cleanupFns: (() => void)[] = [];
 
   constructor() {
-    // Timers and network listeners do NOT auto-start in constructor
-    // They start exclusively via startService() after winning the single-tab lock and storage.init()
+    // Timers and network listeners do NOT auto-start in constructor.
+    // They start exclusively via startService() after winning the single-tab lock and storage.init().
   }
 
   public isServiceRunning(): boolean {
     return this.isRunning;
+  }
+
+  public isSummaryDirty(): boolean {
+    return storage.getSummaryDirty();
   }
 
   public startService(): void {
@@ -156,8 +166,11 @@ class OrgSyncService {
       this.notifyListeners();
       return;
     }
-    if (typeof navigator !== 'undefined' && navigator.onLine) {
+    if (typeof navigator === 'undefined' || navigator.onLine !== false) {
       this.sendHeartbeat().catch(() => {});
+      if (this.isSummaryDirty()) {
+        this.pushDailySummary(true).catch(() => {});
+      }
     }
   }
 
@@ -179,6 +192,7 @@ class OrgSyncService {
       clearTimeout(this.permissionRetryTimer);
       this.permissionRetryTimer = null;
     }
+    this.pendingRescheduleAfterPush = false;
     this.cleanupFns.forEach(fn => {
       try { fn(); } catch {}
     });
@@ -186,56 +200,63 @@ class OrgSyncService {
   }
 
   private initListeners() {
-    if (typeof window === 'undefined') return;
+    if (typeof window !== 'undefined') {
+      // Network reconnect listener
+      const onOnline = () => {
+        if (this.syncState === 'offline') {
+          this.syncState = 'idle';
+          this.notifyListeners();
+        }
+        this.sendHeartbeat().catch(() => {});
+        if (this.isSummaryDirty()) {
+          this.pushDailySummary(true).catch(() => {});
+        }
+      };
+      window.addEventListener('online', onOnline);
+      this.cleanupFns.push(() => window.removeEventListener('online', onOnline));
 
-    // Network reconnect listener
-    const onOnline = () => {
-      if (this.syncState === 'offline') {
-        this.syncState = 'idle';
+      const onOffline = () => {
+        this.syncState = 'offline';
         this.notifyListeners();
-      }
-      this.sendHeartbeat().catch(() => {});
-      this.pushDailySummary(false).catch(() => {});
-    };
-    window.addEventListener('online', onOnline);
-    this.cleanupFns.push(() => window.removeEventListener('online', onOnline));
+      };
+      window.addEventListener('offline', onOffline);
+      this.cleanupFns.push(() => window.removeEventListener('offline', onOffline));
+    }
 
-    const onOffline = () => {
-      this.syncState = 'offline';
-      this.notifyListeners();
-    };
-    window.addEventListener('offline', onOffline);
-    this.cleanupFns.push(() => window.removeEventListener('offline', onOffline));
+    if (typeof document !== 'undefined') {
+      // Page visibility change
+      const onVisibility = () => {
+        if (document.visibilityState === 'visible' && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+          this.sendHeartbeat().catch(() => {});
+        }
+      };
+      document.addEventListener('visibilitychange', onVisibility);
+      this.cleanupFns.push(() => document.removeEventListener('visibilitychange', onVisibility));
 
-    // Page visibility change
-    const onVisibility = () => {
-      if (document.visibilityState === 'visible' && navigator.onLine) {
-        this.sendHeartbeat().catch(() => {});
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-    this.cleanupFns.push(() => document.removeEventListener('visibilitychange', onVisibility));
+      // 15-minute periodic heartbeat timer
+      this.heartbeatTimer = setInterval(() => {
+        if (document.visibilityState === 'visible' && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+          this.sendHeartbeat().catch(() => {});
+        }
+      }, 15 * 60 * 1000);
+    }
 
-    // 15-minute periodic heartbeat timer
-    this.heartbeatTimer = setInterval(() => {
-      if (document.visibilityState === 'visible' && navigator.onLine) {
-        this.sendHeartbeat().catch(() => {});
-      }
-    }, 15 * 60 * 1000);
-
-    // Storage action listener for daily summary update (debounced 2 minutes)
+    // Storage action listener: sets persistent summaryDirty=true in IndexedDB + schedules 3-second debounced summary write
     const unsubStorage = storage.onAction(() => {
-      this.scheduleDebouncedDailySummary();
+      this.handleStorageAction();
     });
     this.cleanupFns.push(unsubStorage);
 
-    // License change listener: resets subscription pause and retries
+    // License change listener: resets subscription pause and flushes any pending dirty summary immediately
     const unsubLicense = licenseService.subscribe(() => {
       if (this.isSubPaused) {
         this.resetSubscriptionPause();
-        if (isCloudConfigured && db && auth && typeof navigator !== 'undefined' && navigator.onLine) {
-          this.sendHeartbeat().catch(() => {});
-          this.pushDailySummary(false).catch(() => {});
+      }
+      const hasValidCtx = this.getContext() !== null;
+      if (hasValidCtx && isCloudConfigured && db && auth && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+        this.sendHeartbeat().catch(() => {});
+        if (this.isSummaryDirty()) {
+          this.pushDailySummary(true).catch(() => {});
         }
       } else {
         this.notifyListeners();
@@ -268,11 +289,14 @@ class OrgSyncService {
               this.syncState = 'idle';
               this.lastError = null;
               this.notifyListeners();
-              if (navigator.onLine && storage.isStorageReady()) {
-                this.sendHeartbeat().catch(() => {});
-              }
             } else {
               this.notifyListeners();
+            }
+            if ((typeof navigator === 'undefined' || navigator.onLine !== false) && storage.isStorageReady()) {
+              this.sendHeartbeat().catch(() => {});
+              if (this.isSummaryDirty()) {
+                this.pushDailySummary(true).catch(() => {});
+              }
             }
           } else {
             this.notifyListeners();
@@ -281,6 +305,24 @@ class OrgSyncService {
         this.cleanupFns.push(unsubAuth);
       } catch {}
     }
+  }
+
+  public handleStorageAction(): void {
+    this.actionSeq++;
+    storage.setSummaryDirty(true);
+    this.notifyListeners();
+
+    if (this.isSubPaused) {
+      return;
+    }
+
+    if (this.isPushInFlight) {
+      // Never overlap writes: mark to schedule a final trailing push once in-flight write completes
+      this.pendingRescheduleAfterPush = true;
+      return;
+    }
+
+    this.scheduleDebouncedDailySummary();
   }
 
   // -------------------------------------------------------------------------
@@ -373,7 +415,7 @@ class OrgSyncService {
       this.lastError = null;
       this.notifyListeners();
 
-      // Trigger initial heartbeat and summary
+      // Trigger initial heartbeat and summary (especially if summaryDirty is true)
       this.sendHeartbeat().catch(() => {});
       this.pushDailySummary(true).catch(() => {});
 
@@ -419,7 +461,7 @@ class OrgSyncService {
       return { success: false, error: 'لا يوجد ترخيص سارٍ لتحديد المحل والفرع.' };
     }
 
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
       this.syncState = 'offline';
       this.notifyListeners();
       return { success: false, error: 'لا يوجد اتصال بالإنترنت حالياً.' };
@@ -442,8 +484,6 @@ class OrgSyncService {
       const env = detectEnvironment();
       const branchRef = doc(db, 'orgs', context.orgId, 'branches', context.branchId);
 
-      // STRICT: lastSeenAt must be serverTimestamp() as enforced by firestore.rules
-      // mode is taken from license payload, and appVersion from APP_VERSION constant
       await updateDoc(branchRef, {
         lastSeenAt: serverTimestamp(),
         appVersion: APP_VERSION,
@@ -511,6 +551,9 @@ class OrgSyncService {
 
       const res = await this.sendHeartbeat();
       if (res.success) {
+        if (this.isSummaryDirty()) {
+          this.pushDailySummary(true).catch(() => {});
+        }
         return {
           success: true,
           message: 'نجح الاتصال بالسحابة وتم إرسال نبضة الفرع بنجاح ✓',
@@ -530,7 +573,7 @@ class OrgSyncService {
   }
 
   // -------------------------------------------------------------------------
-  // 5. pushDailySummary(): calculate and setDoc in dailySummaries/{yyyy-MM-dd}
+  // 5. pushDailySummary(): 3-second debounce batching + max 1 write / 3s + no overlap
   // -------------------------------------------------------------------------
   private scheduleDebouncedDailySummary() {
     if (this.isSubPaused) return;
@@ -539,10 +582,10 @@ class OrgSyncService {
       clearTimeout(this.debounceTimer);
     }
 
-    // 2-minute debounce
     this.debounceTimer = setTimeout(() => {
+      this.debounceTimer = null;
       this.pushDailySummary(false).catch(() => {});
-    }, 2 * 60 * 1000);
+    }, SUMMARY_DEBOUNCE_MS);
   }
 
   public async pushDailySummary(forceImmediate: boolean = false): Promise<{ success: boolean; error?: string }> {
@@ -561,7 +604,7 @@ class OrgSyncService {
       return { success: false, error: 'no-valid-license' };
     }
 
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
       this.syncState = 'offline';
       this.notifyListeners();
       return { success: false, error: 'offline' };
@@ -574,13 +617,17 @@ class OrgSyncService {
       return { success: false, error: authCheck };
     }
 
-    // Rate-limiting check: minimum 10 minutes between writes unless forceImmediate is true
+    // Prevent overlapping writes: if a write is currently in progress, queue a trailing write
+    if (this.isPushInFlight) {
+      this.pendingRescheduleAfterPush = true;
+      return { success: true };
+    }
+
+    // Protection rate-limit: maximum 1 write every 3 seconds unless forceImmediate is true
     const now = Date.now();
-    const TEN_MINUTES_MS = 10 * 60 * 1000;
-    if (!shouldPushSummary(now, this.lastDailySummaryPushMs, TEN_MINUTES_MS, forceImmediate)) {
-      // Re-schedule for remaining cooldown time so update is never lost
+    if (!shouldPushSummary(now, this.lastDailySummaryPushMs, SUMMARY_MIN_INTERVAL_MS, forceImmediate)) {
       const elapsed = now - this.lastDailySummaryPushMs;
-      const remainingMs = Math.max(1000, TEN_MINUTES_MS - elapsed);
+      const remainingMs = Math.max(50, SUMMARY_MIN_INTERVAL_MS - elapsed);
       if (this.rescheduleSummaryTimer) {
         clearTimeout(this.rescheduleSummaryTimer);
       }
@@ -592,20 +639,15 @@ class OrgSyncService {
       return { success: true };
     }
 
-    // Clear pending reschedule timer if pushing now
     if (this.rescheduleSummaryTimer) {
       clearTimeout(this.rescheduleSummaryTimer);
       this.rescheduleSummaryTimer = null;
     }
 
-    try {
-      // Requirement 4: Reject if storage is not ready or data not loaded and all numbers zero
-      if (!storage.isStorageReady()) {
-        this.syncState = 'idle';
-        this.notifyListeners();
-        return { success: false, error: 'storage-not-ready' };
-      }
+    this.isPushInFlight = true;
+    const capturedSeq = this.actionSeq;
 
+    try {
       this.syncState = 'syncing';
       this.notifyListeners();
 
@@ -653,13 +695,28 @@ class OrgSyncService {
       });
 
       this.lastDailySummaryDate = new Date();
-      this.lastDailySummaryPushMs = now;
+      this.lastDailySummaryPushMs = Date.now();
       this.lastError = null;
       this.syncState = 'synced';
+
+      // Clear summaryDirty ONLY if no newer action arrived while setDoc was in flight
+      if (this.actionSeq === capturedSeq) {
+        storage.setSummaryDirty(false);
+      } else {
+        this.pendingRescheduleAfterPush = true;
+      }
+
       this.notifyListeners();
       return { success: true };
     } catch (err: unknown) {
+      // summaryDirty stays true on any write error so it retries when resolved
       return this.handleSyncError(err, 'pushDailySummary');
+    } finally {
+      this.isPushInFlight = false;
+      if (this.pendingRescheduleAfterPush) {
+        this.pendingRescheduleAfterPush = false;
+        this.scheduleDebouncedDailySummary();
+      }
     }
   }
 
@@ -727,7 +784,7 @@ class OrgSyncService {
   }
 
   // -------------------------------------------------------------------------
-  // Getters for UI and Tests
+  // Getters & Test Helpers
   // -------------------------------------------------------------------------
   public getSyncState(): SyncState {
     return this.syncState;
@@ -757,6 +814,10 @@ class OrgSyncService {
     return this.rescheduleSummaryTimer;
   }
 
+  public getDebounceTimer(): ReturnType<typeof setTimeout> | null {
+    return this.debounceTimer;
+  }
+
   public getPermissionRetryTimer(): ReturnType<typeof setTimeout> | null {
     return this.permissionRetryTimer;
   }
@@ -768,6 +829,20 @@ class OrgSyncService {
   public setSyncState(state: SyncState): void {
     this.syncState = state;
     this.notifyListeners();
+  }
+
+  public resetForTesting(): void {
+    this.stopService();
+    this.syncState = 'idle';
+    this.lastHeartbeatDate = null;
+    this.lastDailySummaryDate = null;
+    this.lastDailySummaryPushMs = 0;
+    this.statusMessage = null;
+    this.lastError = null;
+    this.isSubPaused = false;
+    this.isPushInFlight = false;
+    this.pendingRescheduleAfterPush = false;
+    this.actionSeq = 0;
   }
 
   public subscribe(listener: () => void): () => void {

@@ -37,6 +37,7 @@ export interface OrganizationDoc {
   maxBranches: number;          // Maximum allowed active branches (e.g. 1, 5, 20)
   status: OrgStatus;            // 'pending' | 'active' | 'suspended'
   validUntil: CloudTimestamp;   // Subscription expiration timestamp
+  graceDays?: number;           // Optional grace period in days after validUntil (default 7 in rules)
   createdAt: CloudTimestamp;    // Registration timestamp
 }
 
@@ -104,7 +105,7 @@ export interface DailySummaryDoc {
 // Split into chunks to support large databases within Firestore 1MB doc limits.
 // ---------------------------------------------------------------------------
 export type CloudBackupStatus = 'uploading' | 'complete';
-export type CloudBackupTrigger = 'daily' | 'shift_close' | 'manual';
+export type CloudBackupTrigger = 'daily' | 'shift_close' | 'periodic' | 'manual';
 
 export interface BackupMetadata {
   status?: CloudBackupStatus;

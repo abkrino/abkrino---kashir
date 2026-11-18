@@ -28,6 +28,9 @@ import { User } from '../types';
 export const CHUNK_MAX_CHARS = 700_000;
 export const MAX_BATCH_BYTES = 3 * 1024 * 1024; // 3 MB safe limit per writeBatch
 export const CLOUD_BACKUP_KEEP_COUNT = 7;
+export const CLOUD_BACKUP_DAILY_DAYS_KEEP = 7;
+export const CLOUD_BACKUP_TODAY_KEEP = 6;
+export const PERIODIC_BACKUP_INTERVAL_MS = 30 * 60 * 1000; // 30 minutes
 export const STALE_INCOMPLETE_BACKUP_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 const LOCAL_KEYS = {
@@ -277,6 +280,97 @@ export function extractTimestampMs(ts: unknown): number {
   return 0;
 }
 
+function parseCairoDateUtcMs(dateStr: string): number {
+  const m = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return NaN;
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+export interface RetentionBackupCandidate {
+  id: string;
+  createdAtMs: number;
+  cairoDate?: string;
+}
+
+/**
+ * Pure retention selector:
+ * - Always keeps the absolute newest complete backup (and protectedLatestId if provided).
+ * - Keeps up to the newest 6 backups created on today's Cairo date.
+ * - Keeps the latest backup of each day for the last 7 days (diffDays 0..6 relative to todayCairoDate).
+ * - Schedules all older/excess backups for deletion.
+ */
+export function selectBackupsToKeepAndDelete(
+  backups: RetentionBackupCandidate[],
+  todayCairoDate: string = getCairoDateString(new Date()),
+  protectedLatestId?: string,
+  options?: { dailyDaysKeep?: number; todayKeep?: number }
+): { keepIds: string[]; deleteIds: string[] } {
+  if (!backups || backups.length === 0) {
+    return { keepIds: [], deleteIds: [] };
+  }
+
+  const dailyDaysKeep = Math.max(1, options?.dailyDaysKeep ?? CLOUD_BACKUP_DAILY_DAYS_KEEP);
+  const todayKeep = Math.max(1, options?.todayKeep ?? CLOUD_BACKUP_TODAY_KEEP);
+
+  const sorted = [...backups].sort((a, b) => {
+    if (b.createdAtMs !== a.createdAtMs) return b.createdAtMs - a.createdAtMs;
+    return b.id.localeCompare(a.id);
+  });
+
+  const keepSet = new Set<string>();
+
+  // Absolute newest complete backup & protected ID are ALWAYS kept
+  keepSet.add(sorted[0].id);
+  if (protectedLatestId && sorted.some(b => b.id === protectedLatestId)) {
+    keepSet.add(protectedLatestId);
+  }
+
+  const todayUtcMs = parseCairoDateUtcMs(todayCairoDate);
+  const seenDailyDates = new Set<string>();
+  let todayKeptCount = 0;
+
+  for (const item of sorted) {
+    const itemDate =
+      item.cairoDate ||
+      (item.createdAtMs > 0 ? getCairoDateString(new Date(item.createdAtMs)) : todayCairoDate);
+    const itemUtcMs = parseCairoDateUtcMs(itemDate);
+    const diffDays =
+      !Number.isNaN(todayUtcMs) && !Number.isNaN(itemUtcMs)
+        ? Math.round((todayUtcMs - itemUtcMs) / 86_400_000)
+        : 0;
+
+    // 1. Inside today: keep up to newest 6 backups
+    if (itemDate === todayCairoDate || diffDays === 0) {
+      if (todayKeptCount < todayKeep) {
+        keepSet.add(item.id);
+        todayKeptCount++;
+      }
+      seenDailyDates.add(itemDate);
+      continue;
+    }
+
+    // 2. Last 7 days (days 1..6 prior to today -> total 7 calendar days with today): keep latest backup of each day
+    if (diffDays > 0 && diffDays < dailyDaysKeep) {
+      if (!seenDailyDates.has(itemDate)) {
+        seenDailyDates.add(itemDate);
+        keepSet.add(item.id);
+      }
+    }
+  }
+
+  const keepIds: string[] = [];
+  const deleteIds: string[] = [];
+  for (const item of sorted) {
+    if (keepSet.has(item.id)) {
+      keepIds.push(item.id);
+    } else {
+      deleteIds.push(item.id);
+    }
+  }
+
+  return { keepIds, deleteIds };
+}
+
 function isPermissionDeniedError(err: unknown): boolean {
   const obj = (err && typeof err === 'object' ? err : {}) as { code?: unknown; message?: unknown };
   const code = typeof obj.code === 'string' ? obj.code.toLowerCase() : '';
@@ -316,16 +410,67 @@ class CloudBackupService {
   private dropAlert: string | null = null;
   private listeners: (() => void)[] = [];
   private retryBaseDelayMs = 400;
+  private periodicTimer: ReturnType<typeof setInterval> | null = null;
 
   public setRetryDelayMsForTesting(delayMs: number): void {
     this.retryBaseDelayMs = delayMs;
   }
 
   public resetInternalStateForTesting(): void {
+    this.stopPeriodicBackup();
     this.isUploading = false;
     this.permissionPaused = false;
     this.lastError = null;
     this.dropAlert = null;
+  }
+
+  public startPeriodicBackup(intervalMs: number = PERIODIC_BACKUP_INTERVAL_MS): void {
+    if (this.periodicTimer) return;
+    this.periodicTimer = setInterval(() => {
+      this.runPeriodicBackupCheck().catch(() => {});
+    }, intervalMs);
+  }
+
+  public stopPeriodicBackup(): void {
+    if (this.periodicTimer) {
+      clearInterval(this.periodicTimer);
+      this.periodicTimer = null;
+    }
+  }
+
+  public isPeriodicBackupRunning(): boolean {
+    return this.periodicTimer !== null;
+  }
+
+  public async runPeriodicBackupCheck(): Promise<CloudBackupOperationResult> {
+    if (!storage.isStorageReady()) {
+      return { success: false, skipped: true, reason: 'in_progress' };
+    }
+    if (this.isUploading) {
+      return { success: false, skipped: true, reason: 'in_progress' };
+    }
+    if (!isCloudConfigured || !db || !auth) {
+      return { success: false, skipped: true, reason: 'unconfigured' };
+    }
+    if (this.permissionPaused) {
+      return { success: false, skipped: true, reason: 'permission_paused' };
+    }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return { success: false, skipped: true, reason: 'offline' };
+    }
+    if (!orgSyncService.getContext()) {
+      return { success: false, skipped: true, reason: 'no_license' };
+    }
+    const authStatus = orgSyncService.ensureSignedIn();
+    if (authStatus !== 'ok') {
+      return {
+        success: false,
+        skipped: true,
+        reason: authStatus === 'wrong-account' ? 'wrong_account' : 'needs_login',
+      };
+    }
+
+    return this.createAndUploadBackup('periodic', 'نسخة سحابية دورية تلقائية');
   }
 
   public subscribe(cb: () => void): () => void {
@@ -889,14 +1034,18 @@ class CloudBackupService {
   }
 
   /**
-   * Keeps newest 7 complete backups (NEVER deletes the newest complete backup)
-   * and removes stale incomplete backups older than 24 hours.
+   * Retention policy:
+   * - Keeps the latest backup of each day for the last 7 days
+   * - Keeps up to the latest 6 backups inside today (Cairo calendar date)
+   * - NEVER deletes the newest complete backup globally (or protectedLatestId)
+   * - Removes stale incomplete backups older than 24 hours
    */
   public async enforceRetentionAndCleanup(
     orgId: string,
     branchId: string,
-    keepCount: number = CLOUD_BACKUP_KEEP_COUNT,
-    protectedLatestId?: string
+    _keepCount: number = CLOUD_BACKUP_KEEP_COUNT,
+    protectedLatestId?: string,
+    todayCairoOverride?: string
   ): Promise<{ deletedCompleteCount: number; deletedStaleCount: number }> {
     if (!db) return { deletedCompleteCount: 0, deletedStaleCount: 0 };
 
@@ -907,7 +1056,7 @@ class CloudBackupService {
       const backupsCol = collection(db, 'orgs', orgId, 'branches', branchId, 'backups');
       const snap = await getDocs(backupsCol);
 
-      const completeDocs: { id: string; createdAtMs: number }[] = [];
+      const completeDocs: RetentionBackupCandidate[] = [];
       const staleIncompleteIds: string[] = [];
       const nowMs = Date.now();
 
@@ -926,26 +1075,23 @@ class CloudBackupService {
         if (meta.status === 'complete') {
           completeDocs.push({
             id: docSnap.id,
-            createdAtMs: docSnap.id === protectedLatestId ? Math.max(createdAtMs, nowMs) : createdAtMs,
+            createdAtMs: createdAtMs > 0 ? createdAtMs : docSnap.id === protectedLatestId ? nowMs : 0,
           });
         } else if (createdAtMs > 0 && nowMs - createdAtMs > STALE_INCOMPLETE_BACKUP_MS) {
           staleIncompleteIds.push(docSnap.id);
         }
       }
 
-      // Sort newest first; NEVER delete index 0 (newest complete backup)
-      completeDocs.sort((a, b) => {
-        if (b.createdAtMs !== a.createdAtMs) return b.createdAtMs - a.createdAtMs;
-        return b.id.localeCompare(a.id);
-      });
+      const todayCairo = todayCairoOverride || getCairoDateString(new Date());
+      const { deleteIds } = selectBackupsToKeepAndDelete(
+        completeDocs,
+        todayCairo,
+        protectedLatestId
+      );
 
-      const safeKeep = Math.max(1, keepCount);
-      const excess = completeDocs
-        .slice(safeKeep)
-        .filter(item => item.id !== protectedLatestId);
-      for (const item of excess) {
+      for (const idToDelete of deleteIds) {
         try {
-          await this.deleteBackupAndChunks(db, orgId, branchId, item.id);
+          await this.deleteBackupAndChunks(db, orgId, branchId, idToDelete);
           deletedCompleteCount++;
         } catch (err) {
           if (isPermissionDeniedError(err)) {
