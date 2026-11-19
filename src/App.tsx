@@ -173,15 +173,21 @@ export default function App() {
     // Execute unified bootstrap
     bootstrap();
 
-    // Subscribe to license changes
+    // Subscribe to license changes for UI state only
     const unsubLicense = licenseService.subscribe(() => {
       setLicenseState(licenseService.getLicenseState());
       setIsStoreActivated(licenseService.isStoreActivated());
+    });
+
+    // Reset backup permission pause ONLY when effective license fingerprint changes
+    const unsubLicenseFingerprint = orgSyncService.onLicenseFingerprintChange(() => {
       cloudBackupService.resetPermissionPause();
     });
 
-    const unsubOrgSync = orgSyncService.subscribe(() => {
-      if (orgSyncService.ensureSignedIn() === 'ok' && storage.isStorageReady()) {
+    // Trigger daily backup check & reset pause ONLY on explicit/fresh store sign-in
+    const unsubSignIn = orgSyncService.onStoreSignIn(() => {
+      cloudBackupService.resetPermissionPause();
+      if (storage.isStorageReady()) {
         cloudBackupService.checkAndCreateDailyBackup().catch(() => {});
       }
     });
@@ -222,7 +228,8 @@ export default function App() {
       isMounted = false;
       window.removeEventListener('keydown', handleKeyDown);
       unsubLicense();
-      unsubOrgSync();
+      unsubLicenseFingerprint();
+      unsubSignIn();
       unsubAction();
       unsubWriteError();
       unsubDropAlert();

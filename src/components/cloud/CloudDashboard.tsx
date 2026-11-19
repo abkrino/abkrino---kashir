@@ -39,6 +39,7 @@ import {
   CloudBackupSummary,
   CloudRestoreDownloadProgress,
 } from '../../services/cloudBackupService';
+import { cloudBudgetService, CloudBudgetStatus } from '../../services/cloudBudgetService';
 import { BackupPreview } from '../../services/snapshotService';
 
 interface CloudDashboardProps {
@@ -84,6 +85,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
   const [lastSyncError, setLastSyncError] = useState<string | null>(orgSyncService.getLastError());
   const [orgContext, setOrgContext] = useState(orgSyncService.getContext());
   const [firebaseUser, setFirebaseUser] = useState(auth?.currentUser || null);
+  const [budgetStatus, setBudgetStatus] = useState<CloudBudgetStatus>(() => cloudBudgetService.getStatus());
 
   // Email & Password Login Form State (password kept strictly in component memory, never persisted)
   const [emailInput, setEmailInput] = useState<string>(cloudService.getLinkedStore().ownerEmail || '');
@@ -109,7 +111,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
   const isAdminUser = currentUser.role === 'ADMIN';
   const isStoreSignedIn = orgSyncService.ensureSignedIn() === 'ok';
 
-  const loadAllCloudData = async () => {
+  const refreshLocalCloudState = () => {
     setIsOnline(cloudService.isOnline());
     setCloudSettings(cloudService.getCloudSettings());
     setIsAuthenticated(cloudService.isUserAuthenticated());
@@ -124,10 +126,15 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
     setFirebaseUser(auth?.currentUser || null);
     setLastBackupMeta(cloudBackupService.getLastSuccessfulBackup());
     setBackupDropAlert(cloudBackupService.getDropAlert());
+    setBudgetStatus(cloudBudgetService.getStatus());
+  };
+
+  const loadAllCloudData = async (options?: { bypassBudget?: boolean }) => {
+    refreshLocalCloudState();
 
     if (isCloudConfigured && orgSyncService.ensureSignedIn() === 'ok' && cloudService.isOnline()) {
       setIsLoadingBackups(true);
-      const listRes = await cloudBackupService.listCompleteBackups();
+      const listRes = await cloudBackupService.listCompleteBackups(options);
       setIsLoadingBackups(false);
       if (listRes.success) {
         setCloudBackups(listRes.backups);
@@ -137,6 +144,9 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
   };
 
   useEffect(() => {
+    cloudBudgetService.init().then(() => {
+      setBudgetStatus(cloudBudgetService.getStatus());
+    }).catch(() => {});
     loadAllCloudData();
     const unsubscribe = cloudService.subscribe(() => {
       setIsOnline(cloudService.isOnline());
@@ -144,29 +154,21 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
       setLinkedStore(cloudService.getLinkedStore());
     });
     const unsubscribeOrg = orgSyncService.subscribe(() => {
-      setSyncState(orgSyncService.getSyncState());
-      setIsSummaryDirty(orgSyncService.isSummaryDirty());
-      setLastHeartbeat(orgSyncService.getLastHeartbeatDate());
-      setLastSummary(orgSyncService.getLastDailySummaryDate());
-      setSyncStatusMsg(orgSyncService.getStatusMessage());
-      setLastSyncError(orgSyncService.getLastError());
-      setOrgContext(orgSyncService.getContext());
-      setFirebaseUser(auth?.currentUser || null);
-      setIsAuthenticated(cloudService.isUserAuthenticated());
-      setLinkedStore(cloudService.getLinkedStore());
-      if (orgSyncService.ensureSignedIn() === 'ok') {
-        loadAllCloudData();
-      }
+      refreshLocalCloudState();
     });
     const unsubscribeBackup = cloudBackupService.subscribe(() => {
       setLastBackupMeta(cloudBackupService.getLastSuccessfulBackup());
       setBackupDropAlert(cloudBackupService.getDropAlert());
       setIsCreatingBackup(cloudBackupService.isUploadInProgress());
     });
+    const unsubscribeBudget = cloudBudgetService.subscribe(() => {
+      setBudgetStatus(cloudBudgetService.getStatus());
+    });
     return () => {
       unsubscribe();
       unsubscribeOrg();
       unsubscribeBackup();
+      unsubscribeBudget();
       setPasswordInput('');
     };
   }, []);
@@ -297,7 +299,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
       return;
     }
     setIsRestorePickerOpen(true);
-    await loadAllCloudData();
+    await loadAllCloudData({ bypassBudget: true });
   };
 
   // Execute transactional cloud restore + force post-restore password setup
@@ -492,14 +494,36 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
 
       {/* Unconfigured Cloud Banner */}
       {!isCloudConfigured && (
-        <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 flex items-start gap-3 shadow-xs">
+        <div className="p-4 rounded-2xl bg-amber-50 dark:bg-amber-950 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 flex items-start gap-3 shadow-xs">
           <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
           <div className="space-y-1 text-xs">
             <p className="font-black text-sm">السحابة غير مُعدّة بعد</p>
             <p className="leading-relaxed">
-              لم يتم إدخال إعدادات Firebase بعد في <code className="font-mono bg-amber-100 dark:bg-amber-900/60 px-1.5 py-0.5 rounded">src/config/firebaseConfig.ts</code>. جميع نداءات السحابة معطّلة حالياً ويعمل النظام محلياً بأمان بدون أخطاء. راجع <code className="font-mono bg-amber-100 dark:bg-amber-900/60 px-1.5 py-0.5 rounded">docs/CLOUD_SETUP.md</code> لخطوات الربط.
+              لم يتم إدخال إعدادات Firebase بعد في <code className="font-mono bg-amber-100 dark:bg-amber-900 px-1.5 py-0.5 rounded">src/config/firebaseConfig.ts</code>. جميع نداءات السحابة معطّلة حالياً ويعمل النظام محلياً بأمان بدون أخطاء. راجع <code className="font-mono bg-amber-100 dark:bg-amber-900 px-1.5 py-0.5 rounded">docs/CLOUD_SETUP.md</code> لخطوات الربط.
             </p>
           </div>
+        </div>
+      )}
+
+      {/* Daily Budget 90% Yellow Warning */}
+      {budgetStatus.isWarning90 && !budgetStatus.isExceeded && (
+        <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950 border border-amber-300 dark:border-amber-700 text-amber-900 dark:text-amber-200 flex items-center justify-between gap-2 text-xs font-bold shadow-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>{budgetStatus.warningMessage}</span>
+          </div>
+          <span className="font-mono">{budgetStatus.counterLabel}</span>
+        </div>
+      )}
+
+      {/* Daily Budget Exceeded / Circuit Breaker Paused Banner */}
+      {(syncState === 'budget-paused' || budgetStatus.isExceeded) && (
+        <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950 border border-amber-400 dark:border-amber-700 text-amber-900 dark:text-amber-200 flex items-center justify-between gap-2 text-xs font-bold shadow-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>تم إيقاف المزامنة السحابية اليوم لتجاوز الحد اليومي، ستُستأنف غداً</span>
+          </div>
+          <span className="font-mono">{budgetStatus.counterLabel}</span>
         </div>
       )}
 
@@ -749,7 +773,21 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                 </span>
               </div>
 
-              {/* 6. Sync State Badge */}
+              {/* 6. Daily Operations Budget Counter */}
+              <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center gap-2">
+                <span className="font-bold text-slate-600 dark:text-slate-400">استهلاك اليوم السحابي:</span>
+                <span className={`font-mono font-bold ${
+                  budgetStatus.isExceeded
+                    ? 'text-rose-600 dark:text-rose-400'
+                    : budgetStatus.isWarning90
+                    ? 'text-amber-600 dark:text-amber-400'
+                    : 'text-slate-900 dark:text-white'
+                }`}>
+                  {budgetStatus.counterLabel}
+                </span>
+              </div>
+
+              {/* 7. Sync State Badge */}
               <div className="p-3 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 flex justify-between items-center">
                 <span className="font-bold text-slate-600 dark:text-slate-400">حالة المزامنة:</span>
                 <span className={`px-2.5 py-0.5 rounded-full font-bold text-[11px] border ${
@@ -759,6 +797,8 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                     ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border-emerald-300'
                     : syncState === 'syncing'
                     ? 'bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 border-blue-300'
+                    : syncState === 'budget-paused'
+                    ? 'bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border-amber-400'
                     : syncState === 'subscription-paused' || syncState === 'wrong-account' || syncState === 'error'
                     ? 'bg-rose-100 dark:bg-rose-950 text-rose-800 dark:text-rose-300 border-rose-300'
                     : syncState === 'offline'
@@ -768,6 +808,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                   {!isCloudConfigured || syncState === 'unconfigured' ? 'السحابة غير مُعدّة بعد' :
                    syncState === 'synced' ? 'متزامن بنجاح ✓' :
                    syncState === 'syncing' ? 'جاري المزامنة...' :
+                   syncState === 'budget-paused' ? 'متوقف مؤقتاً (تجاوز الحد اليومي)' :
                    syncState === 'subscription-paused' ? 'تم رفض الصلاحية / اشتراك متوقف' :
                    syncState === 'wrong-account' ? 'الحساب لا يطابق orgId بالترخيص' :
                    syncState === 'offline' ? 'أوفلاين (محلي)' :
@@ -884,7 +925,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={loadAllCloudData}
+                  onClick={() => loadAllCloudData()}
                   disabled={isLoadingBackups || !isStoreSignedIn}
                   className="px-3 py-1 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg text-[11px] font-bold cursor-pointer flex items-center gap-1"
                 >

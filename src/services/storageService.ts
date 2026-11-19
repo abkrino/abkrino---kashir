@@ -39,6 +39,19 @@ export const STORAGE_KEYS = {
   SUMMARY_DIRTY: 'sm_summary_dirty_v1',
 };
 
+export const SUMMARY_TRACKED_KEYS = new Set<string>([
+  STORAGE_KEYS.PRODUCTS,
+  STORAGE_KEYS.CUSTOMERS,
+  STORAGE_KEYS.SUPPLIERS,
+  STORAGE_KEYS.INVOICES,
+  STORAGE_KEYS.PURCHASES,
+  STORAGE_KEYS.CASH_MOVEMENTS,
+  STORAGE_KEYS.EXPENSES,
+  STORAGE_KEYS.SALES_RETURNS,
+  STORAGE_KEYS.STOCK_ADJUSTMENTS,
+  STORAGE_KEYS.SHIFT,
+]);
+
 export const BUSINESS_KEYS = [
   STORAGE_KEYS.PRODUCTS,
   STORAGE_KEYS.CUSTOMERS,
@@ -108,6 +121,7 @@ class StorageService {
   private migrationRecoveryRequired: boolean = false;
   private legacyBackupTimestamp: number = 0;
   private onActionCallbacks: ((actionName: string) => void)[] = [];
+  private onSummaryDataChangeCallbacks: ((key: string) => void)[] = [];
   private initPromise: Promise<void> | null = null;
 
   public onAction(cb: (actionName: string) => void): () => void {
@@ -117,22 +131,37 @@ class StorageService {
     };
   }
 
+  public onSummaryDataChange(cb: (key: string) => void): () => void {
+    this.onSummaryDataChangeCallbacks.push(cb);
+    return () => {
+      this.onSummaryDataChangeCallbacks = this.onSummaryDataChangeCallbacks.filter(c => c !== cb);
+    };
+  }
+
+  private notifySummaryDataChange(key: string): void {
+    this.onSummaryDataChangeCallbacks.forEach(cb => {
+      try {
+        cb(key);
+      } catch (err) {
+        console.error('Error in onSummaryDataChange callback:', err);
+      }
+    });
+  }
+
   public getSummaryDirty(): boolean {
     return Boolean(this.getItem<boolean>(STORAGE_KEYS.SUMMARY_DIRTY, false));
   }
 
   public setSummaryDirty(dirty: boolean): void {
     const val = Boolean(dirty);
-    this.setItem<boolean>(STORAGE_KEYS.SUMMARY_DIRTY, val);
-    if (typeof indexedDB !== 'undefined' && !this.isFallback) {
-      idb.kv
-        .put({
-          key: STORAGE_KEYS.SUMMARY_DIRTY,
-          value: val,
-          updatedAt: Date.now(),
-        })
-        .catch(() => {});
+    this.cache.set(STORAGE_KEYS.SUMMARY_DIRTY, val);
+    if (this.isFallback && typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(STORAGE_KEYS.SUMMARY_DIRTY, JSON.stringify(val));
+      } catch {}
     }
+    this.pendingWrites.set(STORAGE_KEYS.SUMMARY_DIRTY, val);
+    this.scheduleBatchWrite();
   }
 
   public notifyAction(actionName: string): void {
@@ -226,6 +255,12 @@ class StorageService {
     // 3. Queue asynchronous write-through to IndexedDB
     this.pendingWrites.set(key, value);
     this.scheduleBatchWrite();
+
+    // 4. Detect changes to core business keys automatically (even if notifyAction wasn't called)
+    if (this.isReady && SUMMARY_TRACKED_KEYS.has(key)) {
+      this.setSummaryDirty(true);
+      this.notifySummaryDataChange(key);
+    }
   }
 
   private scheduleBatchWrite(): void {
@@ -435,10 +470,16 @@ class StorageService {
       } else if (idbCount > 0) {
         // CASE 2: IndexedDB has records -> Read all into in-memory cache
         const allRecords = await idb.kv.toArray();
+        const hasBusinessRecords = allRecords.some(rec => BUSINESS_KEYS.includes(rec.key));
         for (const rec of allRecords) {
           this.cache.set(rec.key, rec.value);
         }
         this.isFallback = false;
+
+        if (!hasBusinessRecords) {
+          this.initDatabase();
+          await this.flush();
+        }
 
         // Clean up old localStorage business data ONLY after 30 days of documented successful migration
         if (typeof localStorage !== 'undefined') {

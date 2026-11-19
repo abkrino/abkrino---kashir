@@ -1,6 +1,11 @@
 import { LICENSE_PUBLIC_KEY_JWK } from '../config/licensePublicKey';
 import { detectEnvironment } from './environmentService';
-import { APP_VERSION } from '../config/appConfig';
+import { APP_VERSION, CloudBudgetLimits } from '../config/appConfig';
+
+export interface LicenseFeatures {
+  cloudBudget?: Partial<CloudBudgetLimits>;
+  [key: string]: unknown;
+}
 
 export interface LicensePayload {
   v: number;
@@ -13,6 +18,7 @@ export interface LicensePayload {
   validUntil: string;
   graceDays: number;
   maxOfflineDays: number;
+  features?: LicenseFeatures;
 }
 
 export type LicenseStatus =
@@ -160,6 +166,9 @@ class LicenseService {
     const diffMs = Math.abs(serverTimestampMs - deviceNow);
     const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
+    const prevClockWarning = this.clockWarning;
+    const prevRollback = this.checkClockRollback();
+
     if (diffMs <= FIVE_MINUTES_MS) {
       // Within 5 minutes: Fix local lastSeenAt = deviceNow even if less than stored
       if (typeof localStorage !== 'undefined') {
@@ -168,12 +177,18 @@ class LicenseService {
         } catch {}
       }
       this.clockWarning = null;
-      this.notifyListeners();
+      const nextRollback = this.checkClockRollback();
+      if (prevClockWarning !== this.clockWarning || prevRollback !== nextRollback) {
+        this.notifyListeners();
+      }
       return { reconciled: true };
     } else {
       // Server diff is greater than 5 minutes: do not change lastSeenAt, show warning
       this.clockWarning = 'ساعة الجهاز تختلف عن الوقت الحقيقي';
-      this.notifyListeners();
+      const nextRollback = this.checkClockRollback();
+      if (prevClockWarning !== this.clockWarning || prevRollback !== nextRollback) {
+        this.notifyListeners();
+      }
       return {
         reconciled: false,
         warning: 'ساعة الجهاز تختلف عن الوقت الحقيقي',
@@ -598,3 +613,21 @@ export const licenseService = new LicenseService();
 export const initLicense = () => licenseService.initLicense();
 export const isStoreActivated = () => licenseService.isStoreActivated();
 
+export function getEffectiveLicenseFingerprint(state: LicenseStateResult): string {
+  const payload = state.payload;
+  const isOperational =
+    (state.status === 'valid' || state.status === 'grace') &&
+    Boolean(payload?.orgId && payload?.branchId);
+
+  if (!isOperational || !payload) {
+    return `inactive:${state.status}`;
+  }
+
+  return JSON.stringify({
+    status: state.status,
+    orgId: payload.orgId,
+    branchId: payload.branchId,
+    validUntil: payload.validUntil,
+    features: payload.features ?? null,
+  });
+}

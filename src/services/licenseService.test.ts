@@ -302,4 +302,62 @@ describe('licenseService Unit Tests', () => {
     expect(state.daysRemaining).toBeGreaterThanOrEqual(4);
     expect(state.canOperate).toBe(true);
   });
+
+  it('7. reconcileClockWithServer لا تستدعي notifyListeners عند تكرار القيم نفسها وتستدعيها فقط عند تغيّر حالة الساعة', async () => {
+    const deviceId = licenseService.getDeviceId();
+    const now = Date.now();
+    const validUntil = new Date(now + 365 * 24 * 60 * 60 * 1000);
+
+    const token = signToken({
+      v: 1,
+      orgId: 'org-test',
+      branchId: 'branch-1',
+      deviceId,
+      mode: 'offline',
+      plan: 'باقة سنوية',
+      issuedAt: new Date(now).toISOString(),
+      validUntil: validUntil.toISOString(),
+      graceDays: 7,
+      maxOfflineDays: 30,
+    });
+    await licenseService.verifyAndStoreLicense(token);
+
+    let listenerCalls = 0;
+    const unsub = licenseService.subscribe(() => {
+      listenerCalls++;
+    });
+
+    try {
+      // Same valid state + matching server time -> NO notification emitted
+      const res1 = licenseService.reconcileClockWithServer(Date.now());
+      expect(res1.reconciled).toBe(true);
+      expect(listenerCalls).toBe(0);
+
+      // Simulate clock rollback -> reconcile unlocks rollback -> notifies ONCE
+      localStorage.setItem('app_license_last_seen_at', String(Date.now() + 10 * 24 * 60 * 60 * 1000));
+      expect(licenseService.checkClockRollback()).toBe(true);
+
+      const res2 = licenseService.reconcileClockWithServer(Date.now());
+      expect(res2.reconciled).toBe(true);
+      expect(licenseService.checkClockRollback()).toBe(false);
+      expect(listenerCalls).toBe(1);
+
+      // Repeating matching reconcile again -> NO extra notifications
+      licenseService.reconcileClockWithServer(Date.now());
+      licenseService.reconcileClockWithServer(Date.now());
+      expect(listenerCalls).toBe(1);
+
+      // Crossing 5m skew threshold introduces clockWarning -> notifies ONCE, then silent on repeat
+      licenseService.reconcileClockWithServer(Date.now() + 15 * 60 * 1000);
+      expect(listenerCalls).toBe(2);
+      licenseService.reconcileClockWithServer(Date.now() + 15 * 60 * 1000);
+      expect(listenerCalls).toBe(2);
+
+      // Recovering back within 5m clears clockWarning -> notifies ONCE
+      licenseService.reconcileClockWithServer(Date.now());
+      expect(listenerCalls).toBe(3);
+    } finally {
+      unsub();
+    }
+  });
 });

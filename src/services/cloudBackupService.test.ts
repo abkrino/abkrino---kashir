@@ -267,6 +267,7 @@ import {
   STALE_INCOMPLETE_BACKUP_MS,
 } from './cloudBackupService';
 import { snapshotService } from './snapshotService';
+import { cloudBudgetService, BUDGET_EXCEEDED_MESSAGE_AR } from './cloudBudgetService';
 
 describe('Cloud Backup Service — Chunked Gzip Backup, Retention, Integrity & Credential-Free Restore', () => {
   beforeEach(async () => {
@@ -276,6 +277,7 @@ describe('Cloud Backup Service — Chunked Gzip Backup, Retention, Integrity & C
     orgSyncMockState.signInStatus = 'ok';
     cloudBackupService.resetInternalStateForTesting();
     cloudBackupService.setRetryDelayMsForTesting(0);
+    await cloudBudgetService.resetForTesting();
 
     if (typeof globalThis.navigator !== 'undefined') {
       vi.stubGlobal('navigator', { ...globalThis.navigator, onLine: true });
@@ -906,5 +908,56 @@ describe('Cloud Backup Service — Chunked Gzip Backup, Retention, Integrity & C
     const docsAfterTimer = firestoreMockState.operationLog.filter(o => o.op === 'setDoc').length;
     expect(docsAfterTimer).toBe(2);
     periodicSpy.mockRestore();
+  });
+
+  // 9. Circuit Breaker pauses automated/manual backup uploads at limit while allowing manual cloud restore (bypassBudget: true)
+  it('(9) Circuit Breaker يوقف رفع النسخ السحابية عند بلوغ الحد اليومي بينما تستمر الاستعادة السحابية اليدوية (bypassBudget)', async () => {
+    storage.loadDemoData();
+
+    // First upload succeeds cleanly while budget is available
+    const uploadRes = await cloudBackupService.createAndUploadBackup('manual', 'قبل بلوغ الحد');
+    expect(uploadRes.success).toBe(true);
+    const backupId = uploadRes.backup!.id;
+
+    // Modify data + exhaust daily write budget
+    const products = storage.getProducts();
+    storage.setItem(STORAGE_KEYS.PRODUCTS, [
+      ...products,
+      { ...products[0], id: 'p_budget_cap', name: 'صنف بعد الحد', barcode: '6220001112223' },
+    ]);
+    cloudBudgetService.setUsageForTesting({ writes: 1500, reads: 0, deletes: 0 });
+
+    const blockedDaily = await cloudBackupService.checkAndCreateDailyBackup();
+    expect(blockedDaily.success).toBe(false);
+    expect(blockedDaily.reason).toBe('budget_paused');
+    expect(blockedDaily.error).toBe(BUDGET_EXCEEDED_MESSAGE_AR);
+
+    const blockedManual = await cloudBackupService.createAndUploadBackup('manual');
+    expect(blockedManual.success).toBe(false);
+    expect(blockedManual.reason).toBe('budget_paused');
+
+    // Manual restore list + download MUST bypass daily budget so user can always recover data!
+    const listBypass = await cloudBackupService.listCompleteBackups({ bypassBudget: true });
+    expect(listBypass.success).toBe(true);
+    expect(listBypass.backups.length).toBeGreaterThanOrEqual(1);
+
+    const dlBypass = await cloudBackupService.downloadAndValidateBackup(backupId);
+    expect(dlBypass.success).toBe(true);
+    expect(dlBypass.validatedData).toBeDefined();
+  });
+
+  // 10. checkAndCreateDailyBackup single-flight deduplication
+  it('(10) checkAndCreateDailyBackup لا ترفع نسختين متزامنتين عند استدعائها مرتين بالتوازي (single-flight)', async () => {
+    storage.loadDemoData();
+
+    const [r1, r2] = await Promise.all([
+      cloudBackupService.checkAndCreateDailyBackup(),
+      cloudBackupService.checkAndCreateDailyBackup(),
+    ]);
+
+    expect(r1.success).toBe(true);
+    expect(r2.success).toBe(true);
+    expect(r1.backup?.id).toBe(r2.backup?.id);
+    expect(firestoreMockState.operationLog.filter(o => o.op === 'setDoc').length).toBe(1);
   });
 });

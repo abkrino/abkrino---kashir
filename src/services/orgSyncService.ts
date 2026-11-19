@@ -1,16 +1,30 @@
-import { doc, updateDoc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { doc, serverTimestamp } from 'firebase/firestore';
 import { signInWithEmailAndPassword, signOut as fbSignOut, onAuthStateChanged } from 'firebase/auth';
 import { db, auth, isCloudConfigured } from './cloudService';
 import { translateFirebaseError } from './firebaseErrorTranslator';
-import { licenseService } from './licenseService';
+import { licenseService, LicenseStateResult } from './licenseService';
 import { detectEnvironment } from './environmentService';
 import { storage } from './storageService';
 import { DailySummaryDoc } from '../types/cloud';
 import { SalesInvoice, PurchaseInvoice, Product, Customer, Supplier, SalesReturn } from '../types';
 import { APP_VERSION } from '../config/appConfig';
+import {
+  cloudBudgetService,
+  BUDGET_EXCEEDED_MESSAGE_AR,
+  SIX_HOUR_PAUSE_MS,
+  ERROR_BACKOFF_STEPS_MS,
+  computeBackoffDelayMs,
+  isSixHourPauseError,
+  isBudgetExceededError,
+  getMsUntilNextCairoMidnight,
+} from './cloudBudgetService';
 
-export const SUMMARY_DEBOUNCE_MS = 3000;
-export const SUMMARY_MIN_INTERVAL_MS = 3000;
+export const SUMMARY_DEBOUNCE_MS = 15000;
+export const SUMMARY_MIN_INTERVAL_MS = 15000;
+export const HEARTBEAT_MIN_INTERVAL_MS = 60000;
+export const CLOCK_RECONCILE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+const LAST_SYNCED_SUMMARY_SIG_KEY = 'sm_last_synced_summary_sig_v1';
 
 export type SyncState =
   | 'idle'
@@ -20,9 +34,24 @@ export type SyncState =
   | 'needs-login'
   | 'wrong-account'
   | 'subscription-paused'
+  | 'budget-paused'
   | 'offline'
   | 'no-license'
   | 'error';
+
+export type HeartbeatReason =
+  | 'startup'
+  | 'license-change'
+  | 'sign-in'
+  | 'manual'
+  | 'periodic'
+  | 'online'
+  | 'visibility';
+
+export interface HeartbeatOptions {
+  force?: boolean;
+  reason?: HeartbeatReason;
+}
 
 export interface RawStorageDailySummaryInput {
   invoices: SalesInvoice[];
@@ -46,6 +75,45 @@ export function getYyyyMmDdCairo(date: Date = new Date()): string {
     day: '2-digit',
   });
   return formatter.format(date);
+}
+
+// ---------------------------------------------------------------------------
+// Pure Helper: Compute Effective License Fingerprint
+// Ignores volatile fields (daysRemaining, clockWarning, message)
+// ---------------------------------------------------------------------------
+export function computeEffectiveLicenseFingerprint(licState: LicenseStateResult): string {
+  const payload = licState?.payload as (LicenseStateResult['payload'] & { features?: unknown }) | null | undefined;
+  const isOperational =
+    (licState?.status === 'valid' || licState?.status === 'grace') &&
+    Boolean(payload?.orgId && payload?.branchId);
+
+  if (!isOperational || !payload) {
+    return `inactive:${licState?.status ?? 'unlicensed'}`;
+  }
+
+  return JSON.stringify({
+    status: licState.status,
+    orgId: payload.orgId,
+    branchId: payload.branchId,
+    validUntil: payload.validUntil,
+    features: payload.features ?? null,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Pure Helper: Deterministic Daily Summary Payload Signature (without updatedAt)
+// ---------------------------------------------------------------------------
+export function computeDailySummarySignature(payload: Omit<DailySummaryDoc, 'updatedAt'>): string {
+  return JSON.stringify({
+    yyyyMMdd: payload.yyyyMMdd,
+    salesTotal: payload.salesTotal,
+    invoiceCount: payload.invoiceCount,
+    cashInDrawer: payload.cashInDrawer,
+    purchasesTotal: payload.purchasesTotal,
+    customerDebt: payload.customerDebt,
+    supplierDue: payload.supplierDue,
+    lowStockCount: payload.lowStockCount,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +176,7 @@ export function calculateDailySummaryData(input: RawStorageDailySummaryInput): O
 
 // ---------------------------------------------------------------------------
 // Pure Helper: Rate-Limiting Decision Logic
-// Maximum 1 write per minIntervalMs (default 3 seconds), unless forceImmediate is true.
+// Maximum 1 write per minIntervalMs (default 15 seconds), unless forceImmediate is true.
 // ---------------------------------------------------------------------------
 export function shouldPushSummary(
   currentTimeMs: number,
@@ -127,21 +195,34 @@ export function shouldPushSummary(
 class OrgSyncService {
   private syncState: SyncState = 'idle';
   private lastHeartbeatDate: Date | null = null;
+  private lastHeartbeatAttemptMs: number = 0;
+  private lastClockReconcileMs: number = 0;
+  private isHeartbeatInFlight: boolean = false;
   private lastDailySummaryDate: Date | null = null;
   private lastDailySummaryPushMs: number = 0;
+  private lastSuccessfulSummarySig: string | null = null;
   private statusMessage: string | null = null;
   private lastError: string | null = null;
   private listeners: (() => void)[] = [];
+  private signInListeners: (() => void)[] = [];
+  private licenseChangeListeners: (() => void)[] = [];
 
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private rescheduleSummaryTimer: ReturnType<typeof setTimeout> | null = null;
   private permissionRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private backoffTimer: ReturnType<typeof setTimeout> | null = null;
+  private budgetResumeTimer: ReturnType<typeof setTimeout> | null = null;
+
   private isSubPaused: boolean = false;
+  private backoffStep: number = 0;
+  private backoffUntilMs: number = 0;
   private isRunning: boolean = false;
   private isPushInFlight: boolean = false;
   private pendingRescheduleAfterPush: boolean = false;
   private actionSeq: number = 0;
+  private lastProcessedLicenseFingerprint: string | null = null;
+  private lastSeenAuthUid: string | null = null;
   private cleanupFns: (() => void)[] = [];
 
   constructor() {
@@ -160,14 +241,28 @@ class OrgSyncService {
   public startService(): void {
     if (this.isRunning) return;
     this.isRunning = true;
+    this.lastProcessedLicenseFingerprint = computeEffectiveLicenseFingerprint(
+      licenseService.getLicenseState()
+    );
+    this.lastSeenAuthUid = auth?.currentUser?.uid || null;
     this.initListeners();
+
+    // Hydrate persisted daily budget usage from IndexedDB (non-blocking)
+    cloudBudgetService.init().catch(() => {});
+
     if (!isCloudConfigured || !db || !auth) {
       this.syncState = 'unconfigured';
       this.notifyListeners();
       return;
     }
+
+    if (cloudBudgetService.isExceeded()) {
+      this.enterBudgetPaused();
+      return;
+    }
+
     if (typeof navigator === 'undefined' || navigator.onLine !== false) {
-      this.sendHeartbeat().catch(() => {});
+      this.sendHeartbeat({ reason: 'startup', force: true }).catch(() => {});
       if (this.isSummaryDirty()) {
         this.pushDailySummary(true).catch(() => {});
       }
@@ -176,6 +271,7 @@ class OrgSyncService {
 
   public stopService(): void {
     this.isRunning = false;
+    this.isHeartbeatInFlight = false;
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
@@ -192,6 +288,16 @@ class OrgSyncService {
       clearTimeout(this.permissionRetryTimer);
       this.permissionRetryTimer = null;
     }
+    if (this.backoffTimer) {
+      clearTimeout(this.backoffTimer);
+      this.backoffTimer = null;
+    }
+    if (this.budgetResumeTimer) {
+      clearTimeout(this.budgetResumeTimer);
+      this.budgetResumeTimer = null;
+    }
+    this.backoffStep = 0;
+    this.backoffUntilMs = 0;
     this.pendingRescheduleAfterPush = false;
     this.cleanupFns.forEach(fn => {
       try { fn(); } catch {}
@@ -207,7 +313,10 @@ class OrgSyncService {
           this.syncState = 'idle';
           this.notifyListeners();
         }
-        this.sendHeartbeat().catch(() => {});
+        if (this.syncState === 'budget-paused' && !cloudBudgetService.isExceeded()) {
+          this.resumeFromBudgetPause();
+        }
+        this.sendHeartbeat({ reason: 'online' }).catch(() => {});
         if (this.isSummaryDirty()) {
           this.pushDailySummary(true).catch(() => {});
         }
@@ -221,13 +330,31 @@ class OrgSyncService {
       };
       window.addEventListener('offline', onOffline);
       this.cleanupFns.push(() => window.removeEventListener('offline', onOffline));
+
+      // Immediate flush on pagehide before browser unloads page
+      const onPageHide = () => {
+        if (this.isSummaryDirty()) {
+          this.pushDailySummary(true).catch(() => {});
+        }
+      };
+      window.addEventListener('pagehide', onPageHide);
+      this.cleanupFns.push(() => window.removeEventListener('pagehide', onPageHide));
     }
 
     if (typeof document !== 'undefined') {
-      // Page visibility change
+      // Page visibility change: flush dirty summary immediately on hidden; heartbeat on visible
       const onVisibility = () => {
+        if (document.visibilityState === 'hidden') {
+          if (this.isSummaryDirty()) {
+            this.pushDailySummary(true).catch(() => {});
+          }
+          return;
+        }
         if (document.visibilityState === 'visible' && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
-          this.sendHeartbeat().catch(() => {});
+          if (this.syncState === 'budget-paused' && !cloudBudgetService.isExceeded()) {
+            this.resumeFromBudgetPause();
+          }
+          this.sendHeartbeat({ reason: 'visibility' }).catch(() => {});
         }
       };
       document.addEventListener('visibilitychange', onVisibility);
@@ -236,25 +363,58 @@ class OrgSyncService {
       // 15-minute periodic heartbeat timer
       this.heartbeatTimer = setInterval(() => {
         if (document.visibilityState === 'visible' && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
-          this.sendHeartbeat().catch(() => {});
+          if (this.syncState === 'budget-paused' && !cloudBudgetService.isExceeded()) {
+            this.resumeFromBudgetPause();
+          }
+          this.sendHeartbeat({ reason: 'periodic' }).catch(() => {});
         }
       }, 15 * 60 * 1000);
     }
 
-    // Storage action listener: sets persistent summaryDirty=true in IndexedDB + schedules 3-second debounced summary write
-    const unsubStorage = storage.onAction(() => {
-      this.handleStorageAction();
+    // Core business data change listener in storageService.setItem():
+    // Automatically sets summaryDirty=true and schedules 15-second debounced summary write.
+    const unsubSummaryData = storage.onSummaryDataChange(() => {
+      this.handleSummaryDataChange();
     });
-    this.cleanupFns.push(unsubStorage);
+    this.cleanupFns.push(unsubSummaryData);
 
-    // License change listener: resets subscription pause and flushes any pending dirty summary immediately
+    // Action listener for explicit shift closure immediate flush ONLY (no duplicate scheduling)
+    const unsubAction = storage.onAction((actionName) => {
+      if (actionName === 'SHIFT_CLOSED') {
+        this.pushDailySummary(true).catch(() => {});
+      }
+    });
+    this.cleanupFns.push(unsubAction);
+
+    // Budget rollover listener: auto-resume when Cairo day changes
+    const unsubBudget = cloudBudgetService.subscribe(() => {
+      if (this.syncState === 'budget-paused' && !cloudBudgetService.isExceeded()) {
+        this.resumeFromBudgetPause();
+      }
+    });
+    this.cleanupFns.push(unsubBudget);
+
+    // License change listener: strictly reacts ONLY when effective license fingerprint changes!
     const unsubLicense = licenseService.subscribe(() => {
+      const nextFingerprint = computeEffectiveLicenseFingerprint(
+        licenseService.getLicenseState()
+      );
+      if (nextFingerprint === this.lastProcessedLicenseFingerprint) {
+        // Ignore all redundant license notifications (e.g. from clock reconciliation or unrelated refreshes)
+        return;
+      }
+      this.lastProcessedLicenseFingerprint = nextFingerprint;
+
       if (this.isSubPaused) {
         this.resetSubscriptionPause();
       }
+      this.resetBackoff();
+
+      this.notifyLicenseChangeListeners();
+
       const hasValidCtx = this.getContext() !== null;
       if (hasValidCtx && isCloudConfigured && db && auth && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
-        this.sendHeartbeat().catch(() => {});
+        this.sendHeartbeat({ reason: 'license-change', force: true }).catch(() => {});
         if (this.isSummaryDirty()) {
           this.pushDailySummary(true).catch(() => {});
         }
@@ -268,7 +428,11 @@ class OrgSyncService {
     if (isCloudConfigured && auth) {
       try {
         const unsubAuth = onAuthStateChanged(auth, (user) => {
+          const nextUid = user?.uid || null;
+          const prevUid = this.lastSeenAuthUid;
+          this.lastSeenAuthUid = nextUid;
           const context = this.getContext();
+
           if (!user) {
             if (context && (this.syncState === 'synced' || this.syncState === 'wrong-account')) {
               this.syncState = 'needs-login';
@@ -288,14 +452,19 @@ class OrgSyncService {
             if (this.syncState === 'needs-login' || this.syncState === 'idle') {
               this.syncState = 'idle';
               this.lastError = null;
-              this.notifyListeners();
-            } else {
-              this.notifyListeners();
             }
-            if ((typeof navigator === 'undefined' || navigator.onLine !== false) && storage.isStorageReady()) {
-              this.sendHeartbeat().catch(() => {});
-              if (this.isSummaryDirty()) {
-                this.pushDailySummary(true).catch(() => {});
+            this.notifyListeners();
+
+            // Only trigger sign-in heartbeat & daily backup check if this is an auth transition (null -> uid)
+            if (prevUid !== nextUid) {
+              this.resetSubscriptionPause();
+              this.resetBackoff();
+              this.notifySignInListeners();
+              if ((typeof navigator === 'undefined' || navigator.onLine !== false) && storage.isStorageReady()) {
+                this.sendHeartbeat({ reason: 'sign-in', force: true }).catch(() => {});
+                if (this.isSummaryDirty()) {
+                  this.pushDailySummary(true).catch(() => {});
+                }
               }
             }
           } else {
@@ -307,12 +476,12 @@ class OrgSyncService {
     }
   }
 
-  public handleStorageAction(): void {
+  public handleSummaryDataChange(): void {
     this.actionSeq++;
     storage.setSummaryDirty(true);
     this.notifyListeners();
 
-    if (this.isSubPaused) {
+    if (this.isSubPaused || this.syncState === 'budget-paused' || this.isBackoffActive()) {
       return;
     }
 
@@ -323,6 +492,10 @@ class OrgSyncService {
     }
 
     this.scheduleDebouncedDailySummary();
+  }
+
+  public handleStorageAction(): void {
+    this.handleSummaryDataChange();
   }
 
   // -------------------------------------------------------------------------
@@ -390,8 +563,9 @@ class OrgSyncService {
       this.lastError = null;
       this.notifyListeners();
 
-      // Reset subscription pause on any new sign-in attempt
+      // Reset pause and error backoff on any new sign-in attempt
       this.resetSubscriptionPause();
+      this.resetBackoff();
 
       // STRICT REQUIREMENT: signInWithEmailAndPassword ONLY for store sync login. Password is never persisted.
       const cred = await signInWithEmailAndPassword(auth, cleanEmail, pass);
@@ -410,13 +584,15 @@ class OrgSyncService {
         return { success: false, error: mismatchMsg };
       }
 
+      this.lastSeenAuthUid = user.uid;
       this.syncState = 'synced';
       this.statusMessage = 'تم تسجيل دخول المحل للمزامنة بنجاح.';
       this.lastError = null;
       this.notifyListeners();
+      this.notifySignInListeners();
 
       // Trigger initial heartbeat and summary (especially if summaryDirty is true)
-      this.sendHeartbeat().catch(() => {});
+      this.sendHeartbeat({ reason: 'sign-in', force: true }).catch(() => {});
       this.pushDailySummary(true).catch(() => {});
 
       return { success: true };
@@ -431,11 +607,16 @@ class OrgSyncService {
   }
 
   public async signOutStore(): Promise<void> {
+    // Requirement 4c: Flush dirty daily summary BEFORE signing out Firebase Auth
+    if (this.isSummaryDirty()) {
+      await this.pushDailySummary(true).catch(() => {});
+    }
     try {
       if (isCloudConfigured && auth) {
         await fbSignOut(auth);
       }
     } catch {}
+    this.lastSeenAuthUid = null;
     this.syncState = isCloudConfigured ? 'needs-login' : 'unconfigured';
     this.statusMessage = null;
     this.lastError = null;
@@ -443,16 +624,41 @@ class OrgSyncService {
   }
 
   // -------------------------------------------------------------------------
-  // 4. sendHeartbeat(): updateDoc with serverTimestamp() + clock reconcile
+  // 4. sendHeartbeat(): Single-flight + 60s min interval + 6h clock reconcile + Circuit Breaker
   // -------------------------------------------------------------------------
-  public async sendHeartbeat(): Promise<{ success: boolean; error?: string }> {
-    if (!storage.isStorageReady()) return { success: false, error: 'storage-not-ready' };
+  public async sendHeartbeat(options?: HeartbeatOptions): Promise<{ success: boolean; error?: string; skipped?: boolean }> {
+    const reason: HeartbeatReason = options?.reason || 'periodic';
+    const bypassCooldown =
+      Boolean(options?.force) ||
+      reason === 'startup' ||
+      reason === 'license-change' ||
+      reason === 'sign-in' ||
+      reason === 'manual';
+
+    if (this.isHeartbeatInFlight) {
+      return { success: false, skipped: true, error: 'heartbeat-in-flight' };
+    }
+    if (!storage.isStorageReady()) return { success: false, skipped: true, error: 'storage-not-ready' };
     if (!isCloudConfigured || !db || !auth) {
       this.syncState = 'unconfigured';
       this.notifyListeners();
       return { success: false, error: 'السحابة غير مُعدّة بعد.' };
     }
-    if (this.isSubPaused) return { success: false, error: 'subscription-paused' };
+    if (this.isSubPaused) return { success: false, skipped: true, error: 'subscription-paused' };
+
+    if (cloudBudgetService.isExceeded()) {
+      this.enterBudgetPaused();
+      return { success: false, skipped: true, error: BUDGET_EXCEEDED_MESSAGE_AR };
+    }
+
+    if (!bypassCooldown && this.isBackoffActive()) {
+      return { success: false, skipped: true, error: 'backoff-active' };
+    }
+
+    const now = Date.now();
+    if (!bypassCooldown && this.lastHeartbeatAttemptMs > 0 && (now - this.lastHeartbeatAttemptMs) < HEARTBEAT_MIN_INTERVAL_MS) {
+      return { success: false, skipped: true, error: 'heartbeat-cooldown' };
+    }
 
     const context = this.getContext();
     if (!context) {
@@ -480,44 +686,61 @@ class OrgSyncService {
       };
     }
 
+    this.isHeartbeatInFlight = true;
+    this.lastHeartbeatAttemptMs = now;
+
     try {
       const env = detectEnvironment();
       const branchRef = doc(db, 'orgs', context.orgId, 'branches', context.branchId);
 
-      await updateDoc(branchRef, {
+      await cloudBudgetService.budgetedUpdateDoc(branchRef, {
         lastSeenAt: serverTimestamp(),
         appVersion: APP_VERSION,
         windowsVersion: env.windowsVersion,
         mode: context.mode,
       });
 
-      // Read back server lastSeenAt to reconcile clock
-      try {
-        const branchSnap = await getDoc(branchRef);
-        if (branchSnap.exists()) {
-          const branchData = branchSnap.data();
-          const serverTime = branchData?.lastSeenAt;
-          if (serverTime) {
-            let serverMs: number | null = null;
-            if (typeof serverTime.toMillis === 'function') {
-              serverMs = serverTime.toMillis();
-            } else if (typeof serverTime.toDate === 'function') {
-              serverMs = serverTime.toDate().getTime();
-            } else if (serverTime instanceof Date) {
-              serverMs = serverTime.getTime();
-            } else if (typeof serverTime === 'number') {
-              serverMs = serverTime;
-            }
-            if (serverMs !== null) {
-              const clockRes = licenseService.reconcileClockWithServer(serverMs);
-              if (!clockRes.reconciled && clockRes.warning) {
-                this.statusMessage = clockRes.warning;
+      this.resetBackoff();
+
+      // Reconcile clock ONLY at startup (lastClockReconcileMs === 0) or every 6 hours
+      const nowAfterWrite = Date.now();
+      const shouldReconcileClock =
+        this.lastClockReconcileMs === 0 ||
+        (nowAfterWrite - this.lastClockReconcileMs) >= CLOCK_RECONCILE_INTERVAL_MS;
+
+      if (shouldReconcileClock) {
+        try {
+          const branchSnap = await cloudBudgetService.budgetedGetDoc(branchRef);
+          this.lastClockReconcileMs = Date.now();
+          if (branchSnap.exists()) {
+            const branchData = branchSnap.data();
+            const serverTime = branchData?.lastSeenAt;
+            if (serverTime) {
+              let serverMs: number | null = null;
+              if (typeof serverTime.toMillis === 'function') {
+                serverMs = serverTime.toMillis();
+              } else if (typeof serverTime.toDate === 'function') {
+                serverMs = serverTime.toDate().getTime();
+              } else if (serverTime instanceof Date) {
+                serverMs = serverTime.getTime();
+              } else if (typeof serverTime === 'number') {
+                serverMs = serverTime;
+              }
+              if (serverMs !== null) {
+                const clockRes = licenseService.reconcileClockWithServer(serverMs);
+                if (!clockRes.reconciled && clockRes.warning) {
+                  this.statusMessage = clockRes.warning;
+                }
               }
             }
           }
+        } catch (clockErr) {
+          if (isBudgetExceededError(clockErr)) {
+            this.enterBudgetPaused();
+            return { success: false, error: BUDGET_EXCEEDED_MESSAGE_AR };
+          }
+          console.warn('Clock reconciliation read error:', clockErr);
         }
-      } catch (clockErr) {
-        console.warn('Clock reconciliation read error:', clockErr);
       }
 
       this.lastHeartbeatDate = new Date();
@@ -529,6 +752,8 @@ class OrgSyncService {
       return { success: true };
     } catch (err: unknown) {
       return this.handleSyncError(err, 'sendHeartbeat');
+    } finally {
+      this.isHeartbeatInFlight = false;
     }
   }
 
@@ -548,8 +773,9 @@ class OrgSyncService {
       if (this.isSubPaused) {
         this.resetSubscriptionPause();
       }
+      this.resetBackoff();
 
-      const res = await this.sendHeartbeat();
+      const res = await this.sendHeartbeat({ force: true, reason: 'manual' });
       if (res.success) {
         if (this.isSummaryDirty()) {
           this.pushDailySummary(true).catch(() => {});
@@ -573,10 +799,40 @@ class OrgSyncService {
   }
 
   // -------------------------------------------------------------------------
-  // 5. pushDailySummary(): 3-second debounce batching + max 1 write / 3s + no overlap
+  // 5. pushDailySummary(): 15-second debounce + max 1 write / 15s + no overlap + deduplication
   // -------------------------------------------------------------------------
+  private getLastSyncedSignature(): string | null {
+    if (this.lastSuccessfulSummarySig) return this.lastSuccessfulSummarySig;
+    if (typeof localStorage !== 'undefined') {
+      try {
+        return localStorage.getItem(LAST_SYNCED_SUMMARY_SIG_KEY);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  private saveLastSyncedSignature(sig: string): void {
+    this.lastSuccessfulSummarySig = sig;
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.setItem(LAST_SYNCED_SUMMARY_SIG_KEY, sig);
+      } catch {}
+    }
+  }
+
+  private clearLastSyncedSignature(): void {
+    this.lastSuccessfulSummarySig = null;
+    if (typeof localStorage !== 'undefined') {
+      try {
+        localStorage.removeItem(LAST_SYNCED_SUMMARY_SIG_KEY);
+      } catch {}
+    }
+  }
+
   private scheduleDebouncedDailySummary() {
-    if (this.isSubPaused) return;
+    if (this.isSubPaused || this.syncState === 'budget-paused' || this.isBackoffActive()) return;
 
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
@@ -588,7 +844,7 @@ class OrgSyncService {
     }, SUMMARY_DEBOUNCE_MS);
   }
 
-  public async pushDailySummary(forceImmediate: boolean = false): Promise<{ success: boolean; error?: string }> {
+  public async pushDailySummary(forceImmediate: boolean = false): Promise<{ success: boolean; error?: string; skipped?: boolean }> {
     if (!storage.isStorageReady()) return { success: false, error: 'storage-not-ready' };
     if (!isCloudConfigured || !db || !auth) {
       this.syncState = 'unconfigured';
@@ -596,6 +852,15 @@ class OrgSyncService {
       return { success: false, error: 'السحابة غير مُعدّة بعد.' };
     }
     if (this.isSubPaused) return { success: false, error: 'subscription-paused' };
+
+    if (cloudBudgetService.isExceeded()) {
+      this.enterBudgetPaused();
+      return { success: false, skipped: true, error: BUDGET_EXCEEDED_MESSAGE_AR };
+    }
+
+    if (!forceImmediate && this.isBackoffActive()) {
+      return { success: false, skipped: true, error: 'backoff-active' };
+    }
 
     const context = this.getContext();
     if (!context) {
@@ -617,13 +882,18 @@ class OrgSyncService {
       return { success: false, error: authCheck };
     }
 
+    if (forceImmediate && this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+
     // Prevent overlapping writes: if a write is currently in progress, queue a trailing write
     if (this.isPushInFlight) {
       this.pendingRescheduleAfterPush = true;
       return { success: true };
     }
 
-    // Protection rate-limit: maximum 1 write every 3 seconds unless forceImmediate is true
+    // Protection rate-limit: maximum 1 write every 15 seconds unless forceImmediate is true
     const now = Date.now();
     if (!shouldPushSummary(now, this.lastDailySummaryPushMs, SUMMARY_MIN_INTERVAL_MS, forceImmediate)) {
       const elapsed = now - this.lastDailySummaryPushMs;
@@ -648,9 +918,6 @@ class OrgSyncService {
     const capturedSeq = this.actionSeq;
 
     try {
-      this.syncState = 'syncing';
-      this.notifyListeners();
-
       const cairoDateStr = getYyyyMmDdCairo(new Date());
 
       const summaryPayload = calculateDailySummaryData({
@@ -679,6 +946,23 @@ class OrgSyncService {
         return { success: false, error: 'data-not-loaded-or-all-zeros' };
       }
 
+      // Requirement 4d: Payload deduplication (excluding updatedAt)
+      const scopedSig = `${context.orgId}:${context.branchId}:${computeDailySummarySignature(summaryPayload)}`;
+      if (this.getLastSyncedSignature() === scopedSig) {
+        if (this.actionSeq === capturedSeq) {
+          storage.setSummaryDirty(false);
+        } else {
+          this.pendingRescheduleAfterPush = true;
+        }
+        this.lastError = null;
+        this.syncState = 'synced';
+        this.notifyListeners();
+        return { success: true, skipped: true };
+      }
+
+      this.syncState = 'syncing';
+      this.notifyListeners();
+
       const summaryRef = doc(
         db,
         'orgs',
@@ -689,15 +973,17 @@ class OrgSyncService {
         cairoDateStr
       );
 
-      await setDoc(summaryRef, {
+      await cloudBudgetService.budgetedSetDoc(summaryRef, {
         ...summaryPayload,
         updatedAt: serverTimestamp(),
       });
 
+      this.saveLastSyncedSignature(scopedSig);
       this.lastDailySummaryDate = new Date();
       this.lastDailySummaryPushMs = Date.now();
       this.lastError = null;
       this.syncState = 'synced';
+      this.resetBackoff();
 
       // Clear summaryDirty ONLY if no newer action arrived while setDoc was in flight
       if (this.actionSeq === capturedSeq) {
@@ -721,7 +1007,67 @@ class OrgSyncService {
   }
 
   // -------------------------------------------------------------------------
-  // Subscription Pause and 6-hour Retry Handling
+  // Budget Circuit Breaker Pause & Cairo Midnight Auto-Resume
+  // -------------------------------------------------------------------------
+  private enterBudgetPaused(): void {
+    if (this.debounceTimer) {
+      clearTimeout(this.debounceTimer);
+      this.debounceTimer = null;
+    }
+    if (this.rescheduleSummaryTimer) {
+      clearTimeout(this.rescheduleSummaryTimer);
+      this.rescheduleSummaryTimer = null;
+    }
+    if (this.backoffTimer) {
+      clearTimeout(this.backoffTimer);
+      this.backoffTimer = null;
+    }
+    this.pendingRescheduleAfterPush = false;
+    this.syncState = 'budget-paused';
+    this.statusMessage = BUDGET_EXCEEDED_MESSAGE_AR;
+    this.lastError = BUDGET_EXCEEDED_MESSAGE_AR;
+    this.scheduleBudgetMidnightResume();
+    this.notifyListeners();
+  }
+
+  private scheduleBudgetMidnightResume(): void {
+    if (this.budgetResumeTimer) {
+      clearTimeout(this.budgetResumeTimer);
+    }
+    const msUntilMidnight = getMsUntilNextCairoMidnight(new Date());
+    this.budgetResumeTimer = setTimeout(() => {
+      this.budgetResumeTimer = null;
+      // Checking getUsage() rolls over if Cairo calendar date changed
+      cloudBudgetService.getUsage();
+      if (!cloudBudgetService.isExceeded()) {
+        this.resumeFromBudgetPause();
+      } else {
+        this.scheduleBudgetMidnightResume();
+      }
+    }, msUntilMidnight);
+  }
+
+  private resumeFromBudgetPause(): void {
+    if (this.budgetResumeTimer) {
+      clearTimeout(this.budgetResumeTimer);
+      this.budgetResumeTimer = null;
+    }
+    if (this.syncState === 'budget-paused') {
+      this.syncState = 'idle';
+      this.statusMessage = null;
+      this.lastError = null;
+      this.notifyListeners();
+      if (this.isRunning && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+        this.sendHeartbeat({ reason: 'periodic' }).catch(() => {});
+        if (this.isSummaryDirty()) {
+          this.pushDailySummary(true).catch(() => {});
+        }
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Subscription / Quota Pause (6h) and Exponential Error Backoff (30s..30m)
   // -------------------------------------------------------------------------
   public resetSubscriptionPause(): void {
     this.isSubPaused = false;
@@ -735,22 +1081,74 @@ class OrgSyncService {
     this.notifyListeners();
   }
 
-  public schedulePermissionRetry(retryDelayMs: number = 6 * 60 * 60 * 1000): void {
+  public schedulePermissionRetry(retryDelayMs: number = SIX_HOUR_PAUSE_MS): void {
     if (this.permissionRetryTimer) {
       clearTimeout(this.permissionRetryTimer);
     }
     this.permissionRetryTimer = setTimeout(() => {
       this.permissionRetryTimer = null;
       this.resetSubscriptionPause();
-      this.sendHeartbeat().catch(() => {});
-      this.pushDailySummary(false).catch(() => {});
+      this.sendHeartbeat({ reason: 'periodic' }).catch(() => {});
+      if (this.isSummaryDirty()) {
+        this.pushDailySummary(false).catch(() => {});
+      }
     }, retryDelayMs);
   }
 
+  public isBackoffActive(): boolean {
+    return this.backoffUntilMs > Date.now();
+  }
+
+  public getBackoffStep(): number {
+    return this.backoffStep;
+  }
+
+  public getBackoffUntilMs(): number {
+    return this.backoffUntilMs;
+  }
+
+  public getBackoffTimer(): ReturnType<typeof setTimeout> | null {
+    return this.backoffTimer;
+  }
+
+  private resetBackoff(): void {
+    this.backoffStep = 0;
+    this.backoffUntilMs = 0;
+    if (this.backoffTimer) {
+      clearTimeout(this.backoffTimer);
+      this.backoffTimer = null;
+    }
+  }
+
+  private scheduleErrorBackoff(): number {
+    const delayMs = computeBackoffDelayMs(this.backoffStep);
+    this.backoffStep = Math.min(this.backoffStep + 1, ERROR_BACKOFF_STEPS_MS.length - 1);
+    this.backoffUntilMs = Date.now() + delayMs;
+    if (this.backoffTimer) {
+      clearTimeout(this.backoffTimer);
+    }
+    this.backoffTimer = setTimeout(() => {
+      this.backoffTimer = null;
+      this.backoffUntilMs = 0;
+      if (!this.isRunning || this.isSubPaused || this.syncState === 'budget-paused') return;
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+      this.sendHeartbeat({ reason: 'periodic' }).catch(() => {});
+      if (this.isSummaryDirty()) {
+        this.pushDailySummary(false).catch(() => {});
+      }
+    }, delayMs);
+    return delayMs;
+  }
+
   // -------------------------------------------------------------------------
-  // Error Handler: Handle permission-denied with 6-hour retry without cashier crashes
+  // Unified Error Handler
   // -------------------------------------------------------------------------
   private handleSyncError(err: unknown, op: string): { success: boolean; error: string } {
+    if (isBudgetExceededError(err)) {
+      this.enterBudgetPaused();
+      return { success: false, error: BUDGET_EXCEEDED_MESSAGE_AR };
+    }
+
     const errObj = err as { code?: string; message?: string };
     const errCode = (errObj?.code || '').toLowerCase();
     const errMessage = (errObj?.message || String(err)).toLowerCase();
@@ -758,17 +1156,36 @@ class OrgSyncService {
 
     console.warn(`OrgSyncService [${op}] encountered issue:`, errObj?.message || String(err));
 
-    if (errCode.includes('permission-denied') || errMessage.includes('permission-denied') || errMessage.includes('insufficient permissions')) {
+    // permission-denied & resource-exhausted -> 6h pause with NO immediate retry
+    if (isSixHourPauseError(err)) {
       this.isSubPaused = true;
       this.syncState = 'subscription-paused';
       this.statusMessage = translated;
       this.lastError = translated;
-      this.schedulePermissionRetry();
+      this.resetBackoff();
+      if (this.debounceTimer) {
+        clearTimeout(this.debounceTimer);
+        this.debounceTimer = null;
+      }
+      if (this.rescheduleSummaryTimer) {
+        clearTimeout(this.rescheduleSummaryTimer);
+        this.rescheduleSummaryTimer = null;
+      }
+      this.pendingRescheduleAfterPush = false;
+      this.schedulePermissionRetry(SIX_HOUR_PAUSE_MS);
       this.notifyListeners();
       return { success: false, error: translated };
     }
 
-    if (errCode.includes('unavailable') || errMessage.includes('offline') || errCode.includes('network-request-failed') || errMessage.includes('unavailable')) {
+    // All other errors -> exponential backoff (30s -> 1m -> 2m -> 5m -> 15m -> 30m max + jitter)
+    this.scheduleErrorBackoff();
+
+    if (
+      errCode.includes('unavailable') ||
+      errMessage.includes('offline') ||
+      errCode.includes('network-request-failed') ||
+      errMessage.includes('unavailable')
+    ) {
       this.syncState = 'offline';
       this.statusMessage = translated;
       this.lastError = translated;
@@ -798,6 +1215,18 @@ class OrgSyncService {
     return this.lastDailySummaryDate;
   }
 
+  public getLastClockReconcileMs(): number {
+    return this.lastClockReconcileMs;
+  }
+
+  public setLastClockReconcileMsForTesting(ms: number): void {
+    this.lastClockReconcileMs = ms;
+  }
+
+  public setLastHeartbeatAttemptMsForTesting(ms: number): void {
+    this.lastHeartbeatAttemptMs = ms;
+  }
+
   public getStatusMessage(): string | null {
     return this.statusMessage;
   }
@@ -822,6 +1251,10 @@ class OrgSyncService {
     return this.permissionRetryTimer;
   }
 
+  public getBudgetResumeTimer(): ReturnType<typeof setTimeout> | null {
+    return this.budgetResumeTimer;
+  }
+
   public setLastDailySummaryPushMs(timeMs: number): void {
     this.lastDailySummaryPushMs = timeMs;
   }
@@ -835,14 +1268,22 @@ class OrgSyncService {
     this.stopService();
     this.syncState = 'idle';
     this.lastHeartbeatDate = null;
+    this.lastHeartbeatAttemptMs = 0;
+    this.lastClockReconcileMs = 0;
+    this.isHeartbeatInFlight = false;
     this.lastDailySummaryDate = null;
     this.lastDailySummaryPushMs = 0;
+    this.clearLastSyncedSignature();
     this.statusMessage = null;
     this.lastError = null;
     this.isSubPaused = false;
+    this.backoffStep = 0;
+    this.backoffUntilMs = 0;
     this.isPushInFlight = false;
     this.pendingRescheduleAfterPush = false;
     this.actionSeq = 0;
+    this.lastProcessedLicenseFingerprint = null;
+    this.lastSeenAuthUid = null;
   }
 
   public subscribe(listener: () => void): () => void {
@@ -852,8 +1293,38 @@ class OrgSyncService {
     };
   }
 
+  public onStoreSignIn(listener: () => void): () => void {
+    this.signInListeners.push(listener);
+    return () => {
+      this.signInListeners = this.signInListeners.filter(l => l !== listener);
+    };
+  }
+
+  public onLicenseFingerprintChange(listener: () => void): () => void {
+    this.licenseChangeListeners.push(listener);
+    return () => {
+      this.licenseChangeListeners = this.licenseChangeListeners.filter(l => l !== listener);
+    };
+  }
+
   private notifyListeners() {
     for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch {}
+    }
+  }
+
+  private notifySignInListeners() {
+    for (const listener of this.signInListeners) {
+      try {
+        listener();
+      } catch {}
+    }
+  }
+
+  private notifyLicenseChangeListeners() {
+    for (const listener of this.licenseChangeListeners) {
       try {
         listener();
       } catch {}

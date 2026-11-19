@@ -47,6 +47,15 @@ export function translateFirebaseError(err: unknown): string {
   }
 
   if (
+    rawCode === 'resource-exhausted' ||
+    rawCode === 'firestore/resource-exhausted' ||
+    combined.includes('resource-exhausted') ||
+    combined.includes('quota exceeded')
+  ) {
+    return 'تم بلوغ الحد السحابي المسموح مؤقتاً (resource-exhausted): تم إيقاف المزامنة لمدة 6 ساعات وتستمر البيانات محلياً بأمان.';
+  }
+
+  if (
     rawCode === 'not-found' ||
     rawCode === 'firestore/not-found' ||
     combined.includes('not-found') ||

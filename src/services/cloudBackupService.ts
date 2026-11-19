@@ -1,11 +1,6 @@
 import {
   doc,
   collection,
-  getDoc,
-  getDocs,
-  setDoc,
-  updateDoc,
-  deleteDoc,
   writeBatch,
   serverTimestamp,
   Firestore,
@@ -24,6 +19,15 @@ import { storage, getCairoDateString } from './storageService';
 import { APP_VERSION } from '../config/appConfig';
 import { BackupMetadata, CloudBackupTrigger } from '../types/cloud';
 import { User } from '../types';
+import {
+  cloudBudgetService,
+  BUDGET_EXCEEDED_MESSAGE_AR,
+  SIX_HOUR_PAUSE_MS,
+  ERROR_BACKOFF_STEPS_MS,
+  computeBackoffDelayMs,
+  isSixHourPauseError,
+  isBudgetExceededError,
+} from './cloudBudgetService';
 
 export const CHUNK_MAX_CHARS = 700_000;
 export const MAX_BATCH_BYTES = 3 * 1024 * 1024; // 3 MB safe limit per writeBatch
@@ -68,6 +72,8 @@ export interface CloudBackupOperationResult {
     | 'needs_login'
     | 'wrong_account'
     | 'permission_paused'
+    | 'budget_paused'
+    | 'backoff_paused'
     | 'in_progress'
     | 'no_changes'
     | 'empty_data'
@@ -371,17 +377,6 @@ export function selectBackupsToKeepAndDelete(
   return { keepIds, deleteIds };
 }
 
-function isPermissionDeniedError(err: unknown): boolean {
-  const obj = (err && typeof err === 'object' ? err : {}) as { code?: unknown; message?: unknown };
-  const code = typeof obj.code === 'string' ? obj.code.toLowerCase() : '';
-  const msg = typeof obj.message === 'string' ? obj.message.toLowerCase() : String(err ?? '').toLowerCase();
-  return (
-    code.includes('permission-denied') ||
-    msg.includes('permission-denied') ||
-    msg.includes('missing or insufficient permissions')
-  );
-}
-
 function isTransientNetworkError(err: unknown): boolean {
   const obj = (err && typeof err === 'object' ? err : {}) as { code?: unknown; message?: unknown };
   const code = typeof obj.code === 'string' ? obj.code.toLowerCase() : '';
@@ -405,7 +400,11 @@ function isTransientNetworkError(err: unknown): boolean {
 
 class CloudBackupService {
   private isUploading = false;
+  private inFlightDailyPromise: Promise<CloudBackupOperationResult> | null = null;
   private permissionPaused = false;
+  private permissionRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private backoffStep = 0;
+  private backoffUntilMs = 0;
   private lastError: string | null = null;
   private dropAlert: string | null = null;
   private listeners: (() => void)[] = [];
@@ -419,7 +418,14 @@ class CloudBackupService {
   public resetInternalStateForTesting(): void {
     this.stopPeriodicBackup();
     this.isUploading = false;
+    this.inFlightDailyPromise = null;
     this.permissionPaused = false;
+    if (this.permissionRetryTimer) {
+      clearTimeout(this.permissionRetryTimer);
+      this.permissionRetryTimer = null;
+    }
+    this.backoffStep = 0;
+    this.backoffUntilMs = 0;
     this.lastError = null;
     this.dropAlert = null;
   }
@@ -454,6 +460,17 @@ class CloudBackupService {
     }
     if (this.permissionPaused) {
       return { success: false, skipped: true, reason: 'permission_paused' };
+    }
+    if (cloudBudgetService.isExceeded()) {
+      return {
+        success: false,
+        skipped: true,
+        reason: 'budget_paused',
+        error: BUDGET_EXCEEDED_MESSAGE_AR,
+      };
+    }
+    if (this.backoffUntilMs > Date.now()) {
+      return { success: false, skipped: true, reason: 'backoff_paused' };
     }
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
       return { success: false, skipped: true, reason: 'offline' };
@@ -495,10 +512,60 @@ class CloudBackupService {
   }
 
   public resetPermissionPause(): void {
+    let changed = false;
     if (this.permissionPaused) {
       this.permissionPaused = false;
+      changed = true;
+    }
+    if (this.permissionRetryTimer) {
+      clearTimeout(this.permissionRetryTimer);
+      this.permissionRetryTimer = null;
+    }
+    if (this.backoffStep !== 0 || this.backoffUntilMs !== 0) {
+      this.backoffStep = 0;
+      this.backoffUntilMs = 0;
+      changed = true;
+    }
+    if (changed) {
       this.notifyListeners();
     }
+  }
+
+  public getBackoffStep(): number {
+    return this.backoffStep;
+  }
+
+  public getBackoffUntilMs(): number {
+    return this.backoffUntilMs;
+  }
+
+  public getPermissionRetryTimer(): ReturnType<typeof setTimeout> | null {
+    return this.permissionRetryTimer;
+  }
+
+  private activateSixHourPause(): void {
+    this.permissionPaused = true;
+    this.backoffStep = 0;
+    this.backoffUntilMs = 0;
+    if (this.permissionRetryTimer) {
+      clearTimeout(this.permissionRetryTimer);
+    }
+    this.permissionRetryTimer = setTimeout(() => {
+      this.permissionRetryTimer = null;
+      this.permissionPaused = false;
+      this.notifyListeners();
+    }, SIX_HOUR_PAUSE_MS);
+  }
+
+  private recordFailureBackoff(): void {
+    const delayMs = computeBackoffDelayMs(this.backoffStep);
+    this.backoffStep = Math.min(this.backoffStep + 1, ERROR_BACKOFF_STEPS_MS.length - 1);
+    this.backoffUntilMs = Date.now() + delayMs;
+  }
+
+  private resetBackoff(): void {
+    this.backoffStep = 0;
+    this.backoffUntilMs = 0;
   }
 
   public getLastError(): string | null {
@@ -548,7 +615,12 @@ class CloudBackupService {
       try {
         return await fn();
       } catch (err) {
-        if (isPermissionDeniedError(err) || !isTransientNetworkError(err) || attempt >= maxRetries) {
+        if (
+          isSixHourPauseError(err) ||
+          isBudgetExceededError(err) ||
+          !isTransientNetworkError(err) ||
+          attempt >= maxRetries
+        ) {
           throw err;
         }
         attempt++;
@@ -576,7 +648,7 @@ class CloudBackupService {
       backupId,
       'chunks'
     );
-    const chunkSnap = await getDocs(chunksCol);
+    const chunkSnap = await cloudBudgetService.budgetedGetDocs(chunksCol);
     const chunkDocs = chunkSnap.docs || [];
 
     // Delete chunks in batches <= 400 first
@@ -586,12 +658,12 @@ class CloudBackupService {
       for (const cDoc of slice) {
         batch.delete(cDoc.ref);
       }
-      await batch.commit();
+      await cloudBudgetService.budgetedCommitBatch(batch, { deletes: slice.length });
     }
 
     // Then delete metadata doc
     const backupRef = doc(firestoreDb, 'orgs', orgId, 'branches', branchId, 'backups', backupId);
-    await deleteDoc(backupRef);
+    await cloudBudgetService.budgetedDeleteDoc(backupRef);
   }
 
   private toSummary(id: string, meta: BackupMetadata): CloudBackupSummary {
@@ -621,7 +693,9 @@ class CloudBackupService {
    * Excludes any incomplete backups (`status !== 'complete'`).
    * Cleans up stale incomplete backups older than 24h in background.
    */
-  public async listCompleteBackups(): Promise<{
+  public async listCompleteBackups(options?: {
+    bypassBudget?: boolean;
+  }): Promise<{
     success: boolean;
     backups: CloudBackupSummary[];
     error?: string;
@@ -647,7 +721,9 @@ class CloudBackupService {
 
     try {
       const backupsCol = collection(db, 'orgs', context.orgId, 'branches', context.branchId, 'backups');
-      const snap = await this.runWithTransientRetry(() => getDocs(backupsCol));
+      const snap = await this.runWithTransientRetry(() =>
+        cloudBudgetService.budgetedGetDocs(backupsCol, { bypassBudget: options?.bypassBudget })
+      );
 
       const completeList: CloudBackupSummary[] = [];
       const staleIncompleteIds: string[] = [];
@@ -681,7 +757,7 @@ class CloudBackupService {
       }
 
       // Best-effort cleanup of stale incomplete backups (> 24h)
-      if (staleIncompleteIds.length > 0 && !this.permissionPaused) {
+      if (staleIncompleteIds.length > 0 && !this.permissionPaused && !cloudBudgetService.isExceeded()) {
         for (const staleId of staleIncompleteIds) {
           this.deleteBackupAndChunks(db, context.orgId, context.branchId, staleId).catch(() => {});
         }
@@ -689,9 +765,14 @@ class CloudBackupService {
 
       return { success: true, backups: completeList };
     } catch (err) {
+      if (isBudgetExceededError(err)) {
+        this.lastError = BUDGET_EXCEEDED_MESSAGE_AR;
+        this.notifyListeners();
+        return { success: false, backups: [], error: BUDGET_EXCEEDED_MESSAGE_AR };
+      }
       const translated = translateFirebaseError(err);
-      if (isPermissionDeniedError(err)) {
-        this.permissionPaused = true;
+      if (isSixHourPauseError(err)) {
+        this.activateSixHourPause();
       }
       this.lastError = translated;
       this.notifyListeners();
@@ -701,22 +782,54 @@ class CloudBackupService {
 
   /**
    * Checks daily backup status and creates today's backup once per Cairo calendar day.
-   * Non-blocking for app startup.
+   * Single-flight guarded so concurrent callers never upload duplicates.
    */
   public async checkAndCreateDailyBackup(): Promise<CloudBackupOperationResult> {
+    if (this.inFlightDailyPromise) {
+      return this.inFlightDailyPromise;
+    }
     if (!storage.isStorageReady()) {
       return { success: false, skipped: true, reason: 'in_progress' };
     }
+    if (this.isUploading) {
+      return { success: false, skipped: true, reason: 'in_progress' };
+    }
+    if (this.permissionPaused) {
+      return { success: false, skipped: true, reason: 'permission_paused' };
+    }
+    if (cloudBudgetService.isExceeded()) {
+      return {
+        success: false,
+        skipped: true,
+        reason: 'budget_paused',
+        error: BUDGET_EXCEEDED_MESSAGE_AR,
+      };
+    }
+    if (this.backoffUntilMs > Date.now()) {
+      return { success: false, skipped: true, reason: 'backoff_paused' };
+    }
+
     const todayCairo = getCairoDateString(new Date());
     if (typeof localStorage !== 'undefined') {
       try {
         if (localStorage.getItem(LOCAL_KEYS.LAST_DAILY_CAIRO_DATE) === todayCairo) {
-          return { success: true, skipped: true, reason: 'no_changes', message: 'تم أخذ النسخة السحابية اليومية لهذا اليوم مسبقاً.' };
+          return {
+            success: true,
+            skipped: true,
+            reason: 'no_changes',
+            message: 'تم أخذ النسخة السحابية اليومية لهذا اليوم مسبقاً.',
+          };
         }
       } catch {}
     }
 
-    return this.createAndUploadBackup('daily');
+    const task = this.createAndUploadBackup('daily').finally(() => {
+      if (this.inFlightDailyPromise === task) {
+        this.inFlightDailyPromise = null;
+      }
+    });
+    this.inFlightDailyPromise = task;
+    return task;
   }
 
   /**
@@ -743,6 +856,17 @@ class CloudBackupService {
     if (this.permissionPaused && trigger !== 'manual') {
       return { success: false, skipped: true, reason: 'permission_paused' };
     }
+    if (cloudBudgetService.isExceeded()) {
+      return {
+        success: false,
+        skipped: true,
+        reason: 'budget_paused',
+        error: BUDGET_EXCEEDED_MESSAGE_AR,
+      };
+    }
+    if (trigger !== 'manual' && this.backoffUntilMs > Date.now()) {
+      return { success: false, skipped: true, reason: 'backoff_paused' };
+    }
     if (typeof navigator !== 'undefined' && navigator.onLine === false) {
       return { success: false, skipped: true, reason: 'offline', error: 'لا يوجد اتصال بالإنترنت حالياً.' };
     }
@@ -764,6 +888,8 @@ class CloudBackupService {
             : 'يجب تسجيل دخول المحل للسحابة أولاً.',
       };
     }
+
+    const inlineMaxRetries = trigger === 'manual' ? 2 : 0;
 
     this.isUploading = true;
     this.notifyListeners();
@@ -914,11 +1040,13 @@ class CloudBackupService {
         metadataPayload.note = note.trim();
       }
 
-      await this.runWithTransientRetry(() =>
-        setDoc(backupRef, {
-          id: backupId,
-          metadata: metadataPayload,
-        })
+      await this.runWithTransientRetry(
+        () =>
+          cloudBudgetService.budgetedSetDoc(backupRef, {
+            id: backupId,
+            metadata: metadataPayload,
+          }),
+        inlineMaxRetries
       );
 
       // 5b. Upload chunks in writeBatch commits <= 3 MB each
@@ -932,7 +1060,11 @@ class CloudBackupService {
 
         if (currentBatchOps > 0 && (currentBatchBytes + estimatedBytes > MAX_BATCH_BYTES || currentBatchOps >= 400)) {
           const batchToCommit = batch;
-          await this.runWithTransientRetry(() => batchToCommit.commit());
+          const opsCount = currentBatchOps;
+          await this.runWithTransientRetry(
+            () => cloudBudgetService.budgetedCommitBatch(batchToCommit, { writes: opsCount }),
+            inlineMaxRetries
+          );
           batch = writeBatch(db);
           currentBatchBytes = 0;
           currentBatchOps = 0;
@@ -959,14 +1091,20 @@ class CloudBackupService {
 
       if (currentBatchOps > 0) {
         const finalBatch = batch;
-        await this.runWithTransientRetry(() => finalBatch.commit());
+        const opsCount = currentBatchOps;
+        await this.runWithTransientRetry(
+          () => cloudBudgetService.budgetedCommitBatch(finalBatch, { writes: opsCount }),
+          inlineMaxRetries
+        );
       }
 
       // 5c. Mark backup metadata complete
-      await this.runWithTransientRetry(() =>
-        updateDoc(backupRef, {
-          'metadata.status': 'complete',
-        })
+      await this.runWithTransientRetry(
+        () =>
+          cloudBudgetService.budgetedUpdateDoc(backupRef, {
+            'metadata.status': 'complete',
+          }),
+        inlineMaxRetries
       );
 
       const summary: CloudBackupSummary = {
@@ -989,11 +1127,15 @@ class CloudBackupService {
       };
 
       this.permissionPaused = false;
+      if (this.permissionRetryTimer) {
+        clearTimeout(this.permissionRetryTimer);
+        this.permissionRetryTimer = null;
+      }
+      this.resetBackoff();
       this.lastError = null;
       this.saveLastSuccessfulBackup(summary, changeChecksum, todayCairo);
 
-      // 6. Enforce retention: keep newest 7 complete backups (never delete the latest complete backup)
-      //    and clean up stale incomplete backups (> 24h)
+      // 6. Enforce retention: keep newest backups and clean up stale incomplete backups (> 24h)
       await this.enforceRetentionAndCleanup(
         context.orgId,
         context.branchId,
@@ -1016,15 +1158,27 @@ class CloudBackupService {
         message: 'تم رفع النسخة الاحتياطية السحابية وتأمينها بنجاح.',
       };
     } catch (err) {
+      if (isBudgetExceededError(err)) {
+        this.lastError = BUDGET_EXCEEDED_MESSAGE_AR;
+        this.notifyListeners();
+        return {
+          success: false,
+          skipped: true,
+          reason: 'budget_paused',
+          error: BUDGET_EXCEEDED_MESSAGE_AR,
+        };
+      }
       const translated = translateFirebaseError(err);
-      if (isPermissionDeniedError(err)) {
-        this.permissionPaused = true;
+      if (isSixHourPauseError(err)) {
+        this.activateSixHourPause();
+      } else {
+        this.recordFailureBackoff();
       }
       this.lastError = translated;
       this.notifyListeners();
       return {
         success: false,
-        reason: isPermissionDeniedError(err) ? 'permission_paused' : 'error',
+        reason: isSixHourPauseError(err) ? 'permission_paused' : 'error',
         error: translated,
       };
     } finally {
@@ -1054,7 +1208,7 @@ class CloudBackupService {
 
     try {
       const backupsCol = collection(db, 'orgs', orgId, 'branches', branchId, 'backups');
-      const snap = await getDocs(backupsCol);
+      const snap = await cloudBudgetService.budgetedGetDocs(backupsCol);
 
       const completeDocs: RetentionBackupCandidate[] = [];
       const staleIncompleteIds: string[] = [];
@@ -1094,8 +1248,9 @@ class CloudBackupService {
           await this.deleteBackupAndChunks(db, orgId, branchId, idToDelete);
           deletedCompleteCount++;
         } catch (err) {
-          if (isPermissionDeniedError(err)) {
-            this.permissionPaused = true;
+          if (isBudgetExceededError(err)) break;
+          if (isSixHourPauseError(err)) {
+            this.activateSixHourPause();
             break;
           }
         }
@@ -1106,8 +1261,9 @@ class CloudBackupService {
           await this.deleteBackupAndChunks(db, orgId, branchId, staleId);
           deletedStaleCount++;
         } catch (err) {
-          if (isPermissionDeniedError(err)) {
-            this.permissionPaused = true;
+          if (isBudgetExceededError(err)) break;
+          if (isSixHourPauseError(err)) {
+            this.activateSixHourPause();
             break;
           }
         }
@@ -1186,7 +1342,9 @@ class CloudBackupService {
         'backups',
         backupId
       );
-      const backupSnap = await this.runWithTransientRetry(() => getDoc(backupRef));
+      const backupSnap = await this.runWithTransientRetry(() =>
+        cloudBudgetService.budgetedGetDoc(backupRef, { bypassBudget: true })
+      );
       if (!backupSnap.exists()) {
         return { success: false, error: 'النسخة السحابية المطلوبة غير موجودة.' };
       }
@@ -1218,7 +1376,9 @@ class CloudBackupService {
           'chunks',
           String(i)
         );
-        const chunkSnap = await this.runWithTransientRetry(() => getDoc(chunkRef));
+        const chunkSnap = await this.runWithTransientRetry(() =>
+          cloudBudgetService.budgetedGetDoc(chunkRef, { bypassBudget: true })
+        );
         if (!chunkSnap.exists()) {
           return {
             success: false,
