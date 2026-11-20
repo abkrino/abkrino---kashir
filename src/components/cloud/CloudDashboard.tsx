@@ -34,6 +34,7 @@ import {
 } from 'lucide-react';
 import { orgSyncService, SyncState } from '../../services/orgSyncService';
 import { auth } from '../../services/cloudService';
+import { licenseService } from '../../services/licenseService';
 import {
   cloudBackupService,
   CloudBackupSummary,
@@ -83,7 +84,15 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
   const [lastSummary, setLastSummary] = useState<Date | null>(orgSyncService.getLastDailySummaryDate());
   const [syncStatusMsg, setSyncStatusMsg] = useState<string | null>(orgSyncService.getStatusMessage());
   const [lastSyncError, setLastSyncError] = useState<string | null>(orgSyncService.getLastError());
-  const [orgContext, setOrgContext] = useState(orgSyncService.getContext());
+  const [orgContext, setOrgContext] = useState(
+    () => orgSyncService.getStoredLicenseContext() || orgSyncService.getContext()
+  );
+  const [isCloudSummaryEnabled, setIsCloudSummaryEnabled] = useState<boolean>(
+    () => licenseService.isFeatureEnabled('cloudSummary')
+  );
+  const [isCloudBackupEnabled, setIsCloudBackupEnabled] = useState<boolean>(
+    () => licenseService.isFeatureEnabled('cloudBackup')
+  );
   const [firebaseUser, setFirebaseUser] = useState(auth?.currentUser || null);
   const [budgetStatus, setBudgetStatus] = useState<CloudBudgetStatus>(() => cloudBudgetService.getStatus());
 
@@ -109,7 +118,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
   const [isApplyingRestore, setIsApplyingRestore] = useState<boolean>(false);
 
   const isAdminUser = currentUser.role === 'ADMIN';
-  const isStoreSignedIn = orgSyncService.ensureSignedIn() === 'ok';
+  const isStoreSignedIn = orgSyncService.ensureSignedIn({ allowExpired: true }) === 'ok';
 
   const refreshLocalCloudState = () => {
     setIsOnline(cloudService.isOnline());
@@ -122,7 +131,9 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
     setLastSummary(orgSyncService.getLastDailySummaryDate());
     setSyncStatusMsg(orgSyncService.getStatusMessage());
     setLastSyncError(orgSyncService.getLastError());
-    setOrgContext(orgSyncService.getContext());
+    setOrgContext(orgSyncService.getStoredLicenseContext() || orgSyncService.getContext());
+    setIsCloudSummaryEnabled(licenseService.isFeatureEnabled('cloudSummary'));
+    setIsCloudBackupEnabled(licenseService.isFeatureEnabled('cloudBackup'));
     setFirebaseUser(auth?.currentUser || null);
     setLastBackupMeta(cloudBackupService.getLastSuccessfulBackup());
     setBackupDropAlert(cloudBackupService.getDropAlert());
@@ -132,7 +143,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
   const loadAllCloudData = async (options?: { bypassBudget?: boolean }) => {
     refreshLocalCloudState();
 
-    if (isCloudConfigured && orgSyncService.ensureSignedIn() === 'ok' && cloudService.isOnline()) {
+    if (isCloudConfigured && orgSyncService.ensureSignedIn({ allowExpired: true }) === 'ok' && cloudService.isOnline()) {
       setIsLoadingBackups(true);
       const listRes = await cloudBackupService.listCompleteBackups(options);
       setIsLoadingBackups(false);
@@ -156,6 +167,9 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
     const unsubscribeOrg = orgSyncService.subscribe(() => {
       refreshLocalCloudState();
     });
+    const unsubscribeLicense = licenseService.subscribe(() => {
+      refreshLocalCloudState();
+    });
     const unsubscribeBackup = cloudBackupService.subscribe(() => {
       setLastBackupMeta(cloudBackupService.getLastSuccessfulBackup());
       setBackupDropAlert(cloudBackupService.getDropAlert());
@@ -167,6 +181,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
     return () => {
       unsubscribe();
       unsubscribeOrg();
+      unsubscribeLicense();
       unsubscribeBackup();
       unsubscribeBudget();
       setPasswordInput('');
@@ -253,7 +268,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
       setStatusMessage({ type: 'error', text: 'غير مصرح: استعادة النسخة السحابية مقتصرة على مدير النظام فقط.' });
       return;
     }
-    if (orgSyncService.ensureSignedIn() !== 'ok') {
+    if (orgSyncService.ensureSignedIn({ allowExpired: true }) !== 'ok') {
       setStatusMessage({ type: 'error', text: 'يجب تسجيل دخول المحل للسحابة أولاً قبل الاستعادة.' });
       return;
     }
@@ -293,7 +308,7 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
       setStatusMessage({ type: 'error', text: 'غير مصرح: استعادة النسخة السحابية مقتصرة على مدير النظام فقط.' });
       return;
     }
-    if (orgSyncService.ensureSignedIn() !== 'ok') {
+    if (orgSyncService.ensureSignedIn({ allowExpired: true }) !== 'ok') {
       setStatusMessage({ type: 'error', text: 'يجب تسجيل دخول المحل للسحابة أولاً قبل الاستعادة.' });
       setActiveSubTab('ACCOUNT_LOGIN');
       return;
@@ -432,11 +447,18 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
             <button
               type="button"
               onClick={handleCreateCloudBackup}
-              disabled={!isCloudConfigured || isCreatingBackup || !isOnline || !isStoreSignedIn}
+              disabled={!isCloudConfigured || !isCloudBackupEnabled || isCreatingBackup || !isOnline || !isStoreSignedIn}
+              title={!isCloudBackupEnabled ? 'غير مضمّن في باقتك' : undefined}
               className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs sm:text-sm font-black rounded-xl cursor-pointer shadow-md flex items-center gap-2 transition-all active:scale-95"
             >
               <CloudCheck className={`w-4 h-4 ${isCreatingBackup ? 'animate-spin' : ''}`} />
-              <span>{isCreatingBackup ? 'جاري النسخ...' : 'نسخ الآن'}</span>
+              <span>
+                {!isCloudBackupEnabled
+                  ? 'غير مضمّن في باقتك'
+                  : isCreatingBackup
+                  ? 'جاري النسخ...'
+                  : 'نسخ الآن'}
+              </span>
             </button>
 
             {isAdminUser && (
@@ -748,16 +770,22 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                   <Clock className="w-3.5 h-3.5 text-emerald-500" />
                   <span>آخر ملخص يومي:</span>
                 </span>
-                <div className="flex items-center gap-2 flex-wrap justify-end">
-                  {isSummaryDirty && (
-                    <span className="px-2 py-0.5 rounded-full text-[11px] font-black bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
-                      ملخص معلّق
-                    </span>
-                  )}
-                  <span className="font-mono font-bold text-slate-900 dark:text-white">
-                    {lastSummary ? lastSummary.toLocaleString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم يُرفع بعد'}
+                {!isCloudSummaryEnabled ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                    غير مضمّن في باقتك
                   </span>
-                </div>
+                ) : (
+                  <div className="flex items-center gap-2 flex-wrap justify-end">
+                    {isSummaryDirty && (
+                      <span className="px-2 py-0.5 rounded-full text-[11px] font-black bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800">
+                        ملخص معلّق
+                      </span>
+                    )}
+                    <span className="font-mono font-bold text-slate-900 dark:text-white">
+                      {lastSummary ? lastSummary.toLocaleString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : 'لم يُرفع بعد'}
+                    </span>
+                  </div>
+                )}
               </div>
 
               {/* 5. Last Successful Cloud Backup */}
@@ -766,11 +794,17 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                   <Database className="w-3.5 h-3.5 text-emerald-600" />
                   <span>آخر نسخة سحابية ناجحة:</span>
                 </span>
-                <span className="font-mono font-bold text-slate-900 dark:text-white text-left">
-                  {lastBackupMeta
-                    ? `${new Date(lastBackupMeta.createdAtMs).toLocaleString('ar-EG', { dateStyle: 'short', timeStyle: 'short' })} (${(lastBackupMeta.sizeBytes / 1024).toFixed(1)} ك.ب)`
-                    : 'لا توجد نسخة مرفوعة بعد'}
-                </span>
+                {!isCloudBackupEnabled ? (
+                  <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                    غير مضمّن في باقتك
+                  </span>
+                ) : (
+                  <span className="font-mono font-bold text-slate-900 dark:text-white text-left">
+                    {lastBackupMeta
+                      ? `${new Date(lastBackupMeta.createdAtMs).toLocaleString('ar-EG', { dateStyle: 'short', timeStyle: 'short' })} (${(lastBackupMeta.sizeBytes / 1024).toFixed(1)} ك.ب)`
+                      : 'لا توجد نسخة مرفوعة بعد'}
+                  </span>
+                )}
               </div>
 
               {/* 6. Daily Operations Budget Counter */}
@@ -873,17 +907,25 @@ export const CloudDashboard: React.FC<CloudDashboardProps> = ({
                   type="text"
                   value={manualBackupNote}
                   onChange={(e) => setManualBackupNote(e.target.value)}
-                  placeholder="وصف اختياري للنسخة (مثلاً: قبل الجرد أو نهاية الوردية)..."
-                  className="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 dark:text-white"
+                  disabled={!isCloudBackupEnabled}
+                  placeholder={isCloudBackupEnabled ? 'وصف اختياري للنسخة (مثلاً: قبل الجرد أو نهاية الوردية)...' : 'النسخ الاحتياطي السحابي غير مضمّن في باقتك'}
+                  className="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 dark:text-white disabled:opacity-50"
                 />
                 <button
                   type="button"
                   onClick={handleCreateCloudBackup}
-                  disabled={!isCloudConfigured || isCreatingBackup || !isOnline || !isStoreSignedIn}
+                  disabled={!isCloudConfigured || !isCloudBackupEnabled || isCreatingBackup || !isOnline || !isStoreSignedIn}
+                  title={!isCloudBackupEnabled ? 'غير مضمّن في باقتك' : undefined}
                   className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black text-xs rounded-xl cursor-pointer flex items-center gap-1.5 shadow-xs shrink-0"
                 >
                   <CloudCheck className="w-4 h-4" />
-                  <span>{isCreatingBackup ? 'جاري الرفع...' : 'نسخ الآن'}</span>
+                  <span>
+                    {!isCloudBackupEnabled
+                      ? 'غير مضمّن في باقتك'
+                      : isCreatingBackup
+                      ? 'جاري الرفع...'
+                      : 'نسخ الآن'}
+                  </span>
                 </button>
               </div>
             </div>

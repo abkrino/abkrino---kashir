@@ -11,7 +11,8 @@ import {
   INITIAL_PRODUCTS, INITIAL_CUSTOMERS, INITIAL_SUPPLIERS, INITIAL_SHIFT,
   INITIAL_EXPENSES, INITIAL_CASH_MOVEMENTS, INITIAL_INVOICES, INITIAL_USERS
 } from '../data/initialData';
-import { licenseService } from './licenseService';
+import { licenseService, WriteOperationCategory } from './licenseService';
+export type { WriteOperationCategory };
 import { idb, type KVRecord } from './idbStore';
 
 export const STORAGE_KEYS = {
@@ -172,6 +173,33 @@ class StorageService {
         console.error('Error in onAction callback:', err);
       }
     });
+  }
+
+  public assertWriteAllowed(
+    category: WriteOperationCategory,
+    actionDescription?: string
+  ): { allowed: boolean; error?: string } {
+    if (typeof licenseService.canPerformWrite !== 'function') {
+      return { allowed: true };
+    }
+    const gate = licenseService.canPerformWrite(category);
+    if (gate.allowed) {
+      return { allowed: true };
+    }
+
+    const errorMsg =
+      gate.reason ||
+      'العملية غير مسموحة في حالة الاشتراك الحالية.';
+
+    this.addAuditLog(
+      'LICENSE_BLOCK',
+      'رفض عملية كتابة بسبب حالة الاشتراك',
+      'الترخيص',
+      category,
+      `تم رفض (${actionDescription || category}) في مرحلة ${gate.phase}: ${errorMsg}`
+    );
+
+    return { allowed: false, error: errorMsg };
   }
 
   public getWriteError(): string | null {
@@ -658,12 +686,16 @@ class StorageService {
     }
   }
 
-  public loadDemoData(): void {
+  public loadDemoData(): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'تحميل بيانات تجريبية');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     this.setItem(STORAGE_KEYS.PRODUCTS, JSON.parse(JSON.stringify(INITIAL_PRODUCTS)));
     this.setItem(STORAGE_KEYS.CUSTOMERS, JSON.parse(JSON.stringify(INITIAL_CUSTOMERS)));
     this.setItem(STORAGE_KEYS.SUPPLIERS, JSON.parse(JSON.stringify(INITIAL_SUPPLIERS)));
     this.addAuditLog('SYSTEM', 'تحميل بيانات تجريبية', 'النظام', 'sys-demo', 'تم استيراد الأصناف والعملاء والموردين التجريبيين');
     this.notifyAction('تحميل بيانات تجريبية');
+    return { success: true };
   }
 
   // --- STORE PROFILE MANAGEMENT ---
@@ -701,6 +733,9 @@ class StorageService {
   }
 
   public saveStoreProfile(profile: StoreProfile): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'تعديل بيانات المحل');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     if (!profile.name || !profile.name.trim()) {
       return { success: false, error: 'اسم المحل مطلوب' };
     }
@@ -736,8 +771,12 @@ class StorageService {
     return this.getItem<boolean>(STORAGE_KEYS.STORE_PROFILE_REVIEWED, true);
   }
 
-  public setStoreProfileReviewed(reviewed: boolean): void {
+  public setStoreProfileReviewed(reviewed: boolean): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'تحديث حالة مراجعة بيانات المحل');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     this.setItem(STORAGE_KEYS.STORE_PROFILE_REVIEWED, reviewed);
+    return { success: true };
   }
 
   public hasConfiguredStoreProfile(): boolean {
@@ -760,6 +799,9 @@ class StorageService {
     adminUser: User | null | undefined,
     passwordOrPin: string
   ): Promise<{ success: boolean; error?: string }> {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'تغيير النظام المحاسبي');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     if (newMode !== 'DAILY_DRAWER' && newMode !== 'MONTHLY_POOL' && newMode !== 'CAPITAL') {
       return { success: false, error: 'نظام المحاسبة المحدد غير صالح' };
     }
@@ -819,6 +861,9 @@ class StorageService {
     adminUser: User | null | undefined,
     passwordOrPin: string
   ): Promise<{ success: boolean; error?: string }> {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'تعديل إعداد وعاء رأس المال');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     if (!adminUser || adminUser.role !== 'ADMIN' || adminUser.isActive === false) {
       return { success: false, error: 'غير مصرح: تعديل هذا الإعداد مقتصر على مدير النظام فقط' };
     }
@@ -872,6 +917,9 @@ class StorageService {
     adminUser: User | null | undefined,
     params: { type: FundingSourceType; label: string; note?: string }
   ): { success: boolean; error?: string; source?: FundingSource } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'إضافة مصدر تمويل');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     if (!adminUser || adminUser.role !== 'ADMIN' || adminUser.isActive === false) {
       return { success: false, error: 'غير مصرح: تعديل مصادر التمويل مقتصر على المدير العام فقط' };
     }
@@ -914,6 +962,9 @@ class StorageService {
     adminUser: User | null | undefined,
     sourceId: string
   ): { success: boolean; error?: string; source?: FundingSource } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'تعديل مصدر تمويل');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     if (!adminUser || adminUser.role !== 'ADMIN' || adminUser.isActive === false) {
       return { success: false, error: 'غير مصرح: تعديل مصادر التمويل مقتصر على المدير العام فقط' };
     }
@@ -1041,7 +1092,15 @@ class StorageService {
     this.setItem(STORAGE_KEYS.CREDENTIALS_RESET_REQUIRED, Boolean(required));
   }
 
-  public saveUser(user: User): { success: boolean; error?: string } {
+  public saveUser(
+    user: User,
+    options?: { bypassLicenseCheck?: boolean }
+  ): { success: boolean; error?: string } {
+    if (!options?.bypassLicenseCheck) {
+      const gate = this.assertWriteAllowed('ADMIN_DATA', `حفظ مستخدم: ${user.username}`);
+      if (!gate.allowed) return { success: false, error: gate.error };
+    }
+
     const users = this.getUsers();
     const idx = users.findIndex(u => u.id === user.id);
     if (idx >= 0) {
@@ -1058,6 +1117,9 @@ class StorageService {
   }
 
   public deleteUser(userId: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', `حذف مستخدم: ${userId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const users = this.getUsers();
     const user = users.find(u => u.id === userId);
     if (!user) return { success: false, error: 'المستخدم غير موجود' };
@@ -1089,6 +1151,9 @@ class StorageService {
   }
 
   public changeUserPin(userId: string, oldPin: string, newPin: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', `تعديل الرقم السري للمستخدم: ${userId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const users = this.getUsers();
     const user = users.find(u => u.id === userId);
     if (!user) return { success: false, error: 'المستخدم غير موجود' };
@@ -1122,7 +1187,10 @@ class StorageService {
     return products;
   }
 
-  public saveProduct(product: Product): void {
+  public saveProduct(product: Product): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', `حفظ صنف: ${product.name}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const products = this.getProducts();
     const index = products.findIndex(p => p.id === product.id);
     if (index >= 0) {
@@ -1133,9 +1201,13 @@ class StorageService {
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
     this.addAuditLog('PRODUCT', 'حفظ صنف', 'الأصناف', product.id, `حفظ الصنف: ${product.name} (المخزن: ${product.stockPieces} قطعة)`);
     this.notifyAction(`حفظ صنف: ${product.name}`);
+    return { success: true };
   }
 
   public deleteProduct(productId: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', `حذف صنف: ${productId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const products = this.getProducts();
     const prod = products.find(p => p.id === productId);
     if (!prod) return { success: false, error: 'الصنف غير موجود' };
@@ -1157,7 +1229,10 @@ class StorageService {
     return custs;
   }
 
-  public saveCustomer(customer: Customer): void {
+  public saveCustomer(customer: Customer): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', `حفظ عميل: ${customer.name}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const customers = this.getCustomers();
     const index = customers.findIndex(c => c.id === customer.id);
     if (index >= 0) {
@@ -1168,9 +1243,13 @@ class StorageService {
     this.setItem(STORAGE_KEYS.CUSTOMERS, customers);
     this.addAuditLog('CUSTOMER', 'حفظ عميل', 'العملاء', customer.id, `حفظ بيانات العميل: ${customer.name}`);
     this.notifyAction(`حفظ عميل: ${customer.name}`);
+    return { success: true };
   }
 
   public deleteCustomer(customerId: string, clearDebtAndForce: boolean = false): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', `حذف عميل: ${customerId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const customers = this.getCustomers();
     const cust = customers.find(c => c.id === customerId);
     if (!cust) return { success: false, error: 'العميل غير موجود' };
@@ -1213,7 +1292,10 @@ class StorageService {
     return suppliers;
   }
 
-  public saveSupplier(supplier: Supplier): void {
+  public saveSupplier(supplier: Supplier): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', `حفظ مورد: ${supplier.name}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const suppliers = this.getSuppliers();
     const index = suppliers.findIndex(s => s.id === supplier.id);
     if (index >= 0) {
@@ -1222,9 +1304,13 @@ class StorageService {
       suppliers.unshift(supplier);
     }
     this.setItem(STORAGE_KEYS.SUPPLIERS, suppliers);
+    return { success: true };
   }
 
   public deleteSupplier(supplierId: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', `حذف مورد: ${supplierId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const suppliers = this.getSuppliers();
     const supp = suppliers.find(s => s.id === supplierId);
     if (!supp) return { success: false, error: 'المورد غير موجود' };
@@ -1241,11 +1327,15 @@ class StorageService {
     return this.getItem<SystemShift>(STORAGE_KEYS.SHIFT, INITIAL_SHIFT);
   }
 
-  public saveCurrentShift(shift: SystemShift): void {
+  public saveCurrentShift(shift: SystemShift): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'حفظ / إغلاق الوردية');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     this.setItem(STORAGE_KEYS.SHIFT, shift);
     if (shift.status === 'CLOSED') {
       this.notifyAction('SHIFT_CLOSED');
     }
+    return { success: true };
   }
 
   public calculateCurrentCashInDrawer(): number {
@@ -1400,8 +1490,18 @@ class StorageService {
 
   public addCashMovement(
     movement: CashMovement,
-    options?: { user?: User | null; allowNegativeCash?: boolean; skipCashOutCheck?: boolean }
+    options?: {
+      user?: User | null;
+      allowNegativeCash?: boolean;
+      skipCashOutCheck?: boolean;
+      bypassLicenseCheck?: boolean;
+    }
   ): { success: boolean; error?: string } {
+    if (!options?.bypassLicenseCheck) {
+      const gate = this.assertWriteAllowed('ADMIN_DATA', `تسجيل حركة نقدية: ${movement.categoryLabelArabic}`);
+      if (!gate.allowed) return { success: false, error: gate.error };
+    }
+
     if (
       !options?.skipCashOutCheck &&
       movement.type === 'OUT' &&
@@ -1436,6 +1536,9 @@ class StorageService {
     allowNegativeCash?: boolean;
     fundingDetails?: CashMovementFunding;
   }): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'سحب نقدي يدوي');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const cleanDesc = (params.description || '').trim();
     if (!cleanDesc) {
       return { success: false, error: 'يرجى كتابة سبب أو بيان السحب اليدوي' };
@@ -1479,7 +1582,7 @@ class StorageService {
         fundingDetails: resolvedFunding,
         affectsDrawer,
       },
-      { skipCashOutCheck: true }
+      { skipCashOutCheck: true, bypassLicenseCheck: true }
     );
 
     this.addAuditLog(
@@ -1498,6 +1601,9 @@ class StorageService {
     description: string;
     performedBy: string;
   }): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'إيداع نقدي يدوي');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     if (!Number.isFinite(params.amount) || params.amount <= 0) {
       return { success: false, error: 'المبلغ يجب أن يكون أكبر من صفر' };
     }
@@ -1518,7 +1624,7 @@ class StorageService {
         affectsDrawer: true,
         fundingDetails: { type: 'DRAWER', label: 'إيداع نقدي مباشر بالدرج' },
       },
-      { skipCashOutCheck: true }
+      { skipCashOutCheck: true, bypassLicenseCheck: true }
     );
 
     this.addAuditLog('CASH_DEPOSIT', 'إيداع بالدرج', 'الخزينة', 'drawer', `إيداع بالدرج بقيمة ${params.amount} ج.م: ${cleanDesc}`);
@@ -1533,6 +1639,9 @@ class StorageService {
     user?: User | null;
     affectsDrawer?: boolean;
   }): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'إيداع رأس مال');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     if (!Number.isFinite(params.amount) || params.amount <= 0) {
       return { success: false, error: 'قيمة إيداع رأس المال يجب أن تكون أكبر من صفر' };
     }
@@ -1563,7 +1672,7 @@ class StorageService {
         fundingSource: 'OWNER_LOAN',
         fundingDetails: { type: 'OWNER_LOAN', label: 'إيداع رأس مال من المالك', note: cleanDesc },
       },
-      { skipCashOutCheck: true }
+      { skipCashOutCheck: true, bypassLicenseCheck: true }
     );
 
     this.addAuditLog(
@@ -1586,6 +1695,9 @@ class StorageService {
     expense: Expense,
     options?: { user?: User | null; allowNegativeCash?: boolean; fundingDetails?: CashMovementFunding }
   ): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', `تسجيل مصروف: ${expense.categoryLabelArabic}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const evalRes = this.evaluateCashOut(expense.amount, {
       user: options?.user,
       operation: 'EXPENSE',
@@ -1635,7 +1747,7 @@ class StorageService {
         fundingDetails: resolvedFunding,
         affectsDrawer,
       },
-      { skipCashOutCheck: true }
+      { skipCashOutCheck: true, bypassLicenseCheck: true }
     );
 
     this.addAuditLog(
@@ -1655,12 +1767,11 @@ class StorageService {
   }
 
   public postSalesInvoice(invoice: SalesInvoice): { success: boolean; error?: string; hasNegativeStock?: boolean } {
-    // License verification check (enforced only when LICENSE_ENFORCEMENT is true)
-    if (!licenseService.canCreateSalesInvoice()) {
-      const state = licenseService.getLicenseState();
+    const gate = this.assertWriteAllowed('SALES', `إنشاء فاتورة بيع ${invoice.invoiceNumber}`);
+    if (!gate.allowed) {
       return {
         success: false,
-        error: `لا يمكن إنشاء فاتورة بيع جديدة: ${state.message}`,
+        error: `لا يمكن إنشاء فاتورة بيع جديدة: ${gate.error}`,
       };
     }
 
@@ -1701,18 +1812,21 @@ class StorageService {
 
     // Record Cash Movement if cash was paid
     if (invoice.paidAmount > 0) {
-      this.addCashMovement({
-        id: `cm-${Date.now()}`,
-        date: invoice.date,
-        time: invoice.time,
-        type: 'IN',
-        category: 'SALES_CASH',
-        categoryLabelArabic: 'مبيعات نقدية',
-        amount: invoice.paidAmount,
-        referenceId: invoice.invoiceNumber,
-        description: `تحصيل فاتورة مبيعات ${invoice.invoiceNumber} - العميل: ${invoice.customerName}`,
-        performedBy: invoice.salespersonName,
-      });
+      this.addCashMovement(
+        {
+          id: `cm-${Date.now()}`,
+          date: invoice.date,
+          time: invoice.time,
+          type: 'IN',
+          category: 'SALES_CASH',
+          categoryLabelArabic: 'مبيعات نقدية',
+          amount: invoice.paidAmount,
+          referenceId: invoice.invoiceNumber,
+          description: `تحصيل فاتورة مبيعات ${invoice.invoiceNumber} - العميل: ${invoice.customerName}`,
+          performedBy: invoice.salespersonName,
+        },
+        { bypassLicenseCheck: true }
+      );
     }
 
     // Save Invoice
@@ -1734,6 +1848,9 @@ class StorageService {
 
   // DELETE SALES INVOICE (With full stock restoration and customer debt deletion)
   public deleteSalesInvoice(invoiceId: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('SALES', `حذف فاتورة مبيعات ${invoiceId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const invoices = this.getSalesInvoices();
     const invoice = invoices.find(inv => inv.id === invoiceId || inv.invoiceNumber === invoiceId);
     if (!invoice) return { success: false, error: 'الفاتورة غير موجودة' };
@@ -1759,18 +1876,21 @@ class StorageService {
 
     // 3. Reverse Cash if paid (إلغاء النقدية المحصلة)
     if (invoice.paidAmount > 0) {
-      this.addCashMovement({
-        id: `cm-${Date.now()}`,
-        date: getCairoDateString(),
-        time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
-        type: 'OUT',
-        category: 'INVOICE_REVERSAL',
-        categoryLabelArabic: 'إلغاء فاتورة مبيعات',
-        amount: invoice.paidAmount,
-        referenceId: invoice.invoiceNumber,
-        description: `رد نقدية لحذف فاتورة المبيعات رقم ${invoice.invoiceNumber}`,
-        performedBy: this.getActiveUser()?.fullName || 'النظام',
-      });
+      this.addCashMovement(
+        {
+          id: `cm-${Date.now()}`,
+          date: getCairoDateString(),
+          time: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+          type: 'OUT',
+          category: 'INVOICE_REVERSAL',
+          categoryLabelArabic: 'إلغاء فاتورة مبيعات',
+          amount: invoice.paidAmount,
+          referenceId: invoice.invoiceNumber,
+          description: `رد نقدية لحذف فاتورة المبيعات رقم ${invoice.invoiceNumber}`,
+          performedBy: this.getActiveUser()?.fullName || 'النظام',
+        },
+        { bypassLicenseCheck: true }
+      );
     }
 
     // 4. Remove invoice from list
@@ -1791,6 +1911,9 @@ class StorageService {
 
   // UPDATE SALES INVOICE (Edit existing invoice)
   public updateSalesInvoice(updatedInvoice: SalesInvoice): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('SALES', `تعديل فاتورة مبيعات ${updatedInvoice.invoiceNumber}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const invoices = this.getSalesInvoices();
     const oldIndex = invoices.findIndex(inv => inv.id === updatedInvoice.id);
     if (oldIndex === -1) return { success: false, error: 'الفاتورة غير موجودة' };
@@ -2010,6 +2133,9 @@ class StorageService {
     allowNegativeCash?: boolean;
     fundingDetails?: CashMovementFunding;
   }): { success: boolean; error?: string; salesReturn?: SalesReturn } {
+    const gate = this.assertWriteAllowed('RETURNS', `مرتجع مبيعات على الفاتورة ${params.invoiceId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     // 1. Permission check
     const actingUser = params.user !== undefined ? params.user : this.getActiveUser();
     if (
@@ -2210,7 +2336,7 @@ class StorageService {
           fundingDetails: resolvedFunding || { type: 'DRAWER', label: 'نقدية الدرج المباشرة' },
           affectsDrawer: true, // Cash sales refunds ALWAYS affect drawer
         },
-        { skipCashOutCheck: true }
+        { skipCashOutCheck: true, bypassLicenseCheck: true }
       );
     }
 
@@ -2267,6 +2393,9 @@ class StorageService {
     notes?: string;
     collectedBy: string;
   }): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('COLLECTIONS', `سند قبض عميل ${params.customerId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const customers = this.getCustomers();
     const cust = customers.find(c => c.id === params.customerId);
     if (!cust) return { success: false, error: 'العميل غير موجود' };
@@ -2280,18 +2409,21 @@ class StorageService {
     const dateStr = getCairoDateString(now);
     const timeStr = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
 
-    this.addCashMovement({
-      id: `cm-${Date.now()}`,
-      date: dateStr,
-      time: timeStr,
-      type: 'IN',
-      category: 'CUSTOMER_COLLECTION',
-      categoryLabelArabic: 'سند تحصيل مديونية عميل',
-      amount: params.amount,
-      referenceId: voucherNum,
-      description: `سند قبض رقم ${voucherNum} من العميل: ${cust.name} ${params.notes ? `(${params.notes})` : ''}`,
-      performedBy: params.collectedBy,
-    });
+    this.addCashMovement(
+      {
+        id: `cm-${Date.now()}`,
+        date: dateStr,
+        time: timeStr,
+        type: 'IN',
+        category: 'CUSTOMER_COLLECTION',
+        categoryLabelArabic: 'سند تحصيل مديونية عميل',
+        amount: params.amount,
+        referenceId: voucherNum,
+        description: `سند قبض رقم ${voucherNum} من العميل: ${cust.name} ${params.notes ? `(${params.notes})` : ''}`,
+        performedBy: params.collectedBy,
+      },
+      { bypassLicenseCheck: true }
+    );
 
     this.addAuditLog(
       'COLLECTION',
@@ -2316,6 +2448,9 @@ class StorageService {
     fundingDetails?: CashMovementFunding;
     fundingSource?: FundingSourceType | 'PERSONAL_LOAN' | 'DRAWER_NEGATIVE' | 'DRAWER' | 'OTHER';
   }): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('SUPPLIER_PAYMENTS', `سند صرف مورد ${params.supplierId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const suppliers = this.getSuppliers();
     const supp = suppliers.find(s => s.id === params.supplierId);
     if (!supp) return { success: false, error: 'المورد غير موجود' };
@@ -2387,7 +2522,7 @@ class StorageService {
         description: `سند صرف للمورد: ${supp.name} (${fundingLabel}) ${params.notes ? `• ${params.notes}` : ''}`,
         performedBy: params.paidBy,
       },
-      { skipCashOutCheck: true }
+      { skipCashOutCheck: true, bypassLicenseCheck: true }
     );
 
     this.addAuditLog(
@@ -2414,6 +2549,9 @@ class StorageService {
 
   // تعديل دفعة مورد
   public updateSupplierPayment(movementId: string, newAmount: number, newNotes?: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('SUPPLIER_PAYMENTS', `تعديل سند صرف مورد ${movementId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     if (newAmount <= 0) return { success: false, error: 'المبلغ يجب أن يكون أكبر من صفر' };
     const movements = this.getCashMovements();
     const idx = movements.findIndex(m => m.id === movementId);
@@ -2450,6 +2588,9 @@ class StorageService {
 
   // حذف دفعة مورد (إلغاء سند الصرف ورد المديونية)
   public deleteSupplierPayment(movementId: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('SUPPLIER_PAYMENTS', `حذف سند صرف مورد ${movementId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const movements = this.getCashMovements();
     const target = movements.find(m => m.id === movementId);
     if (!target) return { success: false, error: 'حركة الدفع غير موجودة' };
@@ -2500,6 +2641,9 @@ class StorageService {
     purchase: PurchaseInvoice,
     options?: { user?: User | null; allowNegativeCash?: boolean; fundingDetails?: CashMovementFunding }
   ): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('PURCHASES', `تسجيل فاتورة شراء ${purchase.invoiceNumber}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const products = this.getProducts();
     const suppliers = this.getSuppliers();
     const supp = suppliers.find(s => s.id === purchase.supplierId);
@@ -2610,7 +2754,7 @@ class StorageService {
           description: `سداد نقدي لفاتورة شراء ${purchase.invoiceNumber} من ${supp.name} (${fundingLabel})`,
           performedBy: options?.user?.fullName || this.getActiveUser()?.fullName || 'النظام',
         },
-        { skipCashOutCheck: true }
+        { skipCashOutCheck: true, bypassLicenseCheck: true }
       );
     }
 
@@ -2631,6 +2775,9 @@ class StorageService {
 
   // حذف فاتورة مشتريات وإلغاء إدراجها من المخزن إن تم إدراجها
   public deletePurchaseInvoice(invoiceId: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('PURCHASES', `حذف فاتورة شراء ${invoiceId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const purchases = this.getPurchases();
     const purchase = purchases.find(p => p.id === invoiceId || p.invoiceNumber === invoiceId);
     if (!purchase) return { success: false, error: 'فاتورة الشراء غير موجودة' };
@@ -2687,7 +2834,7 @@ class StorageService {
           affectsDrawer: purchase.affectsDrawer !== false,
           fundingDetails: purchase.fundingDetails,
         },
-        { skipCashOutCheck: true }
+        { skipCashOutCheck: true, bypassLicenseCheck: true }
       );
     }
 
@@ -2707,6 +2854,9 @@ class StorageService {
 
   // إدراج فاتورة شراء في المخزن إذا لم تكن مدرجة
   public insertPurchaseIntoStock(invoiceId: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('PURCHASES', `إدراج فاتورة شراء بالمخزن ${invoiceId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const purchases = this.getPurchases();
     const purchase = purchases.find(p => p.id === invoiceId);
     if (!purchase) return { success: false, error: 'فاتورة الشراء غير موجودة' };
@@ -2754,6 +2904,9 @@ class StorageService {
     notes?: string;
     performedBy: string;
   }): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', `تسوية مخزون الصنف ${params.productId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const products = this.getProducts();
     const prod = products.find(p => p.id === params.productId);
     if (!prod) return { success: false, error: 'الصنف غير موجود' };
@@ -2828,17 +2981,25 @@ class StorageService {
     return this.getItem<ParkedCart[]>(STORAGE_KEYS.PARKED_CARTS, []);
   }
 
-  public saveParkedCart(cart: ParkedCart): void {
+  public saveParkedCart(cart: ParkedCart): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('SALES', `تعليق فاتورة: ${cart.customerName}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const carts = this.getParkedCarts();
     carts.unshift(cart);
     this.setItem(STORAGE_KEYS.PARKED_CARTS, carts);
     this.addAuditLog('SALES', 'تعليق فاتورة', 'نقطة البيع', cart.id, `تم تعليق فاتورة باسم: ${cart.customerName} (${cart.items.length} أصناف)`);
+    return { success: true };
   }
 
-  public removeParkedCart(id: string): void {
+  public removeParkedCart(id: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('SALES', `حذف فاتورة معلقة ${id}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     const carts = this.getParkedCarts();
     const filtered = carts.filter(c => c.id !== id);
     this.setItem(STORAGE_KEYS.PARKED_CARTS, filtered);
+    return { success: true };
   }
 
   // --- BACKUP & RESTORE ---
@@ -2870,6 +3031,9 @@ class StorageService {
   }
 
   public restoreBackupJson(jsonString: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'استعادة نسخة احتياطية من ملف');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     try {
       const parsed = JSON.parse(jsonString);
       if (!parsed.data || !parsed.data.products || !parsed.data.customers) {
@@ -2976,7 +3140,10 @@ class StorageService {
     this.isReady = true;
   }
 
-  public resetToFactoryDefault(): void {
+  public resetToFactoryDefault(): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'إعادة ضبط المصنع');
+    if (!gate.allowed) return { success: false, error: gate.error };
+
     this.cache.clear();
     this.pendingWrites.clear();
     this.initPromise = null;
@@ -2993,6 +3160,7 @@ class StorageService {
     }
     this.initDatabase();
     this.flush().catch(err => console.error('Error flushing default seeds to IDB:', err));
+    return { success: true };
   }
 }
 

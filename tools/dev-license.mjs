@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PRIVATE_KEY_PATH = path.join(__dirname, '.dev-private-key.json');
+const PRIVATE_KEY_PATH =
+  process.env.DEV_LICENSE_PRIVATE_KEY_PATH || path.join(__dirname, '.dev-private-key.json');
 
 function base64url(buffer) {
   return Buffer.from(buffer)
@@ -46,6 +47,7 @@ function handleSign(args) {
   let branchId = 'main-branch';
   let graceDays = 7;
   let maxOfflineDays = 30;
+  let features;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -65,6 +67,22 @@ function handleSign(args) {
       graceDays = parseInt(args[++i], 10);
     } else if (arg === '--maxOfflineDays' && args[i + 1]) {
       maxOfflineDays = parseInt(args[++i], 10);
+    } else if (arg === '--features' && args[i + 1]) {
+      const rawFeatures = args[++i].trim();
+      try {
+        features = JSON.parse(rawFeatures);
+      } catch {
+        // Fallback: comma-separated key=true|false (e.g. cloudSummary=true,cloudBackup=false)
+        features = {};
+        for (const pair of rawFeatures.split(',')) {
+          const [k, v] = pair.split('=').map(s => s.trim());
+          if (!k) continue;
+          if (v === 'false') features[k] = false;
+          else if (v === 'true') features[k] = true;
+          else if (v !== undefined && !Number.isNaN(Number(v))) features[k] = Number(v);
+          else if (v !== undefined) features[k] = v;
+        }
+      }
     } else if (!arg.startsWith('--') && !deviceId) {
       deviceId = arg;
     } else if (!arg.startsWith('--') && deviceId && !isNaN(parseInt(arg, 10))) {
@@ -75,7 +93,7 @@ function handleSign(args) {
   if (!deviceId) {
     console.error('❌ Missing deviceId.');
     console.error('Usage: node tools/dev-license.mjs sign <deviceId> [days]');
-    console.error('   or: node tools/dev-license.mjs sign --deviceId <deviceId> --days 365 --mode offline');
+    console.error('   or: node tools/dev-license.mjs sign --deviceId <deviceId> --days 365 --mode offline [--features \'{"cloudSummary":true,"cloudBackup":false}\']');
     process.exit(1);
   }
 
@@ -96,6 +114,7 @@ function handleSign(args) {
     validUntil: validUntil.toISOString(),
     graceDays,
     maxOfflineDays,
+    ...(features !== undefined ? { features } : {}),
   };
 
   const payloadJson = JSON.stringify(payload);
@@ -128,5 +147,5 @@ if (command === 'keygen') {
 } else {
   console.log('Dev License Tool:');
   console.log('  node tools/dev-license.mjs keygen');
-  console.log('  node tools/dev-license.mjs sign --deviceId <id> [--days 365] [--mode offline]');
+  console.log('  node tools/dev-license.mjs sign --deviceId <id> [--days 365] [--mode offline] [--features \'{"cloudSummary":true,"cloudBackup":false}\']');
 }

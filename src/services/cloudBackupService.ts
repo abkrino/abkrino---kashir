@@ -7,6 +7,7 @@ import {
 } from 'firebase/firestore';
 import { db, auth, isCloudConfigured } from './cloudService';
 import { orgSyncService } from './orgSyncService';
+import { licenseService } from './licenseService';
 import { translateFirebaseError } from './firebaseErrorTranslator';
 import {
   snapshotService,
@@ -69,6 +70,7 @@ export interface CloudBackupOperationResult {
     | 'unconfigured'
     | 'offline'
     | 'no_license'
+    | 'feature_disabled'
     | 'needs_login'
     | 'wrong_account'
     | 'permission_paused'
@@ -448,9 +450,23 @@ class CloudBackupService {
     return this.periodicTimer !== null;
   }
 
+  private isCloudBackupFeatureEnabled(): boolean {
+    return typeof licenseService.isFeatureEnabled === 'function'
+      ? licenseService.isFeatureEnabled('cloudBackup')
+      : true;
+  }
+
   public async runPeriodicBackupCheck(): Promise<CloudBackupOperationResult> {
     if (!storage.isStorageReady()) {
       return { success: false, skipped: true, reason: 'in_progress' };
+    }
+    if (!this.isCloudBackupFeatureEnabled()) {
+      return {
+        success: false,
+        skipped: true,
+        reason: 'feature_disabled',
+        error: 'ميزة النسخ الاحتياطي السحابي غير مضمّنة في باقتك.',
+      };
     }
     if (this.isUploading) {
       return { success: false, skipped: true, reason: 'in_progress' };
@@ -703,11 +719,14 @@ class CloudBackupService {
     if (!isCloudConfigured || !db || !auth) {
       return { success: false, backups: [], error: 'السحابة غير مُعدّة بعد.' };
     }
-    const context = orgSyncService.getContext();
+    const context =
+      typeof orgSyncService.getStoredLicenseContext === 'function'
+        ? orgSyncService.getStoredLicenseContext()
+        : orgSyncService.getContext();
     if (!context) {
-      return { success: false, backups: [], error: 'لا يوجد ترخيص سارٍ لتحديد المنشأة والفرع.' };
+      return { success: false, backups: [], error: 'لا يوجد ترخيص مثبّت لتحديد المنشأة والفرع.' };
     }
-    const authStatus = orgSyncService.ensureSignedIn();
+    const authStatus = orgSyncService.ensureSignedIn({ allowExpired: true });
     if (authStatus !== 'ok') {
       return {
         success: false,
@@ -756,8 +775,9 @@ class CloudBackupService {
         } catch {}
       }
 
-      // Best-effort cleanup of stale incomplete backups (> 24h)
-      if (staleIncompleteIds.length > 0 && !this.permissionPaused && !cloudBudgetService.isExceeded()) {
+      // Best-effort cleanup of stale incomplete backups (> 24h), skipped in expired read-only mode
+      const isExpiredCtx = 'isExpired' in context && Boolean(context.isExpired);
+      if (staleIncompleteIds.length > 0 && !isExpiredCtx && !this.permissionPaused && !cloudBudgetService.isExceeded()) {
         for (const staleId of staleIncompleteIds) {
           this.deleteBackupAndChunks(db, context.orgId, context.branchId, staleId).catch(() => {});
         }
@@ -787,6 +807,14 @@ class CloudBackupService {
   public async checkAndCreateDailyBackup(): Promise<CloudBackupOperationResult> {
     if (this.inFlightDailyPromise) {
       return this.inFlightDailyPromise;
+    }
+    if (!this.isCloudBackupFeatureEnabled()) {
+      return {
+        success: false,
+        skipped: true,
+        reason: 'feature_disabled',
+        error: 'ميزة النسخ الاحتياطي السحابي غير مضمّنة في باقتك.',
+      };
     }
     if (!storage.isStorageReady()) {
       return { success: false, skipped: true, reason: 'in_progress' };
@@ -836,6 +864,14 @@ class CloudBackupService {
    * Triggered automatically after shift closure.
    */
   public async onShiftClosed(): Promise<CloudBackupOperationResult> {
+    if (!this.isCloudBackupFeatureEnabled()) {
+      return {
+        success: false,
+        skipped: true,
+        reason: 'feature_disabled',
+        error: 'ميزة النسخ الاحتياطي السحابي غير مضمّنة في باقتك.',
+      };
+    }
     return this.createAndUploadBackup('shift_close', 'إغلاق وردية تلقائي');
   }
 
@@ -847,6 +883,14 @@ class CloudBackupService {
     note?: string,
     options?: { forceDisableCompression?: boolean; forceIgnoreDrop?: boolean }
   ): Promise<CloudBackupOperationResult> {
+    if (!this.isCloudBackupFeatureEnabled()) {
+      return {
+        success: false,
+        skipped: true,
+        reason: 'feature_disabled',
+        error: 'ميزة النسخ الاحتياطي السحابي غير مضمّنة في باقتك.',
+      };
+    }
     if (this.isUploading) {
       return { success: false, skipped: true, reason: 'in_progress', error: 'عملية رفع نسخة احتياطية جارية بالفعل.' };
     }
@@ -1317,11 +1361,14 @@ class CloudBackupService {
     if (!isCloudConfigured || !db || !auth) {
       return { success: false, error: 'السحابة غير مُعدّة بعد.' };
     }
-    const context = orgSyncService.getContext();
+    const context =
+      typeof orgSyncService.getStoredLicenseContext === 'function'
+        ? orgSyncService.getStoredLicenseContext()
+        : orgSyncService.getContext();
     if (!context) {
-      return { success: false, error: 'لا يوجد ترخيص سارٍ لتحديد المنشأة والفرع.' };
+      return { success: false, error: 'لا يوجد ترخيص مثبّت لتحديد المنشأة والفرع.' };
     }
-    const authStatus = orgSyncService.ensureSignedIn();
+    const authStatus = orgSyncService.ensureSignedIn({ allowExpired: true });
     if (authStatus !== 'ok') {
       return {
         success: false,
@@ -1449,7 +1496,10 @@ class CloudBackupService {
       simulatePreRestoreFailure?: boolean;
     }
   ): Promise<{ success: boolean; error?: string }> {
-    const res = await snapshotService.restoreData(validatedData, sourceLabel, options);
+    const res = await snapshotService.restoreData(validatedData, sourceLabel, {
+      ...options,
+      allowInExpiredRestore: true,
+    });
     if (!res.success) {
       return res;
     }

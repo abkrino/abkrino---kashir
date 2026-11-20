@@ -24,6 +24,7 @@ import { AdminSetupModal } from './components/auth/AdminSetupModal';
 import { InitialSetupWizard } from './components/auth/InitialSetupWizard';
 import { StoreProfileSettings } from './components/settings/StoreProfileSettings';
 import { LicenseGate } from './components/license/LicenseGate';
+import { LicenseActivationModal } from './components/license/LicenseActivationModal';
 import { CloudDashboard } from './components/cloud/CloudDashboard';
 import { cloudService } from './services/cloudService';
 import { licenseService } from './services/licenseService';
@@ -31,10 +32,13 @@ import { canAccessTab, authSecurityService, userHasCredentials } from './service
 import { UnauthorizedState } from './components/common/FeedbackStates';
 import { UnifiedSettings, SettingsSubTab } from './components/settings/UnifiedSettings';
 import { tabLockService } from './services/tabLockService';
-import { orgSyncService } from './services/orgSyncService';
+import { orgSyncService, getYyyyMmDdCairo } from './services/orgSyncService';
 import { snapshotService } from './services/snapshotService';
 import { cloudBackupService } from './services/cloudBackupService';
 import { LayoutDashboard, ShoppingCart, Receipt, Boxes, Menu } from 'lucide-react';
+
+const EXPIRING_NOTICE_DATE_KEY = 'app_expiring_notice_cairo_date';
+const OPERATIONAL_GRACE_TABS: TabType[] = ['pos', 'invoices', 'purchasing', 'customers', 'suppliers'];
 
 export default function App() {
   const [tabLockState, setTabLockState] = useState<'checking' | 'acquired' | 'denied'>('checking');
@@ -66,6 +70,9 @@ export default function App() {
   // License and activation reactive state
   const [licenseState, setLicenseState] = useState(() => licenseService.getLicenseState());
   const [isStoreActivated, setIsStoreActivated] = useState<boolean>(() => licenseService.isStoreActivated());
+  const [isLicenseModalOpen, setIsLicenseModalOpen] = useState<boolean>(false);
+  const [isReadOnlyExportMode, setIsReadOnlyExportMode] = useState<boolean>(false);
+  const [isExpiringNoticeModalOpen, setIsExpiringNoticeModalOpen] = useState<boolean>(false);
 
   // 7-Day Manual Backup Reminder State (Requirement ثانياً: 4)
   const [backupReminder, setBackupReminder] = useState<{ needsReminder: boolean; daysSinceLastBackup: number } | null>(null);
@@ -285,6 +292,50 @@ export default function App() {
       clearInterval(interval);
     };
   }, [isLocked, currentUser, isStoreActivated, hasAdmin]);
+
+  // Reset read-only mode on renewal & trigger once-per-Cairo-day modal during EXPIRING phase
+  useEffect(() => {
+    if (licenseState.subscriptionPhase !== 'EXPIRED' && isReadOnlyExportMode) {
+      setIsReadOnlyExportMode(false);
+    }
+
+    if (
+      isStorageReady &&
+      isStoreActivated &&
+      currentUser &&
+      licenseState.subscriptionPhase === 'EXPIRING'
+    ) {
+      const effectiveCairoDate = getYyyyMmDdCairo(new Date(licenseService.getEffectiveNowMs()));
+      try {
+        const lastShown = localStorage.getItem(EXPIRING_NOTICE_DATE_KEY);
+        if (lastShown !== effectiveCairoDate) {
+          setIsExpiringNoticeModalOpen(true);
+        }
+      } catch {
+        setIsExpiringNoticeModalOpen(true);
+      }
+    } else if (licenseState.subscriptionPhase !== 'EXPIRING' && isExpiringNoticeModalOpen) {
+      setIsExpiringNoticeModalOpen(false);
+    }
+  }, [
+    licenseState.subscriptionPhase,
+    isStorageReady,
+    isStoreActivated,
+    currentUser,
+    isReadOnlyExportMode,
+    isExpiringNoticeModalOpen,
+  ]);
+
+  const dismissExpiringNoticeForToday = (openRenewalModal: boolean) => {
+    const effectiveCairoDate = getYyyyMmDdCairo(new Date(licenseService.getEffectiveNowMs()));
+    try {
+      localStorage.setItem(EXPIRING_NOTICE_DATE_KEY, effectiveCairoDate);
+    } catch {}
+    setIsExpiringNoticeModalOpen(false);
+    if (openRenewalModal) {
+      setIsLicenseModalOpen(true);
+    }
+  };
 
   const handleSwitchUser = (userId: string) => {
     storage.setActiveUser(userId);
@@ -568,12 +619,21 @@ export default function App() {
     );
   }
 
-  // 2. Gatekeeper: If device is not activated (neither valid nor grace nor trial bypass)
-  if (!isStoreActivated) {
+  // 2. Gatekeeper: If device is not activated (or expired unless opened in read-only/export mode)
+  const isExpiredLicense = licenseState.status === 'expired' && licenseState.subscriptionPhase === 'EXPIRED';
+  if (!isStoreActivated && !(isExpiredLicense && isReadOnlyExportMode)) {
     return (
       <LicenseGate
+        isExpiredMode={isExpiredLicense}
+        onEnterReadOnlyExport={
+          isExpiredLicense
+            ? () => setIsReadOnlyExportMode(true)
+            : undefined
+        }
         onActivationSuccess={() => {
-          setIsStoreActivated(true);
+          setIsReadOnlyExportMode(false);
+          setIsStoreActivated(licenseService.isStoreActivated());
+          setLicenseState(licenseService.getLicenseState());
           setIsLocked(true);
           refreshAll();
         }}
@@ -633,11 +693,50 @@ export default function App() {
         currentCash={currentCash}
         onOpenBackupModal={() => setCurrentTab('backup')}
         onOpenSettingsModal={() => setCurrentTab('settings')}
+        onOpenLicenseModal={() => setIsLicenseModalOpen(true)}
         onNavigateCloud={() => setCurrentTab('cloud')}
         onLockScreen={() => setIsLocked(true)}
         onOpenLogin={() => setIsLoginOpen(true)}
         onToggleMobileMenu={() => setIsMobileMenuOpen(prev => !prev)}
       />
+
+      {/* GRACE Phase Fixed Orange Banner on Non-Operational Tabs */}
+      {licenseState.subscriptionPhase === 'GRACE' && !OPERATIONAL_GRACE_TABS.includes(currentTab) && (
+        <div
+          className="bg-orange-500 text-white font-bold px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 shadow-md z-40 text-xs sm:text-sm"
+          role="alert"
+        >
+          <div className="flex items-center gap-2">
+            <span>أنت الآن في فترة السماح، متبقي {licenseState.graceDaysLeft} يوم</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsLicenseModalOpen(true)}
+            className="bg-white text-orange-700 hover:bg-orange-50 px-3 py-1 rounded-lg text-xs font-black shadow cursor-pointer transition shrink-0"
+          >
+            إدخال كود التجديد
+          </button>
+        </div>
+      )}
+
+      {/* EXPIRED Phase Persistent Read-Only & Export Banner */}
+      {isExpiredLicense && isReadOnlyExportMode && (
+        <div
+          className="bg-rose-700 text-white font-bold px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 shadow-md z-40 text-xs sm:text-sm"
+          role="alert"
+        >
+          <div className="flex items-center gap-2">
+            <span>انتهى الاشتراك — وضع القراءة والتصدير فقط (التقارير وتصدير النسخ والاستعادة من السحابة متاحة، وتم إيقاف الإضافة والتعديل)</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsLicenseModalOpen(true)}
+            className="bg-white text-rose-700 hover:bg-rose-50 px-3 py-1 rounded-lg text-xs font-black shadow cursor-pointer transition shrink-0"
+          >
+            إدخال كود التجديد
+          </button>
+        </div>
+      )}
 
       {/* Non-blocking banner: Review store profile for upgraded installation (Requirement 5) */}
       {!storage.isStoreProfileReviewed() && currentUser?.role === 'ADMIN' && (
@@ -1002,6 +1101,48 @@ export default function App() {
           }}
         />
       )}
+
+      {/* EXPIRING Once-Per-Day Alert Modal */}
+      {isExpiringNoticeModalOpen && licenseState.subscriptionPhase === 'EXPIRING' && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 z-50" dir="rtl">
+          <div className="bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 rounded-2xl max-w-md w-full shadow-2xl p-6 text-right space-y-4">
+            <h3 className="text-lg font-black text-amber-800 dark:text-amber-300">
+              اشتراكك ينتهي خلال {licenseState.daysToExpiry} يوم
+            </h3>
+            <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+              يرجى تجديد اشتراك النظام قبل انتهاء المدة لضمان استمرار العمل دون انقطاع أو قيود.
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => dismissExpiringNoticeForToday(false)}
+                className="px-4 py-2 rounded-xl bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-bold hover:bg-slate-300 dark:hover:bg-slate-700 cursor-pointer transition-colors"
+              >
+                لاحقاً
+              </button>
+              <button
+                type="button"
+                onClick={() => dismissExpiringNoticeForToday(true)}
+                className="px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-black cursor-pointer shadow-sm transition-colors"
+              >
+                إدخال كود التجديد
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* License Activation / Renewal Modal */}
+      <LicenseActivationModal
+        isOpen={isLicenseModalOpen}
+        onClose={() => setIsLicenseModalOpen(false)}
+        onSuccess={() => {
+          setIsReadOnlyExportMode(false);
+          setLicenseState(licenseService.getLicenseState());
+          setIsStoreActivated(licenseService.isStoreActivated());
+          refreshAll();
+        }}
+      />
     </div>
   );
 }

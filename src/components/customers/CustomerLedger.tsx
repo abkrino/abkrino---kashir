@@ -49,6 +49,7 @@ export const CustomerLedger: React.FC<CustomerLedgerProps> = ({
 
   // Delete confirmation modal state
   const [customerToDelete, setCustomerToDelete] = useState<Customer | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Statement of Account Modal (كشف حساب العميل)
   const [statementData, setStatementData] = useState<{
@@ -149,7 +150,13 @@ export const CustomerLedger: React.FC<CustomerLedgerProps> = ({
       };
     }
 
-    storage.saveCustomer(targetCustomer);
+    const saveRes = storage.saveCustomer(targetCustomer);
+    if (!saveRes.success) {
+      setActionError(saveRes.error || 'تعذر حفظ بيانات العميل');
+      setIsCustModalOpen(false);
+      return;
+    }
+    setActionError(null);
     setIsCustModalOpen(false);
     reloadCustomers();
   };
@@ -162,8 +169,12 @@ export const CustomerLedger: React.FC<CustomerLedgerProps> = ({
     if (!customerToDelete) return;
     const res = storage.deleteCustomer(customerToDelete.id, clearDebt);
     if (res.success) {
+      setActionError(null);
       setCustomerToDelete(null);
       reloadCustomers();
+    } else {
+      setActionError(res.error || 'تعذر حذف العميل');
+      setCustomerToDelete(null);
     }
   };
 
@@ -205,6 +216,14 @@ export const CustomerLedger: React.FC<CustomerLedgerProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Action Error Banner */}
+      {actionError && (
+        <div className="bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between gap-2">
+          <span>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} className="cursor-pointer text-xs underline">إغلاق</button>
+        </div>
+      )}
 
       {/* Search Input */}
       <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-3 flex items-center gap-3 shadow-xs transition-colors">

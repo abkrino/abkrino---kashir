@@ -263,7 +263,7 @@ class OrgSyncService {
 
     if (typeof navigator === 'undefined' || navigator.onLine !== false) {
       this.sendHeartbeat({ reason: 'startup', force: true }).catch(() => {});
-      if (this.isSummaryDirty()) {
+      if (this.isSummaryDirty() && this.isCloudSummaryFeatureEnabled()) {
         this.pushDailySummary(true).catch(() => {});
       }
     }
@@ -317,7 +317,7 @@ class OrgSyncService {
           this.resumeFromBudgetPause();
         }
         this.sendHeartbeat({ reason: 'online' }).catch(() => {});
-        if (this.isSummaryDirty()) {
+        if (this.isSummaryDirty() && this.isCloudSummaryFeatureEnabled()) {
           this.pushDailySummary(true).catch(() => {});
         }
       };
@@ -333,7 +333,7 @@ class OrgSyncService {
 
       // Immediate flush on pagehide before browser unloads page
       const onPageHide = () => {
-        if (this.isSummaryDirty()) {
+        if (this.isSummaryDirty() && this.isCloudSummaryFeatureEnabled()) {
           this.pushDailySummary(true).catch(() => {});
         }
       };
@@ -345,7 +345,7 @@ class OrgSyncService {
       // Page visibility change: flush dirty summary immediately on hidden; heartbeat on visible
       const onVisibility = () => {
         if (document.visibilityState === 'hidden') {
-          if (this.isSummaryDirty()) {
+          if (this.isSummaryDirty() && this.isCloudSummaryFeatureEnabled()) {
             this.pushDailySummary(true).catch(() => {});
           }
           return;
@@ -413,9 +413,10 @@ class OrgSyncService {
       this.notifyLicenseChangeListeners();
 
       const hasValidCtx = this.getContext() !== null;
-      if (hasValidCtx && isCloudConfigured && db && auth && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+      const storedCtx = this.getStoredLicenseContext();
+      if ((hasValidCtx || storedCtx?.isExpired) && isCloudConfigured && db && auth && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
         this.sendHeartbeat({ reason: 'license-change', force: true }).catch(() => {});
-        if (this.isSummaryDirty()) {
+        if (hasValidCtx && this.isSummaryDirty() && this.isCloudSummaryFeatureEnabled()) {
           this.pushDailySummary(true).catch(() => {});
         }
       } else {
@@ -432,23 +433,25 @@ class OrgSyncService {
           const prevUid = this.lastSeenAuthUid;
           this.lastSeenAuthUid = nextUid;
           const context = this.getContext();
+          const storedContext = this.getStoredLicenseContext();
+          const matchContext = context || storedContext;
 
           if (!user) {
-            if (context && (this.syncState === 'synced' || this.syncState === 'wrong-account')) {
+            if (matchContext && (this.syncState === 'synced' || this.syncState === 'wrong-account')) {
               this.syncState = 'needs-login';
             }
             this.notifyListeners();
             return;
           }
 
-          if (context && user.uid !== context.orgId) {
+          if (matchContext && user.uid !== matchContext.orgId) {
             this.syncState = 'wrong-account';
             this.lastError = 'الحساب المسجّل لا يطابق معرّف المنشأة (orgId) في ترخيص الجهاز.';
             this.notifyListeners();
             return;
           }
 
-          if (context && user.uid === context.orgId) {
+          if (matchContext && user.uid === matchContext.orgId) {
             if (this.syncState === 'needs-login' || this.syncState === 'idle') {
               this.syncState = 'idle';
               this.lastError = null;
@@ -462,7 +465,7 @@ class OrgSyncService {
               this.notifySignInListeners();
               if ((typeof navigator === 'undefined' || navigator.onLine !== false) && storage.isStorageReady()) {
                 this.sendHeartbeat({ reason: 'sign-in', force: true }).catch(() => {});
-                if (this.isSummaryDirty()) {
+                if (context && this.isSummaryDirty() && this.isCloudSummaryFeatureEnabled()) {
                   this.pushDailySummary(true).catch(() => {});
                 }
               }
@@ -476,7 +479,16 @@ class OrgSyncService {
     }
   }
 
+  public isCloudSummaryFeatureEnabled(): boolean {
+    return typeof licenseService.isFeatureEnabled === 'function'
+      ? licenseService.isFeatureEnabled('cloudSummary')
+      : true;
+  }
+
   public handleSummaryDataChange(): void {
+    if (!this.isCloudSummaryFeatureEnabled()) {
+      return;
+    }
     this.actionSeq++;
     storage.setSummaryDirty(true);
     this.notifyListeners();
@@ -515,11 +527,31 @@ class OrgSyncService {
     return null;
   }
 
+  // Returns stored license orgId/branchId even when license is expired (used for cloud restore & online token renewal)
+  public getStoredLicenseContext(): { orgId: string; branchId: string; mode: 'offline' | 'online'; isExpired: boolean } | null {
+    const active = this.getContext();
+    if (active) {
+      return { ...active, isExpired: false };
+    }
+    const licState = licenseService.getLicenseState();
+    if (licState.status === 'expired' && licState.payload) {
+      if (licState.payload.orgId && licState.payload.branchId) {
+        return {
+          orgId: licState.payload.orgId,
+          branchId: licState.payload.branchId,
+          mode: licState.payload.mode || 'offline',
+          isExpired: true,
+        };
+      }
+    }
+    return null;
+  }
+
   // -------------------------------------------------------------------------
   // 2. ensureSignedIn(): Validates auth.currentUser.uid == orgId
   // -------------------------------------------------------------------------
-  public ensureSignedIn(): 'ok' | 'needs-login' | 'wrong-account' {
-    const context = this.getContext();
+  public ensureSignedIn(options?: { allowExpired?: boolean }): 'ok' | 'needs-login' | 'wrong-account' {
+    const context = options?.allowExpired ? this.getStoredLicenseContext() : this.getContext();
     if (!context) return 'needs-login';
 
     const currentUser = auth?.currentUser || null;
@@ -551,9 +583,9 @@ class OrgSyncService {
       return { success: false, error: 'يرجى إدخال البريد الإلكتروني وكلمة المرور.' };
     }
 
-    const context = this.getContext();
+    const context = this.getStoredLicenseContext();
     if (!context) {
-      const msg = 'لا يوجد ترخيص سارٍ على هذا الجهاز لتحديد معرّف المنشأة (orgId) والفرع (branchId).';
+      const msg = 'لا يوجد ترخيص مثبّت على هذا الجهاز لتحديد معرّف المنشأة والفرع.';
       this.lastError = msg;
       return { success: false, error: msg };
     }
@@ -591,9 +623,11 @@ class OrgSyncService {
       this.notifyListeners();
       this.notifySignInListeners();
 
-      // Trigger initial heartbeat and summary (especially if summaryDirty is true)
+      // Trigger initial heartbeat/token check and summary (especially if summaryDirty is true)
       this.sendHeartbeat({ reason: 'sign-in', force: true }).catch(() => {});
-      this.pushDailySummary(true).catch(() => {});
+      if (!context.isExpired && this.isCloudSummaryFeatureEnabled()) {
+        this.pushDailySummary(true).catch(() => {});
+      }
 
       return { success: true };
     } catch (err: unknown) {
@@ -608,7 +642,7 @@ class OrgSyncService {
 
   public async signOutStore(): Promise<void> {
     // Requirement 4c: Flush dirty daily summary BEFORE signing out Firebase Auth
-    if (this.isSummaryDirty()) {
+    if (this.isSummaryDirty() && this.isCloudSummaryFeatureEnabled()) {
       await this.pushDailySummary(true).catch(() => {});
     }
     try {
@@ -661,7 +695,9 @@ class OrgSyncService {
     }
 
     const context = this.getContext();
-    if (!context) {
+    const storedContext = context ? null : this.getStoredLicenseContext();
+
+    if (!context && !storedContext?.isExpired) {
       this.syncState = 'no-license';
       this.notifyListeners();
       return { success: false, error: 'لا يوجد ترخيص سارٍ لتحديد المحل والفرع.' };
@@ -673,7 +709,7 @@ class OrgSyncService {
       return { success: false, error: 'لا يوجد اتصال بالإنترنت حالياً.' };
     }
 
-    const authCheck = this.ensureSignedIn();
+    const authCheck = this.ensureSignedIn({ allowExpired: Boolean(storedContext?.isExpired) });
     if (authCheck !== 'ok') {
       this.syncState = authCheck;
       this.notifyListeners();
@@ -681,28 +717,74 @@ class OrgSyncService {
         success: false,
         error:
           authCheck === 'wrong-account'
-            ? 'الحساب المسجّل لا يطابق ترخيص الجهاز (orgId).'
+            ? 'الحساب المسجّل لا يطابق ترخيص الجهاز.'
             : 'يجب تسجيل دخول المحل للمزامنة أولاً.',
       };
     }
 
+    // If license is EXPIRED, do NOT write heartbeats; perform read-only branch check only at startup / 6h / manual / sign-in
+    // to detect whether a newly signed licenseToken was deployed to the branch document.
+    if (!context && storedContext?.isExpired) {
+      const shouldCheckExpiredToken =
+        this.lastClockReconcileMs === 0 ||
+        (now - this.lastClockReconcileMs) >= CLOCK_RECONCILE_INTERVAL_MS ||
+        reason === 'manual' ||
+        reason === 'sign-in';
+
+      if (!shouldCheckExpiredToken) {
+        return { success: false, skipped: true, error: 'انتهى اشتراك البرنامج.' };
+      }
+
+      this.isHeartbeatInFlight = true;
+      this.lastHeartbeatAttemptMs = now;
+      try {
+        const branchRef = doc(db, 'orgs', storedContext.orgId, 'branches', storedContext.branchId);
+        const branchSnap = await cloudBudgetService.budgetedGetDoc(branchRef);
+        this.lastClockReconcileMs = Date.now();
+        if (branchSnap.exists()) {
+          const branchData = branchSnap.data();
+          if (
+            typeof branchData?.licenseToken === 'string' &&
+            branchData.licenseToken.trim().length > 0 &&
+            typeof licenseService.tryAutoInstallBranchToken === 'function'
+          ) {
+            const installRes = await licenseService.tryAutoInstallBranchToken(branchData.licenseToken.trim());
+            if (installRes.updated) {
+              this.lastError = null;
+              this.statusMessage = 'تم تحديث وتجديد الترخيص تلقائياً من السحابة.';
+              this.syncState = 'synced';
+              this.notifyListeners();
+              return { success: true };
+            }
+          }
+        }
+        return { success: false, error: 'انتهى اشتراك البرنامج.' };
+      } catch (err: unknown) {
+        return this.handleSyncError(err, 'sendHeartbeat:expiredTokenCheck');
+      } finally {
+        this.isHeartbeatInFlight = false;
+      }
+    }
+
+    const activeCtx = context!;
     this.isHeartbeatInFlight = true;
     this.lastHeartbeatAttemptMs = now;
 
     try {
       const env = detectEnvironment();
-      const branchRef = doc(db, 'orgs', context.orgId, 'branches', context.branchId);
+      const branchRef = doc(db, 'orgs', activeCtx.orgId, 'branches', activeCtx.branchId);
 
       await cloudBudgetService.budgetedUpdateDoc(branchRef, {
         lastSeenAt: serverTimestamp(),
         appVersion: APP_VERSION,
         windowsVersion: env.windowsVersion,
-        mode: context.mode,
+        mode: activeCtx.mode,
       });
 
       this.resetBackoff();
 
       // Reconcile clock ONLY at startup (lastClockReconcileMs === 0) or every 6 hours
+      // Piggyback branchDoc.licenseToken auto-renewal check on the SAME read (zero extra reads).
       const nowAfterWrite = Date.now();
       const shouldReconcileClock =
         this.lastClockReconcileMs === 0 ||
@@ -714,6 +796,13 @@ class OrgSyncService {
           this.lastClockReconcileMs = Date.now();
           if (branchSnap.exists()) {
             const branchData = branchSnap.data();
+            if (
+              typeof branchData?.licenseToken === 'string' &&
+              branchData.licenseToken.trim().length > 0 &&
+              typeof licenseService.tryAutoInstallBranchToken === 'function'
+            ) {
+              await licenseService.tryAutoInstallBranchToken(branchData.licenseToken.trim()).catch(() => {});
+            }
             const serverTime = branchData?.lastSeenAt;
             if (serverTime) {
               let serverMs: number | null = null;
@@ -777,7 +866,7 @@ class OrgSyncService {
 
       const res = await this.sendHeartbeat({ force: true, reason: 'manual' });
       if (res.success) {
-        if (this.isSummaryDirty()) {
+        if (this.isSummaryDirty() && this.isCloudSummaryFeatureEnabled()) {
           this.pushDailySummary(true).catch(() => {});
         }
         return {
@@ -846,6 +935,21 @@ class OrgSyncService {
 
   public async pushDailySummary(forceImmediate: boolean = false): Promise<{ success: boolean; error?: string; skipped?: boolean }> {
     if (!storage.isStorageReady()) return { success: false, error: 'storage-not-ready' };
+    if (!this.isCloudSummaryFeatureEnabled()) {
+      if (this.debounceTimer) {
+        clearTimeout(this.debounceTimer);
+        this.debounceTimer = null;
+      }
+      if (this.rescheduleSummaryTimer) {
+        clearTimeout(this.rescheduleSummaryTimer);
+        this.rescheduleSummaryTimer = null;
+      }
+      return {
+        success: false,
+        skipped: true,
+        error: 'ميزة الملخص السحابي غير مضمّنة في باقتك.',
+      };
+    }
     if (!isCloudConfigured || !db || !auth) {
       this.syncState = 'unconfigured';
       this.notifyListeners();
@@ -1059,7 +1163,7 @@ class OrgSyncService {
       this.notifyListeners();
       if (this.isRunning && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
         this.sendHeartbeat({ reason: 'periodic' }).catch(() => {});
-        if (this.isSummaryDirty()) {
+        if (this.isSummaryDirty() && this.isCloudSummaryFeatureEnabled()) {
           this.pushDailySummary(true).catch(() => {});
         }
       }
@@ -1089,7 +1193,7 @@ class OrgSyncService {
       this.permissionRetryTimer = null;
       this.resetSubscriptionPause();
       this.sendHeartbeat({ reason: 'periodic' }).catch(() => {});
-      if (this.isSummaryDirty()) {
+      if (this.isSummaryDirty() && this.isCloudSummaryFeatureEnabled()) {
         this.pushDailySummary(false).catch(() => {});
       }
     }, retryDelayMs);
@@ -1133,7 +1237,7 @@ class OrgSyncService {
       if (!this.isRunning || this.isSubPaused || this.syncState === 'budget-paused') return;
       if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
       this.sendHeartbeat({ reason: 'periodic' }).catch(() => {});
-      if (this.isSummaryDirty()) {
+      if (this.isSummaryDirty() && this.isCloudSummaryFeatureEnabled()) {
         this.pushDailySummary(false).catch(() => {});
       }
     }, delayMs);

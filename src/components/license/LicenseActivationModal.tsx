@@ -111,14 +111,21 @@ export const LicenseActivationModal: React.FC<LicenseActivationModalProps> = ({
   const getStatusBadge = () => {
     switch (licenseState.status) {
       case 'valid':
+        if (licenseState.subscriptionPhase === 'EXPIRING') {
+          return {
+            label: `قريب الانتهاء (متبقي ${licenseState.daysToExpiry} يوم)`,
+            color: 'bg-amber-500/20 text-amber-800 dark:text-amber-300 border-amber-500/30',
+            icon: Clock,
+          };
+        }
         return {
-          label: `ترخيص سارٍ (${licenseState.daysRemaining} يوم متبقي)`,
+          label: `ترخيص سارٍ (${licenseState.daysToExpiry} يوم متبقي)`,
           color: 'bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 border-emerald-500/30',
           icon: ShieldCheck,
         };
       case 'grace':
         return {
-          label: `فترة سماح (${licenseState.daysRemaining} يوم متبقي)`,
+          label: `فترة سماح (متبقي ${licenseState.graceDaysLeft} يوم)`,
           color: 'bg-amber-500/20 text-amber-800 dark:text-amber-300 border-amber-500/30',
           icon: Clock,
         };
@@ -270,7 +277,7 @@ export const LicenseActivationModal: React.FC<LicenseActivationModalProps> = ({
                 setTokenInput(e.target.value);
                 setError(null);
               }}
-              placeholder="الصق كود التفعيل هنا (مثال: eyJ2IjoxLCJv...8MtybRBk...)"
+              placeholder="الصق كود التفعيل أو التجديد هنا"
               className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-800 rounded-xl p-3 text-xs font-mono text-slate-900 dark:text-emerald-300 focus:outline-none focus:border-emerald-500 resize-none"
             />
           </div>

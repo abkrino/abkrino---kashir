@@ -510,7 +510,7 @@ class AuthSecurityService {
         user.mustChangePin = true;
       }
 
-      storage.saveUser(user);
+      storage.saveUser(user, { bypassLicenseCheck: true });
 
       storage.addAuditLog(
         'AUTH',
@@ -613,7 +613,7 @@ class AuthSecurityService {
     delete updatedAdmin.pinCode;
     delete updatedAdmin.mustChangePin;
 
-    const saveRes = storage.saveUser(updatedAdmin);
+    const saveRes = storage.saveUser(updatedAdmin, { bypassLicenseCheck: true });
     if (!saveRes.success) {
       return { success: false, error: saveRes.error || 'تعذر حفظ كلمة مرور المدير' };
     }

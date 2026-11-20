@@ -972,6 +972,18 @@ export async function executeProductImport(params: {
 }): Promise<ExecuteImportResult> {
   const { preview, duplicateMode, user, options } = params;
 
+  const writeGate = storage.assertWriteAllowed('ADMIN_DATA', 'استيراد قائمة الأصناف من ملف');
+  if (!writeGate.allowed) {
+    return {
+      success: false,
+      error: writeGate.error,
+      addedCount: 0,
+      updatedCount: 0,
+      skippedCount: 0,
+      openingAdjustmentsCount: 0,
+    };
+  }
+
   if (!user || (user.role !== 'ADMIN' && !user.permissions?.canManageProducts)) {
     return {
       success: false,

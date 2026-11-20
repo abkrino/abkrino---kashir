@@ -89,6 +89,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
   const [reorderLevelCartons, setReorderLevelCartons] = useState<number>(2);
   const [expiryDate, setExpiryDate] = useState<string>('2027-06-30');
   const [batchNumber, setBatchNumber] = useState<string>('');
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const isAdmin = currentUser.role === 'ADMIN' || currentUser.permissions?.canManageProducts;
 
@@ -289,7 +290,13 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
       };
     }
 
-    storage.saveProduct(targetProduct);
+    const saveRes = storage.saveProduct(targetProduct);
+    if (!saveRes.success) {
+      setActionError(saveRes.error || 'تعذر حفظ الصنف');
+      setIsAddProductModalOpen(false);
+      return;
+    }
+    setActionError(null);
     setProducts(storage.getProducts());
     setIsAddProductModalOpen(false);
     onRefreshData();
@@ -299,9 +306,13 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
     if (!productToDelete) return;
     const res = storage.deleteProduct(productToDelete.id);
     if (res.success) {
+      setActionError(null);
       setProducts(storage.getProducts());
       setProductToDelete(null);
       onRefreshData();
+    } else {
+      setActionError(res.error || 'تعذر حذف الصنف');
+      setProductToDelete(null);
     }
   };
 
@@ -372,6 +383,12 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
 
   return (
     <div className="space-y-5" dir="rtl">
+      {actionError && (
+        <div className="bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between gap-2">
+          <span>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} className="cursor-pointer text-xs underline">إغلاق</button>
+        </div>
+      )}
       {/* Top Header & Valuation Cards */}
       <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4 transition-colors">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 pb-3 border-b border-slate-200 dark:border-slate-800">

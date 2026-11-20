@@ -4,6 +4,7 @@ import { storage } from '../services/storageService';
 import { themeService, ThemeMode } from '../services/themeService';
 import { checkUserPermission } from '../services/authSecurityService';
 import { cloudService } from '../services/cloudService';
+import { licenseService, LicenseStateResult } from '../services/licenseService';
 import { 
   ShieldCheck, 
   UserCheck, 
@@ -19,7 +20,8 @@ import {
   Wifi,
   WifiOff,
   Sliders,
-  Settings
+  Settings,
+  Clock
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -29,6 +31,7 @@ interface NavbarProps {
   currentCash: number;
   onOpenBackupModal?: () => void;
   onOpenSettingsModal?: () => void;
+  onOpenLicenseModal?: () => void;
   onNavigateCloud?: () => void;
   onLockScreen: () => void;
   onOpenLogin: () => void;
@@ -39,6 +42,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentUser,
   currentCash,
   onOpenSettingsModal,
+  onOpenLicenseModal,
   onNavigateCloud,
   onLockScreen,
   onOpenLogin,
@@ -48,6 +52,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const [isOnline, setIsOnline] = useState<boolean>(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const [isSyncing, setIsSyncing] = useState<boolean>(cloudService.isSyncing());
+  const [licenseState, setLicenseState] = useState<LicenseStateResult>(() => licenseService.getLicenseState());
   const userMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -65,6 +70,10 @@ export const Navbar: React.FC<NavbarProps> = ({
       setIsSyncing(cloudService.isSyncing());
     });
 
+    const unsubLicense = licenseService.subscribe(() => {
+      setLicenseState(licenseService.getLicenseState());
+    });
+
     const handleClickOutside = (e: MouseEvent) => {
       if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
         setIsUserMenuOpen(false);
@@ -77,6 +86,7 @@ export const Navbar: React.FC<NavbarProps> = ({
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
       unsubCloud();
+      unsubLicense();
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
@@ -138,6 +148,19 @@ export const Navbar: React.FC<NavbarProps> = ({
 
         {/* Left Section: Status, Cash, and User Menu */}
         <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+          {/* Permanent EXPIRING Subscription Countdown Badge */}
+          {licenseState.subscriptionPhase === 'EXPIRING' && (
+            <button
+              type="button"
+              onClick={onOpenLicenseModal}
+              className="h-9 px-2.5 sm:px-3 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/60 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-800 dark:text-amber-300 flex items-center gap-1.5 text-xs font-black transition-all shadow-xs cursor-pointer"
+              title="اشتراكك قريب من الانتهاء — اضغط لإدخال كود التجديد"
+            >
+              <Clock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+              <span>متبقي {licenseState.daysToExpiry} يوم</span>
+            </button>
+          )}
+
           {/* Connection & Cloud Sync Status Indicator */}
           <button
             type="button"

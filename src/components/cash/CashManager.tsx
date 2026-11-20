@@ -254,7 +254,12 @@ export const CashManager: React.FC<CashManagerProps> = ({
       status: 'CLOSED',
     };
 
-    storage.saveCurrentShift(updatedShift);
+    const shiftRes = storage.saveCurrentShift(updatedShift);
+    if (!shiftRes.success) {
+      setStatusMessage(shiftRes.error || 'تعذر إغلاق الوردية بسبب حالة الاشتراك.');
+      setIsCloseShiftOpen(false);
+      return;
+    }
 
     // Requirement 3: Immediate flush to persistent storage before showing success
     try {

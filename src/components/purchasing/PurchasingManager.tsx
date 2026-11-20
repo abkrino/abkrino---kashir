@@ -76,6 +76,7 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
   // Items in active invoice
   const [invoiceItems, setInvoiceItems] = useState<PurchaseItem[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Funding Source Modal for cash purchase out-of-drawer
   const [showFundingModal, setShowFundingModal] = useState(false);
@@ -234,7 +235,12 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
 
     // If editing, delete previous record first to recalculate cleanly
     if (editingInvoiceId) {
-      storage.deletePurchaseInvoice(editingInvoiceId);
+      const delRes = storage.deletePurchaseInvoice(editingInvoiceId);
+      if (!delRes.success) {
+        setFormError(delRes.error || 'تعذر تعديل فاتورة الشراء');
+        setShowFundingModal(false);
+        return;
+      }
     }
 
     const newPurchase: PurchaseInvoice = {
@@ -341,8 +347,12 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
     if (!invoiceToDelete) return;
     const res = storage.deletePurchaseInvoice(invoiceToDelete.id);
     if (res.success) {
+      setActionError(null);
       setInvoiceToDelete(null);
       reloadData();
+    } else {
+      setActionError(res.error || 'تعذر حذف فاتورة الشراء');
+      setInvoiceToDelete(null);
     }
   };
 
@@ -350,7 +360,10 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
   const handleInsertIntoStock = (inv: PurchaseInvoice) => {
     const res = storage.insertPurchaseIntoStock(inv.id);
     if (res.success) {
+      setActionError(null);
       reloadData();
+    } else {
+      setActionError(res.error || 'تعذر ترحيل فاتورة الشراء للمخزن');
     }
   };
 
@@ -369,7 +382,13 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
       paymentTermsDays: newSuppType === 'WHOLESALER' ? 3 : 15,
     };
 
-    storage.saveSupplier(newSupplier);
+    const saveRes = storage.saveSupplier(newSupplier);
+    if (!saveRes.success) {
+      setActionError(saveRes.error || 'تعذر إضافة المورد');
+      setIsAddSuppModalOpen(false);
+      return;
+    }
+    setActionError(null);
     setSuppliers(storage.getSuppliers());
     setSelectedSupplierId(newSupplier.id);
     setIsAddSuppModalOpen(false);
@@ -403,6 +422,12 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
 
   return (
     <div className="space-y-5" dir="rtl">
+      {actionError && (
+        <div className="bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between gap-2">
+          <span>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} className="cursor-pointer text-xs underline">إغلاق</button>
+        </div>
+      )}
       {/* Header with Quick Actions */}
       <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl p-5 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4 transition-colors">
         <div>

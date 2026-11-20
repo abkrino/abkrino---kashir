@@ -72,6 +72,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
   // Delete Modals
   const [supplierToDelete, setSupplierToDelete] = useState<Supplier | null>(null);
   const [paymentToDelete, setPaymentToDelete] = useState<CashMovement | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Statement Modal State (كشف حساب المورد)
   const [statementData, setStatementData] = useState<{
@@ -213,6 +214,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
     e.preventDefault();
     if (!suppName.trim()) return;
 
+    let saveRes: { success: boolean; error?: string };
     if (editingSupplierId) {
       const existing = suppliers.find(s => s.id === editingSupplierId)!;
       const updated: Supplier = {
@@ -224,7 +226,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
         paymentTermsDays: suppTermsDays,
         openingBalance: suppOpeningBalance,
       };
-      storage.saveSupplier(updated);
+      saveRes = storage.saveSupplier(updated);
     } else {
       const newSupplier: Supplier = {
         id: `s-${Date.now()}`,
@@ -237,9 +239,16 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
         openingBalance: suppOpeningBalance,
         currentBalance: suppOpeningBalance, // يبدأ الرصيد بالرصيد الافتتاحي
       };
-      storage.saveSupplier(newSupplier);
+      saveRes = storage.saveSupplier(newSupplier);
     }
 
+    if (!saveRes.success) {
+      setActionError(saveRes.error || 'تعذر حفظ بيانات المورد');
+      setIsSupplierModalOpen(false);
+      return;
+    }
+
+    setActionError(null);
     setIsSupplierModalOpen(false);
     reloadData();
   };
@@ -249,8 +258,12 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
     if (!supplierToDelete) return;
     const res = storage.deleteSupplier(supplierToDelete.id);
     if (res.success) {
+      setActionError(null);
       setSupplierToDelete(null);
       reloadData();
+    } else {
+      setActionError(res.error || 'تعذر حذف المورد');
+      setSupplierToDelete(null);
     }
   };
 
@@ -276,9 +289,14 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
 
     const res = storage.updateSupplierPayment(paymentToEdit.id, editPaymentAmount, editPaymentNotes);
     if (res.success) {
+      setActionError(null);
       setIsEditPaymentModalOpen(false);
       setPaymentToEdit(null);
       reloadData();
+    } else {
+      setActionError(res.error || 'تعذر تعديل الدفعة');
+      setIsEditPaymentModalOpen(false);
+      setPaymentToEdit(null);
     }
   };
 
@@ -287,13 +305,23 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
     if (!paymentToDelete) return;
     const res = storage.deleteSupplierPayment(paymentToDelete.id);
     if (res.success) {
+      setActionError(null);
       setPaymentToDelete(null);
       reloadData();
+    } else {
+      setActionError(res.error || 'تعذر حذف الدفعة');
+      setPaymentToDelete(null);
     }
   };
 
   return (
     <div className="space-y-5" dir="rtl">
+      {actionError && (
+        <div className="bg-rose-50 dark:bg-rose-950/60 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between gap-2">
+          <span>{actionError}</span>
+          <button type="button" onClick={() => setActionError(null)} className="cursor-pointer text-xs underline">إغلاق</button>
+        </div>
+      )}
       {/* Top Header */}
       <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl p-5 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4 transition-colors">
         <div>

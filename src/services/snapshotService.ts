@@ -705,8 +705,16 @@ class SnapshotService {
     options?: {
       simulateFailureInTransaction?: boolean;
       simulatePreRestoreFailure?: boolean;
+      allowInExpiredRestore?: boolean;
     }
   ): Promise<{ success: boolean; error?: string }> {
+    if (!options?.allowInExpiredRestore) {
+      const writeGate = storage.assertWriteAllowed('ADMIN_DATA', `استعادة بيانات (${sourceLabel})`);
+      if (!writeGate.allowed) {
+        return { success: false, error: writeGate.error };
+      }
+    }
+
     try {
       // Step 0: Support both enveloped { data: { ... } } and raw payload { products: ... }
       const payload = (data && typeof data === 'object' && data.data && typeof data.data === 'object' && !Array.isArray(data.data))

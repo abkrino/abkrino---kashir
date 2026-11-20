@@ -501,7 +501,11 @@ export const PosSales: React.FC<PosSalesProps> = ({
       discountValue,
       notes,
     };
-    storage.saveParkedCart(cart);
+    const parkRes = storage.saveParkedCart(cart);
+    if (!parkRes.success) {
+      setErrorMessage(parkRes.error || 'تعذر تعليق الفاتورة.');
+      return;
+    }
     setParkedCarts(storage.getParkedCarts());
     setItems([]);
     setDiscountValue(0);
@@ -512,11 +516,15 @@ export const PosSales: React.FC<PosSalesProps> = ({
 
   // Resume Parked Cart
   const handleResumeParkedCart = (cart: ParkedCart) => {
+    const removeRes = storage.removeParkedCart(cart.id);
+    if (!removeRes.success) {
+      setErrorMessage(removeRes.error || 'تعذر استرجاع الفاتورة المعلقة.');
+      return;
+    }
     setItems(cart.items);
     setDiscountType(cart.discountType);
     setDiscountValue(cart.discountValue);
     setNotes(cart.notes || '');
-    storage.removeParkedCart(cart.id);
     setParkedCarts(storage.getParkedCarts());
     setIsParkedModalOpen(false);
     setItemAddedToast(`تم استرجاع فاتورة (${cart.customerName}) بنجاح ✓`);

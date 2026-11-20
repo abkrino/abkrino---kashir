@@ -10,14 +10,21 @@ import {
   AlertCircle, 
   Laptop, 
   PlayCircle,
-  FileCheck
+  FileCheck,
+  Eye
 } from 'lucide-react';
 
 interface LicenseGateProps {
   onActivationSuccess: () => void;
+  isExpiredMode?: boolean;
+  onEnterReadOnlyExport?: () => void;
 }
 
-export const LicenseGate: React.FC<LicenseGateProps> = ({ onActivationSuccess }) => {
+export const LicenseGate: React.FC<LicenseGateProps> = ({
+  onActivationSuccess,
+  isExpiredMode = false,
+  onEnterReadOnlyExport,
+}) => {
   const [tokenInput, setTokenInput] = useState<string>('');
   const [copiedDeviceId, setCopiedDeviceId] = useState<boolean>(false);
   const [copiedRequestCode, setCopiedRequestCode] = useState<boolean>(false);
@@ -26,6 +33,7 @@ export const LicenseGate: React.FC<LicenseGateProps> = ({ onActivationSuccess })
 
   const deviceId = licenseService.getDeviceId();
   const requestCode = licenseService.getRequestCode();
+  const licenseState = licenseService.getLicenseState();
 
   const handleCopyDeviceId = async () => {
     try {
@@ -81,18 +89,20 @@ export const LicenseGate: React.FC<LicenseGateProps> = ({ onActivationSuccess })
             <Key className="w-7 h-7" />
           </div>
           <h1 className="text-xl sm:text-2xl font-black text-white">
-            تفعيل ترخيص النظام
+            {isExpiredMode ? 'انتهى اشتراك النظام' : 'تفعيل ترخيص النظام'}
           </h1>
           <p className="text-xs sm:text-sm text-slate-400 font-medium leading-relaxed">
-            أرسل كود الطلب لمزوّد النظام واستلم كود التفعيل
+            {isExpiredMode
+              ? 'انتهت مدة الاشتراك وفترة السماح. الصق كود التجديد لإعادة تشغيل جميع المزايا، أو افتح النظام للقراءة والتصدير فقط.'
+              : 'أرسل كود الطلب لمزوّد النظام واستلم كود التفعيل'}
           </p>
         </div>
 
-        {/* Error message */}
-        {error && (
+        {/* Error message or expired notice */}
+        {(error || (isExpiredMode && licenseState.message)) && (
           <div className="p-3 rounded-xl bg-rose-950/80 border border-rose-800 text-rose-300 text-xs sm:text-sm flex items-center gap-2">
             <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-            <span>{error}</span>
+            <span>{error || licenseState.message}</span>
           </div>
         )}
 
@@ -152,7 +162,7 @@ export const LicenseGate: React.FC<LicenseGateProps> = ({ onActivationSuccess })
               required
               value={tokenInput}
               onChange={(e) => setTokenInput(e.target.value)}
-              placeholder="ey... (ضع كود التفعيل هنا)"
+              placeholder="الصق كود التفعيل أو التجديد هنا"
               className="w-full bg-slate-950 border border-slate-700 rounded-xl p-3 text-xs font-mono text-white placeholder-slate-600 focus:outline-none focus:border-emerald-500 text-left resize-none"
               dir="ltr"
             />
@@ -164,12 +174,35 @@ export const LicenseGate: React.FC<LicenseGateProps> = ({ onActivationSuccess })
             className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 disabled:opacity-50 text-white font-black text-sm rounded-xl shadow-lg shadow-emerald-950/60 flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-98"
           >
             <Key className="w-4 h-4" />
-            <span>{isVerifying ? 'جاري التحقق من التوقيع...' : 'تفعيل الترخيص'}</span>
+            <span>
+              {isVerifying
+                ? 'جاري التحقق من التوقيع...'
+                : isExpiredMode
+                ? 'تجديد وتفعيل الاشتراك'
+                : 'تفعيل الترخيص'}
+            </span>
           </button>
         </form>
 
-        {/* Optional Trial Bypass Button (ONLY when LICENSE_ENFORCEMENT == false) */}
-        {!LICENSE_ENFORCEMENT && (
+        {/* Read-Only & Export Entry Button when EXPIRED */}
+        {isExpiredMode && onEnterReadOnlyExport && (
+          <div className="pt-2 border-t border-slate-800 text-center">
+            <button
+              type="button"
+              onClick={onEnterReadOnlyExport}
+              className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-amber-300 hover:text-amber-200 border border-amber-500/40 rounded-xl text-xs font-black flex items-center justify-center gap-2 cursor-pointer transition-colors"
+            >
+              <Eye className="w-4 h-4 text-amber-400" />
+              <span>فتح للقراءة والتصدير فقط</span>
+            </button>
+            <p className="text-[10px] text-slate-400 mt-1.5">
+              يتيح استعراض التقارير وتصدير النسخ الاحتياطية والاستعادة من السحابة فقط دون إضافة أو تعديل
+            </p>
+          </div>
+        )}
+
+        {/* Optional Trial Bypass Button (ONLY when LICENSE_ENFORCEMENT == false and not expired) */}
+        {!LICENSE_ENFORCEMENT && !isExpiredMode && (
           <div className="pt-2 border-t border-slate-800 text-center">
             <button
               type="button"

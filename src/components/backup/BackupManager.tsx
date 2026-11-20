@@ -282,7 +282,15 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
   };
 
   const handleConfirmFactoryReset = () => {
-    storage.resetToFactoryDefault();
+    const res = storage.resetToFactoryDefault();
+    if (!res.success) {
+      setIsResetModalOpen(false);
+      setStatusMessage({
+        type: 'error',
+        text: res.error || 'تعذر إعادة ضبط قاعدة البيانات.',
+      });
+      return;
+    }
     onRefreshData();
     setIsResetModalOpen(false);
     setStatusMessage({
