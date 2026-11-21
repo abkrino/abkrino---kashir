@@ -792,14 +792,25 @@ class LicenseService {
     if (category === 'SHIFT') {
       const storedShift = this.shiftStateReader ? this.shiftStateReader() : null;
       const isStoredShiftActuallyOpen = Boolean(storedShift && storedShift.status === 'OPEN');
+      const storedShiftId =
+        typeof storedShift?.id === 'string' && storedShift.id.trim().length > 0
+          ? storedShift.id
+          : null;
       const targetShift = context?.targetShift;
+      const targetShiftId =
+        typeof targetShift?.id === 'string' && targetShift.id.trim().length > 0
+          ? targetShift.id
+          : null;
       const isValidCloseTarget = Boolean(
-        targetShift &&
+        isStoredShiftActuallyOpen &&
+          storedShiftId !== null &&
+          targetShift &&
           targetShift.status === 'CLOSED' &&
-          (!storedShift?.id || !targetShift.id || storedShift.id === targetShift.id)
+          targetShiftId !== null &&
+          storedShiftId === targetShiftId
       );
 
-      if (isStoredShiftActuallyOpen && isValidCloseTarget) {
+      if (isValidCloseTarget) {
         return { allowed: true, phase: 'EXPIRED' };
       }
 
@@ -818,6 +829,18 @@ class LicenseService {
           phase: 'EXPIRED',
           reason:
             'انتهت صلاحية الاشتراك وفترة السماح. لا توجد وردية مفتوحة حالياً لإغلاقها، ولا يمكن فتح وردية جديدة إلا بعد إدخال كود التجديد.',
+        };
+      }
+
+      if (
+        targetShift?.status === 'CLOSED' &&
+        (storedShiftId === null || targetShiftId === null || storedShiftId !== targetShiftId)
+      ) {
+        return {
+          allowed: false,
+          phase: 'EXPIRED',
+          reason:
+            'انتهت صلاحية الاشتراك وفترة السماح. لا يمكن إغلاق الوردية بدون معرّف صحيح ومطابق للوردية المفتوحة حالياً.',
         };
       }
 

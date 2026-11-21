@@ -1202,4 +1202,156 @@ describe('Subscription Lifecycle, Enforcement Matrix, Features Gating & Online A
       blockLogsBefore + 1
     );
   });
+
+  it('9. التحقق الصارم من معرّف الوردية في EXPIRED: يرفض غياب targetShift.id أو فراغه أو غياب storedShift.id أو اختلاف المعرّفين ويسمح بالتطابق الصحيح فقط', async () => {
+    const baseMs = Date.now();
+    const token = signTestToken(
+      makePayload({
+        issuedAt: new Date(baseMs - DAY_MS).toISOString(),
+        validUntil: new Date(baseMs + 30 * DAY_MS).toISOString(),
+        graceDays: 7,
+      })
+    );
+    await licenseService.verifyAndStoreLicense(token);
+    const adminUser = storage.getUsers()[0];
+
+    // Part A: Stored shift is OPEN with a valid non-empty ID
+    licenseService.simulateLicenseDate(new Date(baseMs + 32 * DAY_MS)); // GRACE
+    expect(licenseService.getLicenseState().subscriptionPhase).toBe('GRACE');
+
+    const storedOpenShift = {
+      id: 'shift-strict-open-1',
+      date: '2026-11-21',
+      openedAt: '08:00',
+      openedBy: adminUser.fullName,
+      openingCash: 500,
+      expectedClosingCash: 500,
+      status: 'OPEN' as const,
+    };
+    expect(storage.saveCurrentShift(storedOpenShift).success).toBe(true);
+
+    licenseService.simulateLicenseDate(new Date(baseMs + 40 * DAY_MS)); // EXPIRED
+    expect(licenseService.getLicenseState().subscriptionPhase).toBe('EXPIRED');
+
+    // 1. targetShift without ID -> rejected
+    expect(
+      licenseService.canPerformWrite('SHIFT', {
+        targetShift: { status: 'CLOSED' },
+      }).allowed
+    ).toBe(false);
+    expect(
+      storage.saveCurrentShift({
+        ...storedOpenShift,
+        id: undefined as unknown as string,
+        closedAt: '16:00',
+        status: 'CLOSED',
+      }).success
+    ).toBe(false);
+
+    // 2. targetShift.id empty / whitespace -> rejected
+    expect(
+      licenseService.canPerformWrite('SHIFT', {
+        targetShift: { id: '', status: 'CLOSED' },
+      }).allowed
+    ).toBe(false);
+    expect(
+      licenseService.canPerformWrite('SHIFT', {
+        targetShift: { id: '   ', status: 'CLOSED' },
+      }).allowed
+    ).toBe(false);
+    expect(
+      storage.saveCurrentShift({
+        ...storedOpenShift,
+        id: '',
+        closedAt: '16:00',
+        status: 'CLOSED',
+      }).success
+    ).toBe(false);
+
+    // 3. Mismatched ID -> rejected
+    expect(
+      licenseService.canPerformWrite('SHIFT', {
+        targetShift: { id: 'shift-strict-other-99', status: 'CLOSED' },
+      }).allowed
+    ).toBe(false);
+    expect(
+      storage.saveCurrentShift({
+        ...storedOpenShift,
+        id: 'shift-strict-other-99',
+        closedAt: '16:00',
+        status: 'CLOSED',
+      }).success
+    ).toBe(false);
+
+    // Stored shift must still be OPEN before matching ID close
+    expect(storage.getCurrentShift().status).toBe('OPEN');
+
+    // Part B: Stored shift is OPEN WITHOUT ID -> even matching undefined/empty/valid targetShift.id MUST BE REJECTED
+    licenseService.simulateLicenseDate(new Date(baseMs + 32 * DAY_MS)); // back to GRACE to store shift without ID
+    expect(
+      storage.saveCurrentShift({
+        ...storedOpenShift,
+        id: undefined as unknown as string,
+        status: 'OPEN',
+      }).success
+    ).toBe(true);
+
+    licenseService.simulateLicenseDate(new Date(baseMs + 40 * DAY_MS)); // EXPIRED
+    expect(
+      licenseService.canPerformWrite('SHIFT', {
+        targetShift: { status: 'CLOSED' },
+      }).allowed
+    ).toBe(false);
+    expect(
+      licenseService.canPerformWrite('SHIFT', {
+        targetShift: { id: '', status: 'CLOSED' },
+      }).allowed
+    ).toBe(false);
+    expect(
+      licenseService.canPerformWrite('SHIFT', {
+        targetShift: { id: 'shift-strict-open-1', status: 'CLOSED' },
+      }).allowed
+    ).toBe(false);
+    expect(
+      storage.saveCurrentShift({
+        ...storedOpenShift,
+        id: '',
+        closedAt: '16:00',
+        status: 'CLOSED',
+      }).success
+    ).toBe(false);
+
+    // Also empty string storedShift.id must be rejected
+    licenseService.simulateLicenseDate(new Date(baseMs + 32 * DAY_MS)); // GRACE
+    expect(
+      storage.saveCurrentShift({
+        ...storedOpenShift,
+        id: '',
+        status: 'OPEN',
+      }).success
+    ).toBe(true);
+    licenseService.simulateLicenseDate(new Date(baseMs + 40 * DAY_MS)); // EXPIRED
+    expect(
+      licenseService.canPerformWrite('SHIFT', {
+        targetShift: { id: '', status: 'CLOSED' },
+      }).allowed
+    ).toBe(false);
+
+    // Part C: Restore valid open shift with matching ID -> close SUCCEEDS in EXPIRED
+    licenseService.simulateLicenseDate(new Date(baseMs + 32 * DAY_MS)); // GRACE
+    expect(storage.saveCurrentShift(storedOpenShift).success).toBe(true);
+    licenseService.simulateLicenseDate(new Date(baseMs + 40 * DAY_MS)); // EXPIRED
+    expect(
+      storage.saveCurrentShift({
+        ...storedOpenShift,
+        closedAt: '18:00',
+        expectedClosingCash: 500,
+        actualClosingCash: 500,
+        difference: 0,
+        status: 'CLOSED',
+      }).success
+    ).toBe(true);
+    expect(storage.getCurrentShift().status).toBe('CLOSED');
+  });
 });
+
