@@ -56,6 +56,7 @@ export const CashManager: React.FC<CashManagerProps> = ({
   // Close Shift Modal
   const [isCloseShiftOpen, setIsCloseShiftOpen] = useState(false);
   const [physicalCashCounted, setPhysicalCashCounted] = useState<number>(currentCash);
+  const [closeShiftError, setCloseShiftError] = useState<string | null>(null);
 
   const expenseCategoryMap: Record<string, string> = {
     RENT: 'إيجار المحل أو المخزن',
@@ -93,7 +94,7 @@ export const CashManager: React.FC<CashManagerProps> = ({
     });
 
     if (!res.success) {
-      setExpenseError(res.error || 'تعذر تسجيل المصروف');
+      setExpenseError(res.error || 'تعذر تسجيل المصروف في حالة الاشتراك الحالية.');
       setFundingModalContext(null);
       return;
     }
@@ -154,7 +155,7 @@ export const CashManager: React.FC<CashManagerProps> = ({
     });
 
     if (!res.success) {
-      setWithdrawalError(res.error || 'تعذر تنفيذ السحب اليدوي');
+      setWithdrawalError(res.error || 'تعذر تنفيذ السحب اليدوي في حالة الاشتراك الحالية.');
       setFundingModalContext(null);
       return;
     }
@@ -222,7 +223,7 @@ export const CashManager: React.FC<CashManagerProps> = ({
           });
 
     if (!res.success) {
-      setDepositError(res.error || 'تعذر تسجيل الإيداع');
+      setDepositError(res.error || 'تعذر تسجيل الإيداع في حالة الاشتراك الحالية.');
       return;
     }
 
@@ -243,10 +244,12 @@ export const CashManager: React.FC<CashManagerProps> = ({
   // Drawer Reconciliation Submit
   const handleCloseShiftSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setCloseShiftError(null);
+    const latestShift = storage.getCurrentShift() || currentShift;
     const diff = physicalCashCounted - currentCash;
 
     const updatedShift: SystemShift = {
-      ...currentShift,
+      ...latestShift,
       closedAt: new Date().toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
       expectedClosingCash: currentCash,
       actualClosingCash: physicalCashCounted,
@@ -256,8 +259,10 @@ export const CashManager: React.FC<CashManagerProps> = ({
 
     const shiftRes = storage.saveCurrentShift(updatedShift);
     if (!shiftRes.success) {
-      setStatusMessage(shiftRes.error || 'تعذر إغلاق الوردية بسبب حالة الاشتراك.');
-      setIsCloseShiftOpen(false);
+      setCloseShiftError(
+        shiftRes.error ||
+          'تعذر إغلاق الوردية: لا توجد وردية مفتوحة أو انتهت صلاحية الاشتراك.'
+      );
       return;
     }
 
@@ -265,11 +270,11 @@ export const CashManager: React.FC<CashManagerProps> = ({
     try {
       await storage.flush();
       if (storage.getWriteError()) {
-        setStatusMessage(`تعذر تأكيد إغلاق الوردية في التخزين الدائم: ${storage.getWriteError()}`);
+        setCloseShiftError(`تعذر تأكيد إغلاق الوردية في التخزين الدائم: ${storage.getWriteError()}`);
         return;
       }
     } catch (err: any) {
-      setStatusMessage(`تعذر تأكيد إغلاق الوردية في التخزين الدائم: ${err?.message || 'خطأ'}`);
+      setCloseShiftError(`تعذر تأكيد إغلاق الوردية في التخزين الدائم: ${err?.message || 'خطأ'}`);
       return;
     }
 
@@ -360,6 +365,8 @@ export const CashManager: React.FC<CashManagerProps> = ({
 
           <button
             onClick={() => {
+              setCurrentShift(storage.getCurrentShift());
+              setCloseShiftError(null);
               setPhysicalCashCounted(currentCash);
               setIsCloseShiftOpen(true);
             }}
@@ -759,6 +766,12 @@ export const CashManager: React.FC<CashManagerProps> = ({
             </div>
 
             <form onSubmit={handleCloseShiftSubmit} className="mt-4 space-y-3.5 text-xs">
+              {closeShiftError && (
+                <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/80 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 font-bold flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{closeShiftError}</span>
+                </div>
+              )}
               {(() => {
                 const todayStr = new Date().toISOString().split('T')[0];
                 const todayInvoices = storage.getSalesInvoices().filter(inv => inv.date === todayStr);

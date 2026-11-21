@@ -10,7 +10,14 @@ export type WriteOperationCategory =
   | 'PURCHASES'
   | 'COLLECTIONS'
   | 'SUPPLIER_PAYMENTS'
+  | 'SHIFT'
+  | 'CASH_OPS'
   | 'ADMIN_DATA';
+
+export interface WriteGateContext {
+  targetShift?: { id?: string; status?: 'OPEN' | 'CLOSED' } | null;
+  isShiftClose?: boolean; // Untrusted hint — NEVER sufficient on its own; real shift state is always verified
+}
 
 export type LicenseFeatureKey =
   | 'cloudSummary'
@@ -135,6 +142,13 @@ class LicenseService {
   private listeners: (() => void)[] = [];
   private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
   private simulatedDateMs: number | null = null;
+  private shiftStateReader: (() => { id?: string; status?: 'OPEN' | 'CLOSED' } | null) | null = null;
+
+  public registerShiftStateReader(
+    reader: () => { id?: string; status?: 'OPEN' | 'CLOSED' } | null
+  ): void {
+    this.shiftStateReader = reader;
+  }
 
   constructor() {
     this.initClockProtection();
@@ -722,7 +736,10 @@ class LicenseService {
   }
 
   // --- Centralized Service-Layer Write Matrix Enforcement ---
-  public canPerformWrite(category: WriteOperationCategory): {
+  public canPerformWrite(
+    category: WriteOperationCategory,
+    context?: WriteGateContext
+  ): {
     allowed: boolean;
     phase: SubscriptionPhase;
     reason?: string;
@@ -764,13 +781,55 @@ class LicenseService {
           allowed: false,
           phase,
           reason:
-            'النظام في فترة السماح: يمكن تنفيذ البيع والمرتجعات والمشتريات وتحصيل العملاء وسداد الموردين فقط، ولا يُسمح بالتعديلات الإدارية قبل تجديد الاشتراك.',
+            'النظام في فترة السماح: يُسمح بعمليات البيع والمرتجعات والمشتريات والتحصيل وسداد الموردين والوردية وحركات الخزينة فقط، ولا يُسمح بالتعديلات الإدارية قبل تجديد الاشتراك.',
         };
       }
       return { allowed: true, phase };
     }
 
-    // EXPIRED: all 6 write categories blocked
+    // EXPIRED: everything blocked EXCEPT closing an actually-open shift.
+    // Never honor a caller-supplied isShiftClose flag on its own; always verify real shift state.
+    if (category === 'SHIFT') {
+      const storedShift = this.shiftStateReader ? this.shiftStateReader() : null;
+      const isStoredShiftActuallyOpen = Boolean(storedShift && storedShift.status === 'OPEN');
+      const targetShift = context?.targetShift;
+      const isValidCloseTarget = Boolean(
+        targetShift &&
+          targetShift.status === 'CLOSED' &&
+          (!storedShift?.id || !targetShift.id || storedShift.id === targetShift.id)
+      );
+
+      if (isStoredShiftActuallyOpen && isValidCloseTarget) {
+        return { allowed: true, phase: 'EXPIRED' };
+      }
+
+      if (targetShift?.status === 'OPEN') {
+        return {
+          allowed: false,
+          phase: 'EXPIRED',
+          reason:
+            'انتهت صلاحية الاشتراك وفترة السماح. لا يمكن فتح وردية جديدة أو تعديل وردية مفتوحة؛ يُسمح فقط بإغلاق الوردية المفتوحة حالياً.',
+        };
+      }
+
+      if (!isStoredShiftActuallyOpen) {
+        return {
+          allowed: false,
+          phase: 'EXPIRED',
+          reason:
+            'انتهت صلاحية الاشتراك وفترة السماح. لا توجد وردية مفتوحة حالياً لإغلاقها، ولا يمكن فتح وردية جديدة إلا بعد إدخال كود التجديد.',
+        };
+      }
+
+      return {
+        allowed: false,
+        phase: 'EXPIRED',
+        reason:
+          'انتهت صلاحية الاشتراك وفترة السماح. يُسمح فقط بإغلاق الوردية المفتوحة حالياً، ولا يمكن حفظ هذه العملية إلا بعد إدخال كود التجديد.',
+      };
+    }
+
+    // EXPIRED: all other write categories blocked
     return {
       allowed: false,
       phase: 'EXPIRED',

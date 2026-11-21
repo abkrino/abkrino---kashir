@@ -11,8 +11,8 @@ import {
   INITIAL_PRODUCTS, INITIAL_CUSTOMERS, INITIAL_SUPPLIERS, INITIAL_SHIFT,
   INITIAL_EXPENSES, INITIAL_CASH_MOVEMENTS, INITIAL_INVOICES, INITIAL_USERS
 } from '../data/initialData';
-import { licenseService, WriteOperationCategory } from './licenseService';
-export type { WriteOperationCategory };
+import { licenseService, WriteOperationCategory, WriteGateContext } from './licenseService';
+export type { WriteOperationCategory, WriteGateContext };
 import { idb, type KVRecord } from './idbStore';
 
 export const STORAGE_KEYS = {
@@ -125,6 +125,12 @@ class StorageService {
   private onSummaryDataChangeCallbacks: ((key: string) => void)[] = [];
   private initPromise: Promise<void> | null = null;
 
+  constructor() {
+    if (typeof licenseService.registerShiftStateReader === 'function') {
+      licenseService.registerShiftStateReader(() => this.getCurrentShift());
+    }
+  }
+
   public onAction(cb: (actionName: string) => void): () => void {
     this.onActionCallbacks.push(cb);
     return () => {
@@ -177,12 +183,21 @@ class StorageService {
 
   public assertWriteAllowed(
     category: WriteOperationCategory,
-    actionDescription?: string
+    actionDescription?: string,
+    context?: WriteGateContext
   ): { allowed: boolean; error?: string } {
     if (typeof licenseService.canPerformWrite !== 'function') {
       return { allowed: true };
     }
-    const gate = licenseService.canPerformWrite(category);
+
+    // Never trust a caller-supplied isShiftClose boolean; pass only the candidate targetShift
+    // so licenseService validates the transition against the real stored shift state.
+    const sanitizedContext: WriteGateContext | undefined =
+      category === 'SHIFT'
+        ? { targetShift: context?.targetShift ?? null }
+        : context;
+
+    const gate = licenseService.canPerformWrite(category, sanitizedContext);
     if (gate.allowed) {
       return { allowed: true };
     }
@@ -1328,11 +1343,15 @@ class StorageService {
   }
 
   public saveCurrentShift(shift: SystemShift): { success: boolean; error?: string } {
-    const gate = this.assertWriteAllowed('ADMIN_DATA', 'حفظ / إغلاق الوردية');
+    const actionLabel =
+      shift?.status === 'CLOSED' ? 'إغلاق الوردية' : 'فتح / حفظ الوردية';
+    const gate = this.assertWriteAllowed('SHIFT', actionLabel, {
+      targetShift: shift ?? null,
+    });
     if (!gate.allowed) return { success: false, error: gate.error };
 
     this.setItem(STORAGE_KEYS.SHIFT, shift);
-    if (shift.status === 'CLOSED') {
+    if (shift?.status === 'CLOSED') {
       this.notifyAction('SHIFT_CLOSED');
     }
     return { success: true };
@@ -1498,7 +1517,7 @@ class StorageService {
     }
   ): { success: boolean; error?: string } {
     if (!options?.bypassLicenseCheck) {
-      const gate = this.assertWriteAllowed('ADMIN_DATA', `تسجيل حركة نقدية: ${movement.categoryLabelArabic}`);
+      const gate = this.assertWriteAllowed('CASH_OPS', `تسجيل حركة نقدية يدوية: ${movement.categoryLabelArabic}`);
       if (!gate.allowed) return { success: false, error: gate.error };
     }
 
@@ -1536,7 +1555,7 @@ class StorageService {
     allowNegativeCash?: boolean;
     fundingDetails?: CashMovementFunding;
   }): { success: boolean; error?: string } {
-    const gate = this.assertWriteAllowed('ADMIN_DATA', 'سحب نقدي يدوي');
+    const gate = this.assertWriteAllowed('CASH_OPS', 'سحب نقدي يدوي');
     if (!gate.allowed) return { success: false, error: gate.error };
 
     const cleanDesc = (params.description || '').trim();
@@ -1601,7 +1620,7 @@ class StorageService {
     description: string;
     performedBy: string;
   }): { success: boolean; error?: string } {
-    const gate = this.assertWriteAllowed('ADMIN_DATA', 'إيداع نقدي يدوي');
+    const gate = this.assertWriteAllowed('CASH_OPS', 'إيداع نقدي يدوي');
     if (!gate.allowed) return { success: false, error: gate.error };
 
     if (!Number.isFinite(params.amount) || params.amount <= 0) {
@@ -1639,7 +1658,7 @@ class StorageService {
     user?: User | null;
     affectsDrawer?: boolean;
   }): { success: boolean; error?: string } {
-    const gate = this.assertWriteAllowed('ADMIN_DATA', 'إيداع رأس مال');
+    const gate = this.assertWriteAllowed('CASH_OPS', 'إيداع رأس مال');
     if (!gate.allowed) return { success: false, error: gate.error };
 
     if (!Number.isFinite(params.amount) || params.amount <= 0) {
@@ -1695,7 +1714,7 @@ class StorageService {
     expense: Expense,
     options?: { user?: User | null; allowNegativeCash?: boolean; fundingDetails?: CashMovementFunding }
   ): { success: boolean; error?: string } {
-    const gate = this.assertWriteAllowed('ADMIN_DATA', `تسجيل مصروف: ${expense.categoryLabelArabic}`);
+    const gate = this.assertWriteAllowed('CASH_OPS', `تسجيل مصروف: ${expense.categoryLabelArabic}`);
     if (!gate.allowed) return { success: false, error: gate.error };
 
     const evalRes = this.evaluateCashOut(expense.amount, {

@@ -269,7 +269,7 @@ describe('Subscription Lifecycle, Enforcement Matrix, Features Gating & Online A
     expect(licenseService.getLicenseState().subscriptionPhase).toBe('ACTIVE');
   });
 
-  it('2. يفرض مصفوفة الكتابة على الفئات الست عبر المراحل الأربع ويسجل LICENSE_BLOCK في auditLogs عند الرفض', async () => {
+  it('2. يفرض مصفوفة الكتابة على الفئات الثماني (بما فيها SHIFT و CASH_OPS) عبر المراحل الأربع ويسجل LICENSE_BLOCK في auditLogs عند الرفض', async () => {
     const baseMs = Date.now();
     const validUntilMs = baseMs + 30 * DAY_MS;
     const token = signTestToken(
@@ -336,16 +336,50 @@ describe('Subscription Lifecycle, Enforcement Matrix, Features Gating & Online A
       };
     };
 
-    // --- ACTIVE + EXPIRING: all 6 categories allowed ---
-    licenseService.simulateLicenseDate(new Date(baseMs + 25 * DAY_MS)); // EXPIRING
+    const categories = [
+      'SALES',
+      'RETURNS',
+      'PURCHASES',
+      'COLLECTIONS',
+      'SUPPLIER_PAYMENTS',
+      'SHIFT',
+      'CASH_OPS',
+      'ADMIN_DATA',
+    ] as const;
+
+    // --- ACTIVE: all 8 categories allowed ---
+    licenseService.simulateLicenseDate(new Date(baseMs + 5 * DAY_MS));
+    expect(licenseService.getLicenseState().subscriptionPhase).toBe('ACTIVE');
+    for (const cat of categories) {
+      expect(licenseService.canPerformWrite(cat).allowed).toBe(true);
+    }
+
+    // --- EXPIRING: all 8 categories allowed ---
+    licenseService.simulateLicenseDate(new Date(baseMs + 25 * DAY_MS));
+    expect(licenseService.getLicenseState().subscriptionPhase).toBe('EXPIRING');
+    for (const cat of categories) {
+      expect(licenseService.canPerformWrite(cat).allowed).toBe(true);
+    }
     expect(storage.postSalesInvoice(makeSaleInvoice('sale-expiring')).success).toBe(true);
     expect(
       storage.saveCustomer({ ...customers[0], notes: 'تحديث في التنبيه' }).success
     ).toBe(true);
 
-    // --- GRACE: 5 operational categories allowed, ADMIN_DATA blocked + audit logged ---
-    licenseService.simulateLicenseDate(new Date(baseMs + 32 * DAY_MS)); // GRACE
+    // --- GRACE: 7 operational/cash/shift categories allowed, ADMIN_DATA blocked + audit logged ---
+    licenseService.simulateLicenseDate(new Date(baseMs + 32 * DAY_MS));
     expect(licenseService.getLicenseState().subscriptionPhase).toBe('GRACE');
+
+    expect(
+      storage.saveCurrentShift({
+        id: 'shift-grace-1',
+        date: '2026-11-19',
+        openedAt: '09:00',
+        openedBy: adminUser.fullName,
+        openingCash: 500,
+        expectedClosingCash: 500,
+        status: 'OPEN',
+      }).success
+    ).toBe(true);
 
     const graceSale = storage.postSalesInvoice(makeSaleInvoice('sale-grace'));
     expect(graceSale.success).toBe(true);
@@ -418,19 +452,22 @@ describe('Subscription Lifecycle, Enforcement Matrix, Features Gating & Online A
     });
     expect(graceSupplierPay.success).toBe(true);
 
-    // ADMIN_DATA blocked in GRACE
-    const graceAdminProduct = storage.saveProduct({ ...products[0], name: 'ممنوع في السماح' });
-    expect(graceAdminProduct.success).toBe(false);
-    expect(graceAdminProduct.error).toContain('فترة السماح');
+    // CASH_OPS allowed in GRACE
+    const graceDeposit = storage.recordManualDeposit({
+      amount: 200,
+      description: 'إيداع درج في فترة السماح',
+      performedBy: adminUser.fullName,
+    });
+    expect(graceDeposit.success).toBe(true);
 
-    const graceAdminExpense = storage.recordExpense(
+    const graceExpense = storage.recordExpense(
       {
         id: 'exp-grace-1',
         date: '2026-11-19',
         category: 'OTHER',
         categoryLabelArabic: 'مصروف',
         amount: 5,
-        notes: 'ممنوع في السماح',
+        notes: 'مسموح في السماح',
         recordedBy: adminUser.fullName,
       },
       {
@@ -439,13 +476,69 @@ describe('Subscription Lifecycle, Enforcement Matrix, Features Gating & Online A
         fundingDetails: { type: 'OWNER_LOAN', label: 'تمويل مالك' },
       }
     );
-    expect(graceAdminExpense.success).toBe(false);
+    expect(graceExpense.success).toBe(true);
+
+    const graceWithdrawal = storage.recordManualWithdrawal({
+      amount: 15,
+      description: 'سحب يدوي في السماح',
+      performedBy: adminUser.fullName,
+      user: adminUser,
+      allowNegativeCash: true,
+      fundingDetails: { type: 'DRAWER', label: 'نقدية الدرج المباشرة' },
+    });
+    expect(graceWithdrawal.success).toBe(true);
+
+    const graceCapInj = storage.recordCapitalInjection({
+      amount: 300,
+      description: 'ضخ رأس مال في السماح',
+      performedBy: adminUser.fullName,
+      user: adminUser,
+      affectsDrawer: false,
+    });
+    expect(graceCapInj.success).toBe(true);
+
+    const graceManualCash = storage.addCashMovement(
+      {
+        id: 'cm-grace-manual-1',
+        date: '2026-11-19',
+        time: '14:00',
+        type: 'IN',
+        category: 'DRAWER_ADJUSTMENT',
+        categoryLabelArabic: 'حركة نقدية يدوية',
+        amount: 25,
+        description: 'إضافة يدوية في السماح',
+        performedBy: adminUser.fullName,
+      },
+      { skipCashOutCheck: true }
+    );
+    expect(graceManualCash.success).toBe(true);
+
+    // Close shift in GRACE as well
+    expect(
+      storage.saveCurrentShift({
+        id: 'shift-grace-1',
+        date: '2026-11-19',
+        openedAt: '09:00',
+        closedAt: '18:00',
+        openedBy: adminUser.fullName,
+        openingCash: 500,
+        expectedClosingCash: 500,
+        actualClosingCash: 500,
+        difference: 0,
+        status: 'CLOSED',
+      }).success
+    ).toBe(true);
+
+    // ADMIN_DATA blocked in GRACE
+    const graceAdminProduct = storage.saveProduct({ ...products[0], name: 'ممنوع في السماح' });
+    expect(graceAdminProduct.success).toBe(false);
+    expect(graceAdminProduct.error).toContain('فترة السماح');
 
     const graceAdminProfile = storage.saveStoreProfile({ ...DEFAULT_STORE_PROFILE, name: 'ممنوع' });
     expect(graceAdminProfile.success).toBe(false);
 
-    // --- EXPIRED: ALL 6 categories blocked ---
-    licenseService.simulateLicenseDate(new Date(baseMs + 40 * DAY_MS)); // EXPIRED
+    // --- EXPIRED: ALL 8 categories blocked (shift is CLOSED so SHIFT close also blocked) ---
+    licenseService.simulateLicenseDate(new Date(baseMs + 40 * DAY_MS));
     expect(licenseService.getLicenseState().subscriptionPhase).toBe('EXPIRED');
 
     const auditCountBefore = storage.getAuditLogs().length;
@@ -501,11 +594,72 @@ describe('Subscription Lifecycle, Enforcement Matrix, Features Gating & Online A
         fundingDetails: { type: 'OWNER_LOAN', label: 'تمويل مالك' },
       }).success
     ).toBe(false);
+    expect(
+      storage.recordExpense(
+        {
+          id: 'exp-expired-1',
+          date: '2026-11-19',
+          category: 'OTHER',
+          categoryLabelArabic: 'مصروف',
+          amount: 10,
+          notes: 'ممنوع بعد الانتهاء',
+          recordedBy: adminUser.fullName,
+        },
+        { user: adminUser, allowNegativeCash: true, fundingDetails: { type: 'OWNER_LOAN', label: 'تمويل' } }
+      ).success
+    ).toBe(false);
+    expect(
+      storage.recordManualWithdrawal({
+        amount: 10,
+        description: 'ممنوع',
+        performedBy: adminUser.fullName,
+        user: adminUser,
+      }).success
+    ).toBe(false);
+    expect(
+      storage.recordManualDeposit({
+        amount: 10,
+        description: 'ممنوع',
+        performedBy: adminUser.fullName,
+      }).success
+    ).toBe(false);
+    expect(
+      storage.recordCapitalInjection({
+        amount: 100,
+        description: 'ممنوع',
+        performedBy: adminUser.fullName,
+        user: adminUser,
+      }).success
+    ).toBe(false);
+    expect(
+      storage.addCashMovement({
+        id: 'cm-expired-manual',
+        date: '2026-11-19',
+        time: '15:00',
+        type: 'IN',
+        category: 'DRAWER_ADJUSTMENT',
+        categoryLabelArabic: 'يدوي',
+        amount: 10,
+        description: 'ممنوع',
+        performedBy: adminUser.fullName,
+      }).success
+    ).toBe(false);
+    expect(
+      storage.saveCurrentShift({
+        id: 'shift-expired-new',
+        date: '2026-11-19',
+        openedAt: '09:00',
+        openedBy: adminUser.fullName,
+        openingCash: 100,
+        expectedClosingCash: 100,
+        status: 'OPEN',
+      }).success
+    ).toBe(false);
     expect(storage.saveProduct({ ...products[0], name: 'ممنوع بعد الانتهاء' }).success).toBe(false);
 
     const licenseBlockLogs = storage.getAuditLogs().filter(l => l.action === 'LICENSE_BLOCK');
     expect(storage.getAuditLogs().length).toBeGreaterThan(auditCountBefore);
-    expect(licenseBlockLogs.length).toBeGreaterThanOrEqual(7);
+    expect(licenseBlockLogs.length).toBeGreaterThanOrEqual(14);
   });
 
   it('3. يستثني كتابات النظام (cloudBudgetService / summaryDirty / snapshot / cloudRestore / auth migration / addAuditLog) أثناء EXPIRED', async () => {
@@ -783,5 +937,269 @@ describe('Subscription Lifecycle, Enforcement Matrix, Features Gating & Online A
     expect(licenseService.getLicenseState().payload?.validUntil).toBe(newerValidUntil);
     expect(licenseService.getLicenseState().payload?.plan).toBe('الباقة المجددة');
     expect(licenseService.getLicenseState().subscriptionPhase).toBe('ACTIVE');
+  });
+
+  it('7. قواعد SHIFT في GRACE وEXPIRED: السماح بفتح الوردية في GRACE، ومنع الفتح أو التحايل بـ isShiftClose في EXPIRED، والسماح فقط بإغلاق وردية مفتوحة بالفعل', async () => {
+    const baseMs = Date.now();
+    const token = signTestToken(
+      makePayload({
+        issuedAt: new Date(baseMs - DAY_MS).toISOString(),
+        validUntil: new Date(baseMs + 30 * DAY_MS).toISOString(),
+        graceDays: 7,
+      })
+    );
+    await licenseService.verifyAndStoreLicense(token);
+    const adminUser = storage.getUsers()[0];
+
+    // 1) In GRACE: opening a new shift is ALLOWED
+    licenseService.simulateLicenseDate(new Date(baseMs + 32 * DAY_MS));
+    expect(licenseService.getLicenseState().subscriptionPhase).toBe('GRACE');
+
+    const openShiftPayload = {
+      id: 'shift-real-open-1',
+      date: '2026-11-21',
+      openedAt: '09:00',
+      openedBy: adminUser.fullName,
+      openingCash: 1000,
+      expectedClosingCash: 1000,
+      status: 'OPEN' as const,
+    };
+    expect(storage.saveCurrentShift(openShiftPayload).success).toBe(true);
+
+    // 2) Move to EXPIRED while shift-real-open-1 is ACTUALLY OPEN
+    licenseService.simulateLicenseDate(new Date(baseMs + 40 * DAY_MS));
+    expect(licenseService.getLicenseState().subscriptionPhase).toBe('EXPIRED');
+
+    // Spoofing isShiftClose: true without closing the real open shift MUST BE REJECTED
+    expect(licenseService.canPerformWrite('SHIFT', { isShiftClose: true }).allowed).toBe(false);
+    expect(
+      licenseService.canPerformWrite('SHIFT', {
+        isShiftClose: true,
+        targetShift: { id: 'shift-real-open-1', status: 'OPEN' },
+      }).allowed
+    ).toBe(false);
+    expect(
+      storage.assertWriteAllowed('SHIFT', 'تحايل بفتح أو تعديل أثناء الانتهاء', {
+        isShiftClose: true,
+      }).allowed
+    ).toBe(false);
+
+    // Attempting to open a new shift or modify an open shift (status: 'OPEN') is REJECTED
+    const openNewInExpired = storage.saveCurrentShift({
+      ...openShiftPayload,
+      id: 'shift-new-expired',
+      status: 'OPEN',
+    });
+    expect(openNewInExpired.success).toBe(false);
+
+    // Attempting to close a DIFFERENT shift ID is REJECTED
+    const wrongIdClose = storage.saveCurrentShift({
+      ...openShiftPayload,
+      id: 'shift-wrong-id',
+      status: 'CLOSED',
+    });
+    expect(wrongIdClose.success).toBe(false);
+
+    // Legitimately closing the ACTUALLY OPEN shift IS ALLOWED in EXPIRED
+    const legitimateClose = storage.saveCurrentShift({
+      ...openShiftPayload,
+      closedAt: '17:00',
+      expectedClosingCash: 1000,
+      actualClosingCash: 1000,
+      difference: 0,
+      status: 'CLOSED',
+    });
+    expect(legitimateClose.success).toBe(true);
+    expect(storage.getCurrentShift().status).toBe('CLOSED');
+
+    // 3) Now that shift is CLOSED (not open), closing again or spoofing isShiftClose MUST BE REJECTED + LICENSE_BLOCK logged
+    const blockLogsBefore = storage.getAuditLogs().filter(l => l.action === 'LICENSE_BLOCK').length;
+
+    const reCloseRes = storage.saveCurrentShift({
+      ...openShiftPayload,
+      closedAt: '17:30',
+      status: 'CLOSED',
+    });
+    expect(reCloseRes.success).toBe(false);
+    expect(reCloseRes.error).toContain('لا توجد وردية مفتوحة');
+
+    expect(
+      licenseService.canPerformWrite('SHIFT', {
+        isShiftClose: true,
+        targetShift: { id: 'shift-real-open-1', status: 'CLOSED' },
+      }).allowed
+    ).toBe(false);
+
+    expect(
+      storage.assertWriteAllowed('SHIFT', 'محاولة تحايل على غلق وردية مغلقة', {
+        isShiftClose: true,
+        targetShift: { id: 'shift-real-open-1', status: 'CLOSED' },
+      }).allowed
+    ).toBe(false);
+
+    const blockLogsAfter = storage.getAuditLogs().filter(l => l.action === 'LICENSE_BLOCK').length;
+    expect(blockLogsAfter).toBeGreaterThanOrEqual(blockLogsBefore + 2);
+  });
+
+  it('8. سلامة الحركات النقدية التلقائية الناتجة عن العمليات المسموحة عبر bypassLicenseCheck في GRACE ومنع النداءات اليدوية في EXPIRED', async () => {
+    const baseMs = Date.now();
+    const token = signTestToken(
+      makePayload({
+        issuedAt: new Date(baseMs - DAY_MS).toISOString(),
+        validUntil: new Date(baseMs + 30 * DAY_MS).toISOString(),
+        graceDays: 7,
+      })
+    );
+    await licenseService.verifyAndStoreLicense(token);
+
+    licenseService.simulateLicenseDate(new Date(baseMs + 33 * DAY_MS)); // GRACE
+    expect(licenseService.getLicenseState().subscriptionPhase).toBe('GRACE');
+
+    const products = storage.getProducts();
+    const customers = storage.getCustomers();
+    const suppliers = storage.getSuppliers();
+    const adminUser = storage.getUsers()[0];
+
+    const initialCash = storage.calculateCurrentCashInDrawer();
+    const initialMovementsCount = storage.getCashMovements().length;
+
+    // 1. Deposit +500
+    expect(
+      storage.recordManualDeposit({
+        amount: 500,
+        description: 'تعزيز درج',
+        performedBy: adminUser.fullName,
+      }).success
+    ).toBe(true);
+
+    // 2. Cash sale +200
+    const salePrice = 200;
+    expect(
+      storage.postSalesInvoice({
+        id: 'sale-cash-integrity',
+        invoiceNumber: 'INV-INT-1',
+        date: '2026-11-21',
+        time: '11:00',
+        customerId: customers[0].id,
+        customerName: customers[0].name,
+        salespersonId: adminUser.id,
+        salespersonName: adminUser.fullName,
+        items: [
+          {
+            id: 'line-int-1',
+            productId: products[0].id,
+            productCode: products[0].code,
+            productName: products[0].name,
+            unit: 'PIECE',
+            unitLabel: 'قطعة',
+            quantity: 1,
+            piecesCount: 1,
+            unitPrice: salePrice,
+            defaultUnitPrice: salePrice,
+            costPrice: products[0].costPricePerBase,
+            totalPrice: salePrice,
+            discount: 0,
+            lineProfit: salePrice - products[0].costPricePerBase,
+          },
+        ],
+        subtotal: salePrice,
+        discountType: 'AMOUNT',
+        discountValue: 0,
+        discountAmount: 0,
+        total: salePrice,
+        paidAmount: salePrice,
+        remainingAmount: 0,
+        paymentType: 'CASH',
+        previousCustomerBalance: 0,
+        newCustomerBalance: 0,
+        totalCost: products[0].costPricePerBase,
+        totalProfit: salePrice - products[0].costPricePerBase,
+        status: 'POSTED',
+      }).success
+    ).toBe(true);
+
+    // 3. Collection +150
+    expect(
+      storage.recordCustomerCollection({
+        customerId: customers[0].id,
+        amount: 150,
+        collectedBy: adminUser.fullName,
+      }).success
+    ).toBe(true);
+
+    // 4. Expense -50
+    expect(
+      storage.recordExpense(
+        {
+          id: 'exp-int-1',
+          date: '2026-11-21',
+          category: 'HOSPITALITY',
+          categoryLabelArabic: 'ضيافة',
+          amount: 50,
+          notes: 'ضيافة عملاء',
+          recordedBy: adminUser.fullName,
+        },
+        { user: adminUser }
+      ).success
+    ).toBe(true);
+
+    // 5. Supplier payment -100
+    expect(
+      storage.recordSupplierPayment({
+        supplierId: suppliers[0].id,
+        amount: 100,
+        paidBy: adminUser.fullName,
+        user: adminUser,
+      }).success
+    ).toBe(true);
+
+    // 6. Cash return -200
+    expect(
+      storage.processSalesReturn({
+        invoiceId: 'sale-cash-integrity',
+        items: [
+          {
+            invoiceItemId: 'line-int-1',
+            productId: products[0].id,
+            unit: 'PIECE',
+            quantity: 1,
+          },
+        ],
+        reason: 'CUSTOMER_CHANGED_MIND',
+        refundMethod: 'CASH',
+        returnToStock: true,
+        user: adminUser,
+      }).success
+    ).toBe(true);
+
+    // Expected drawer delta: +500 +200 +150 -50 -100 -200 = +500
+    expect(storage.calculateCurrentCashInDrawer()).toBeCloseTo(initialCash + 500, 2);
+    expect(storage.getCashMovements().length).toBe(initialMovementsCount + 6);
+
+    // Move to EXPIRED: manual addCashMovement without bypassLicenseCheck is BLOCKED and drawer unchanged
+    licenseService.simulateLicenseDate(new Date(baseMs + 42 * DAY_MS));
+    expect(licenseService.getLicenseState().subscriptionPhase).toBe('EXPIRED');
+
+    const cashBeforeExpired = storage.calculateCurrentCashInDrawer();
+    const movementsBeforeExpired = storage.getCashMovements().length;
+    const blockLogsBefore = storage.getAuditLogs().filter(l => l.action === 'LICENSE_BLOCK').length;
+
+    const expiredDirectRes = storage.addCashMovement({
+      id: 'cm-exp-blocked',
+      date: '2026-11-21',
+      time: '12:00',
+      type: 'IN',
+      category: 'DRAWER_ADJUSTMENT',
+      categoryLabelArabic: 'حركة يدوية',
+      amount: 999,
+      description: 'يجب أن تُرفض',
+      performedBy: adminUser.fullName,
+    });
+    expect(expiredDirectRes.success).toBe(false);
+    expect(storage.calculateCurrentCashInDrawer()).toBe(cashBeforeExpired);
+    expect(storage.getCashMovements().length).toBe(movementsBeforeExpired);
+    expect(storage.getAuditLogs().filter(l => l.action === 'LICENSE_BLOCK').length).toBe(
+      blockLogsBefore + 1
+    );
   });
 });
