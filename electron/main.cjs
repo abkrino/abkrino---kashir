@@ -24,7 +24,7 @@ function getStableMachineId() {
       '/v',
       'MachineGuid'
     ], { encoding: 'utf8', windowsHide: true });
-    const match = String(result.stdout || '').match(/MachineGuid\\s+REG_SZ\\s+([^\\r\\n]+)/i);
+    const match = String(result.stdout || '').match(/MachineGuid\s+REG_SZ\s+([^\r\n]+)/i);
     if (result.status === 0 && match && match[1]) {
       const rawMachineGuid = match[1].trim().toLowerCase();
       cachedMachineId = 'win-' + crypto.createHash('sha256').update(rawMachineGuid).digest('hex').slice(0, 32);
