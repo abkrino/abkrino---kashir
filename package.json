@@ -12,7 +12,7 @@
     "test": "vitest run",
     "check:compat": "npm run build && node scripts/check-compat.js",
     "electron:start": "electron .",
-    "dist:win": "npm run build && electron-builder --win nsis"
+    "dist:win": "npm run build && electron-builder --win nsis --publish never"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
