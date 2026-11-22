@@ -10,6 +10,7 @@ export type TabType =
   | 'customers'
   | 'suppliers'
   | 'cash'
+  | 'announcer'
   | 'cloud'
   | 'users'
   | 'reports'
