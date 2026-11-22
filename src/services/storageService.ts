@@ -1339,7 +1339,12 @@ class StorageService {
 
   // --- SHIFTS & DRAWER CASH ---
   public getCurrentShift(): SystemShift {
-    return this.getItem<SystemShift>(STORAGE_KEYS.SHIFT, INITIAL_SHIFT);
+    const shift = this.getItem<SystemShift | null>(STORAGE_KEYS.SHIFT, INITIAL_SHIFT);
+    // Corrupt or legacy null values must never crash the cash screen.
+    return shift && typeof shift === 'object' && typeof shift.id === 'string' &&
+      (shift.status === 'OPEN' || shift.status === 'CLOSED')
+      ? shift
+      : INITIAL_SHIFT;
   }
 
   public saveCurrentShift(shift: SystemShift): { success: boolean; error?: string } {
