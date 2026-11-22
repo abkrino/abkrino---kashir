@@ -18,6 +18,7 @@ import {
   X,
   Store,
   Layers,
+  Megaphone,
   LucideIcon
 } from 'lucide-react';
 
@@ -102,6 +103,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           label: 'الخزينة والدرج',
           icon: Wallet,
           shortcut: 'F4',
+        },
+        {
+          id: 'announcer',
+          label: 'المذيع الصوتي',
+          icon: Megaphone,
         },
       ],
     },
