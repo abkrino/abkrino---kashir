@@ -95,7 +95,7 @@ ipcMain.handle('announcer:delete', async (_event, id) => {
   const items = await readPlaylist();
   const item = items.find(entry => entry.id === id);
   if (!item) return false;
-  await fs.rm(path.join(await getAnnouncementDir(), item.fileName), { force: true });
+  await fs.rm(path.join(getAnnouncementDir(), id + '.wav'), { force: true });
   await writePlaylist(items.filter(entry => entry.id !== id));
   return true;
 });
