@@ -70,10 +70,12 @@ export interface LicenseStateResult {
 }
 
 // Default to false so developers are not locked during development
-export let LICENSE_ENFORCEMENT = false;
+const IS_PRODUCTION_BUILD = import.meta.env.PROD;
+// Production builds must never allow the trial bypass, even if a runtime caller tries to disable enforcement.
+export let LICENSE_ENFORCEMENT = IS_PRODUCTION_BUILD;
 
 export const setLicenseEnforcement = (val: boolean): void => {
-  LICENSE_ENFORCEMENT = val;
+  LICENSE_ENFORCEMENT = IS_PRODUCTION_BUILD || val;
 };
 
 export const TRIAL_BYPASS_KEY = 'app_license_trial_bypass';
