@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, protocol, net } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { spawn } = require('node:child_process');
@@ -6,6 +6,11 @@ const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 
 const isWindows = process.platform === 'win32';
+const APP_SCHEME = 'kashir';
+protocol.registerSchemesAsPrivileged([{
+  scheme: APP_SCHEME,
+  privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true }
+}]);
 let mainWindow;
 app.setAppUserModelId('com.abkrino.kashir');
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
@@ -117,15 +122,32 @@ function createWindow() {
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const packagedEntry = pathToFileURL(path.join(__dirname, '..', 'dist', 'index.html')).href;
-    const allowed = app.isPackaged ? url === packagedEntry : (url.startsWith('http://127.0.0.1:3000/') || url.startsWith('http://localhost:3000/'));
+    const allowed = app.isPackaged ? url.startsWith('kashir://app/') : (url.startsWith('http://127.0.0.1:3000/') || url.startsWith('http://localhost:3000/'));
     if (!allowed) event.preventDefault();
   });
-  if (app.isPackaged) mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
+  if (app.isPackaged) mainWindow.loadURL('kashir://app/index.html');
   else mainWindow.loadURL('http://127.0.0.1:3000');
   mainWindow.on('closed', () => { mainWindow = null; });
 }
-app.whenReady().then(() => { if (isWindows) createWindow(); else app.quit(); });
+app.whenReady().then(() => {
+  if (!isWindows) { app.quit(); return; }
+  if (app.isPackaged) {
+    const distRoot = path.resolve(__dirname, '..', 'dist');
+    protocol.handle(APP_SCHEME, request => {
+      const requestUrl = new URL(request.url);
+      if (requestUrl.host !== 'app') return new Response('Not found', { status: 404 });
+      let decodedPath;
+      try { decodedPath = decodeURIComponent(requestUrl.pathname); }
+      catch { return new Response('Bad request', { status: 400 }); }
+      const targetPath = path.resolve(distRoot, '.' + decodedPath);
+      if (targetPath !== distRoot && !targetPath.startsWith(distRoot + path.sep)) {
+        return new Response('Forbidden', { status: 403 });
+      }
+      return net.fetch(pathToFileURL(targetPath).href);
+    });
+  }
+  createWindow();
+});
 app.on('second-instance', () => {
   if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
 });
