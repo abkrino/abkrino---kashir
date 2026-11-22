@@ -1,7 +1,7 @@
 {
-  "name": "react-example",
+  "name": "abkrino-kashir",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
@@ -10,7 +10,9 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "test": "vitest run",
-    "check:compat": "npm run build && node scripts/check-compat.js"
+    "check:compat": "npm run build && node scripts/check-compat.js",
+    "electron:start": "electron .",
+    "dist:win": "npm run build && electron-builder --win nsis"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -40,6 +42,41 @@
     "tailwindcss": "3.4.17",
     "tsx": "^4.21.0",
     "typescript": "^7.0.2",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.0",
+    "electron": "^39.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.abkrino.kashir",
+    "productName": "Abkrino Kashir",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Abkrino-Kashir-Setup-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Abkrino Kashir"
+    }
   }
 }
