@@ -3,6 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
+const { pathToFileURL } = require('node:url');
 
 const isWindows = process.platform === 'win32';
 let mainWindow;
@@ -106,7 +107,8 @@ function createWindow() {
     show: false, autoHideMenuBar: true, backgroundColor: '#0f172a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true
+      contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
+      devTools: !app.isPackaged
     }
   });
   mainWindow.once('ready-to-show', () => mainWindow.show());
@@ -115,7 +117,8 @@ function createWindow() {
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const allowed = app.isPackaged ? url.startsWith('file://') : (url.startsWith('http://127.0.0.1:3000') || url.startsWith('http://localhost:3000'));
+    const packagedEntry = pathToFileURL(path.join(__dirname, '..', 'dist', 'index.html')).href;
+    const allowed = app.isPackaged ? url === packagedEntry : (url.startsWith('http://127.0.0.1:3000/') || url.startsWith('http://localhost:3000/'));
     if (!allowed) event.preventDefault();
   });
   if (app.isPackaged) mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
