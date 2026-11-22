@@ -1,7 +1,8 @@
 const { app, BrowserWindow, ipcMain, shell, protocol, net } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
-const { spawn } = require('node:child_process');
+const fsSync = require('node:fs');
+const { spawn, spawnSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 
@@ -12,6 +13,41 @@ protocol.registerSchemesAsPrivileged([{
   privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true }
 }]);
 let mainWindow;
+let cachedMachineId = null;
+
+function getStableMachineId() {
+  if (cachedMachineId) return cachedMachineId;
+  try {
+    const result = spawnSync('reg.exe', [
+      'query',
+      'HKLM\\SOFTWARE\\Microsoft\\Cryptography',
+      '/v',
+      'MachineGuid'
+    ], { encoding: 'utf8', windowsHide: true });
+    const match = String(result.stdout || '').match(/MachineGuid\\s+REG_SZ\\s+([^\\r\\n]+)/i);
+    if (result.status === 0 && match && match[1]) {
+      const rawMachineGuid = match[1].trim().toLowerCase();
+      cachedMachineId = 'win-' + crypto.createHash('sha256').update(rawMachineGuid).digest('hex').slice(0, 32);
+      return cachedMachineId;
+    }
+  } catch {}
+
+  // Fallback remains stable for this Windows user if MachineGuid cannot be read.
+  const fallbackPath = path.join(app.getPath('userData'), 'device-id.txt');
+  try {
+    cachedMachineId = fsSync.readFileSync(fallbackPath, 'utf8').trim();
+  } catch {
+    cachedMachineId = 'fallback-' + crypto.randomUUID();
+    fsSync.mkdirSync(path.dirname(fallbackPath), { recursive: true });
+    fsSync.writeFileSync(fallbackPath, cachedMachineId, 'utf8');
+  }
+  return cachedMachineId;
+}
+
+ipcMain.on('system:get-machine-id', event => {
+  event.returnValue = getStableMachineId();
+});
+
 app.setAppUserModelId('com.abkrino.kashir');
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 if (!hasSingleInstanceLock) app.quit();
