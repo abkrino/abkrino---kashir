@@ -1,6 +1,9 @@
 export {};
 declare global {
   interface Window {
+    electronAPI?: {
+      getMachineId(): string;
+    };
     kashirAnnouncer?: {
       list(): Promise<AnnouncementItem[]>;
       create(payload: { title: string; text: string }): Promise<AnnouncementItem>;
