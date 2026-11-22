@@ -87,7 +87,7 @@ ipcMain.handle('announcer:audio', async (_event, id) => {
   const items = await readPlaylist();
   const item = items.find(entry => entry.id === id);
   if (!item) throw new Error('الإعلان غير موجود في قائمة التشغيل.');
-  const data = await fs.readFile(path.join(await getAnnouncementDir(), item.fileName));
+  const data = await fs.readFile(path.join(getAnnouncementDir(), id + '.wav'));
   return data.toString('base64');
 });
 ipcMain.handle('announcer:delete', async (_event, id) => {
