@@ -1,5 +1,12 @@
 name: Windows Electron Release Validation
 
+concurrency:
+  group: windows-electron-release
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 on:
   push:
     branches:
