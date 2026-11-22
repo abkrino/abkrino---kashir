@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { CashMovement, Expense, SystemShift, User, CashMovementFunding, CashOutEvaluation } from '../../types';
 import { storage } from '../../services/storageService';
 import { FundingSourceModal } from '../common/FundingSourceModal';
-import { Wallet, Coins, Plus, Minus, ArrowUpRight, ArrowDownLeft, ShieldCheck, X, CheckCircle, AlertCircle } from 'lucide-react';
+import { Wallet, Coins, Plus, Minus, ArrowUpRight, ArrowDownLeft, ShieldCheck, X, CheckCircle, AlertCircle, Play } from 'lucide-react';
 
 interface CashManagerProps {
   currentUser: User;
@@ -53,8 +53,10 @@ export const CashManager: React.FC<CashManagerProps> = ({
     evalState: CashOutEvaluation;
   } | null>(null);
 
-  // Close Shift Modal
+  // Shift lifecycle modals
   const [isCloseShiftOpen, setIsCloseShiftOpen] = useState(false);
+  const [isOpenShiftOpen, setIsOpenShiftOpen] = useState(false);
+  const [openShiftError, setOpenShiftError] = useState<string | null>(null);
   const [physicalCashCounted, setPhysicalCashCounted] = useState<number>(currentCash);
   const [closeShiftError, setCloseShiftError] = useState<string | null>(null);
 
@@ -363,18 +365,32 @@ export const CashManager: React.FC<CashManagerProps> = ({
             <span>{accountingMode === 'CAPITAL' ? 'إيداع رأس مال' : 'إيداع بالدرج'}</span>
           </button>
 
-          <button
-            onClick={() => {
-              setCurrentShift(storage.getCurrentShift());
-              setCloseShiftError(null);
-              setPhysicalCashCounted(currentCash);
-              setIsCloseShiftOpen(true);
-            }}
-            className="bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold px-3.5 py-2 rounded-lg flex items-center gap-1.5 border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors shadow-xs"
-          >
-            <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-            <span>مطابقة الدرج وإغلاق الوردية</span>
-          </button>
+          {currentShift.status === 'OPEN' ? (
+            <button
+              onClick={() => {
+                setCurrentShift(storage.getCurrentShift());
+                setCloseShiftError(null);
+                setPhysicalCashCounted(currentCash);
+                setIsCloseShiftOpen(true);
+              }}
+              className="bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold px-3.5 py-2 rounded-lg flex items-center gap-1.5 border border-slate-300 dark:border-slate-700 cursor-pointer transition-colors shadow-xs"
+            >
+              <ShieldCheck className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+              <span>مطابقة الدرج وإغلاق الوردية</span>
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                setOpenShiftError(null);
+                setCurrentShift(storage.getCurrentShift());
+                setIsOpenShiftOpen(true);
+              }}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3.5 py-2 rounded-lg flex items-center gap-1.5 shadow-xs cursor-pointer transition-colors"
+            >
+              <Play className="w-4 h-4" />
+              <span>فتح وردية جديدة</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -750,6 +766,71 @@ export const CashManager: React.FC<CashManagerProps> = ({
           }
         }}
       />
+
+      {/* Shift Opening Confirmation Modal */}
+      {isOpenShiftOpen && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 max-w-md w-full shadow-2xl text-right transition-colors">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+              <h3 className="font-black text-sm text-slate-900 dark:text-white flex items-center gap-2">
+                <Play className="w-5 h-5 text-emerald-600" />
+                <span>فتح وردية جديدة</span>
+              </h3>
+              <button type="button" onClick={() => setIsOpenShiftOpen(false)} className="text-slate-400 hover:text-slate-700 p-1 rounded-lg cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="mt-4 space-y-3 text-xs">
+              {openShiftError && <div className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/80 border border-rose-300 dark:border-rose-800 text-rose-700 dark:text-rose-300 font-bold">{openShiftError}</div>}
+              <div className="rounded-xl bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 p-4 space-y-2">
+                <div className="flex justify-between"><span className="text-slate-500">المسؤول عن الوردية</span><strong>{currentUser.fullName}</strong></div>
+                <div className="flex justify-between"><span className="text-slate-500">تاريخ ووقت الفتح</span><strong>{new Date().toLocaleString('ar-EG')}</strong></div>
+                <div className="flex justify-between"><span className="text-slate-500">الرصيد الافتتاحي للدرج</span><strong className="text-emerald-600 font-mono">{currentCash.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</strong></div>
+              </div>
+              <p className="text-slate-500 leading-6">سيتم تسجيل الوردية الجديدة وربطها برصيد الدرج الحالي. لن تتم إضافة الرصيد مرة ثانية إلى حركات الخزينة حتى لا يتكرر احتساب النقدية.</p>
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setIsOpenShiftOpen(false)} className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold">إلغاء</button>
+                <button type="button" onClick={async () => {
+                  setOpenShiftError(null);
+                  const latest = storage.getCurrentShift();
+                  if (latest.status === 'OPEN') {
+                    setOpenShiftError('توجد وردية مفتوحة بالفعل. أغلقها أولاً قبل فتح وردية جديدة.');
+                    return;
+                  }
+                  const now = new Date();
+                  const newShift: SystemShift = {
+                    id: 'shift-' + now.getTime() + '-' + Math.random().toString(36).slice(2, 8),
+                    date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(now),
+                    openedAt: now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+                    openedBy: currentUser.fullName,
+                    openingCash: currentCash,
+                    expectedClosingCash: currentCash,
+                    status: 'OPEN',
+                  };
+                  const result = storage.saveCurrentShift(newShift);
+                  if (!result.success) {
+                    setOpenShiftError(result.error || 'تعذر فتح الوردية في حالة الترخيص الحالية.');
+                    return;
+                  }
+                  try {
+                    await storage.flush();
+                    if (storage.getWriteError()) throw new Error(storage.getWriteError() || 'فشل حفظ الوردية');
+                    storage.addAuditLog('SHIFT', 'فتح وردية جديدة', 'الخزينة', newShift.id, 'فتح وردية جديدة بواسطة ' + currentUser.fullName + ' برصيد افتتاحي ' + currentCash + ' ج.م');
+                    await storage.flush();
+                  } catch (error: any) {
+                    setOpenShiftError('تعذر تأكيد حفظ الوردية: ' + (error?.message || 'خطأ غير معروف'));
+                    return;
+                  }
+                  setCurrentShift(newShift);
+                  setIsOpenShiftOpen(false);
+                  setStatusMessage('تم فتح الوردية الجديدة بنجاح.');
+                  onRefreshData();
+                }} className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-black">تأكيد فتح الوردية</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Shift Closing Reconciliation Modal */}
       {isCloseShiftOpen && (

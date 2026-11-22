@@ -213,6 +213,8 @@ export function canAccessTab(user: User | null | undefined, tab: TabType): boole
       return true;
     case 'cash':
       return checkUserPermission(user, 'manage_cash');
+    case 'announcer':
+      return true;
     case 'inventory':
       return checkUserPermission(user, 'manage_products');
     case 'purchasing':

@@ -12,6 +12,7 @@ import { PurchasingManager } from './components/purchasing/PurchasingManager';
 import { CustomerLedger } from './components/customers/CustomerLedger';
 import { SupplierLedger } from './components/suppliers/SupplierLedger';
 import { CashManager } from './components/cash/CashManager';
+import { AnnouncerManager } from './components/announcer/AnnouncerManager';
 import { UsersManager } from './components/users/UsersManager';
 import { ProfitReports } from './components/reports/ProfitReports';
 import { ThemeAccessibilitySettings } from './components/settings/ThemeAccessibilitySettings';
@@ -956,6 +957,8 @@ export default function App() {
                     onRefreshData={refreshAll}
                   />
                 )}
+
+                {currentTab === 'announcer' && <AnnouncerManager />}
 
                 {currentTab === 'users' && (
                   <UsersManager
