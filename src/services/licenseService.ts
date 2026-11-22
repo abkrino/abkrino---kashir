@@ -69,7 +69,7 @@ export interface LicenseStateResult {
   canOperate: boolean;
 }
 
-// Default to false so developers are not locked during development
+// Enforce licensing in production; development and tests remain unlocked by default
 const IS_PRODUCTION_BUILD = import.meta.env.PROD;
 // Production builds must never allow the trial bypass, even if a runtime caller tries to disable enforcement.
 export let LICENSE_ENFORCEMENT = IS_PRODUCTION_BUILD;
