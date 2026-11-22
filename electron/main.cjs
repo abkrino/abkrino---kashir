@@ -50,7 +50,7 @@ function runArabicSpeech(text, outputPath) {
       '} finally { $synth.Dispose() }'
     ].join('\r\n');
     const encoded = Buffer.from(ps, 'utf16le').toString('base64');
-    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], { windowsHide: true });
+    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { windowsHide: true });
     let stderr = '';
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
     child.on('error', reject);
