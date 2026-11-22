@@ -1,7 +1,7 @@
 name: Windows Electron Release Validation
 
 concurrency:
-  group: windows-electron-release
+  group: windows-electron-release-${{ github.event_name }}
   cancel-in-progress: true
 
 permissions:
