@@ -800,7 +800,7 @@ export const CashManager: React.FC<CashManagerProps> = ({
                   const now = new Date();
                   const newShift: SystemShift = {
                     id: 'shift-' + now.getTime() + '-' + Math.random().toString(36).slice(2, 8),
-                    date: now.toISOString().slice(0, 10),
+                    date: new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(now),
                     openedAt: now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
                     openedBy: currentUser.fullName,
                     openingCash: currentCash,
