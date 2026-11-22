@@ -8,7 +8,7 @@ export const AnnouncerManager: React.FC = () => {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const audioRef = useRef<HTMLAudioElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const desktopApi = window.kashirAnnouncer;
 
   const loadItems = async () => {
