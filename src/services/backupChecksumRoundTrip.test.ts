@@ -6,7 +6,6 @@ import { snapshotService } from './snapshotService';
 
 describe('Backup checksum JSON round-trip regression', () => {
   beforeEach(async () => {
-    localStorage.clear();
     await idb.kv.clear();
     await idb.snapshots.clear();
     (storage as any).cache.clear();
