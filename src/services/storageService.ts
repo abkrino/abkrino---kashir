@@ -1802,24 +1802,38 @@ class StorageService {
     const products = this.getProducts();
     const customers = this.getCustomers();
 
-    // Check negative stock flag
-    let hasNegativeStock = false;
-    for (const item of invoice.items) {
+    // Enforce non-negative stock in the data layer. Aggregate duplicate
+    // invoice lines by product so splitting a quantity across lines cannot bypass the check.
+    const requestedByProduct = new Map<string, number>();
+    for (const item of invoice.items || []) {
+      const quantity = Number(item.piecesCount);
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        return { success: false, error: `كمية غير صالحة للصنف ${item.productName || item.productId}.` };
+      }
       const prod = products.find(p => p.id === item.productId);
-      if (prod) {
-        if (prod.stockPieces < item.piecesCount) {
-          hasNegativeStock = true;
-        }
+      if (!prod) {
+        return { success: false, error: `الصنف غير موجود في المخزون: ${item.productName || item.productId}.` };
+      }
+      requestedByProduct.set(item.productId, (requestedByProduct.get(item.productId) || 0) + quantity);
+    }
+
+    for (const [productId, requested] of requestedByProduct) {
+      const prod = products.find(p => p.id === productId)!;
+      const available = Number(prod.stockPieces) || 0;
+      if (requested > available) {
+        return {
+          success: false,
+          hasNegativeStock: true,
+          error: `لا يمكن إتمام البيع للصنف "${prod.name}". المتاح ${available} قطعة، والمطلوب ${requested} قطعة. تم إيقاف الفاتورة دون تغيير المخزون أو الحسابات.`,
+        };
       }
     }
-    invoice.hasNegativeStockItem = hasNegativeStock;
+    invoice.hasNegativeStockItem = false;
 
-    // Apply Deductions to Single Warehouse (permits negative stock as requested)
-    for (const item of invoice.items) {
-      const prod = products.find(p => p.id === item.productId);
-      if (prod) {
-        prod.stockPieces -= item.piecesCount;
-      }
+    // Apply stock deductions only after every invoice line passes validation.
+    for (const [productId, requested] of requestedByProduct) {
+      const prod = products.find(p => p.id === productId)!;
+      prod.stockPieces -= requested;
     }
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
 
@@ -1946,16 +1960,45 @@ class StorageService {
     const products = this.getProducts();
     const customers = this.getCustomers();
 
-    // Revert old stock
-    for (const item of oldInvoice.items) {
-      const prod = products.find(p => p.id === item.productId);
-      if (prod) prod.stockPieces += item.piecesCount;
+    // Calculate the resulting stock without mutating records. Restore the old
+    // invoice quantities first, then aggregate the edited invoice quantities.
+    const projectedStock = new Map<string, number>(
+      products.map(product => [product.id, Number(product.stockPieces) || 0])
+    );
+    for (const item of oldInvoice.items || []) {
+      if (projectedStock.has(item.productId)) {
+        projectedStock.set(item.productId, projectedStock.get(item.productId)! + (Number(item.piecesCount) || 0));
+      }
     }
 
-    // Apply new stock deductions
-    for (const item of updatedInvoice.items) {
+    const requestedByProduct = new Map<string, number>();
+    for (const item of updatedInvoice.items || []) {
+      const quantity = Number(item.piecesCount);
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        return { success: false, error: `كمية غير صالحة للصنف ${item.productName || item.productId}.` };
+      }
       const prod = products.find(p => p.id === item.productId);
-      if (prod) prod.stockPieces -= item.piecesCount;
+      if (!prod) {
+        return { success: false, error: `الصنف غير موجود في المخزون: ${item.productName || item.productId}.` };
+      }
+      requestedByProduct.set(item.productId, (requestedByProduct.get(item.productId) || 0) + quantity);
+    }
+
+    for (const [productId, requested] of requestedByProduct) {
+      const prod = products.find(p => p.id === productId)!;
+      const availableAfterReversal = projectedStock.get(productId) || 0;
+      if (requested > availableAfterReversal) {
+        return {
+          success: false,
+          error: `لا يمكن تعديل الفاتورة: المتاح من الصنف "${prod.name}" بعد إلغاء أثر الفاتورة القديمة هو ${availableAfterReversal} قطعة، والمطلوب ${requested} قطعة.`,
+        };
+      }
+      projectedStock.set(productId, availableAfterReversal - requested);
+    }
+
+    for (const prod of products) {
+      const resultingStock = projectedStock.get(prod.id);
+      if (resultingStock !== undefined) prod.stockPieces = resultingStock;
     }
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
 
@@ -2809,6 +2852,43 @@ class StorageService {
     const products = this.getProducts();
     const suppliers = this.getSuppliers();
 
+    // Refuse purchase deletion if removing its received goods would make any
+    // product stock negative. Validate all quantities before changing anything.
+    if (purchase.isStockInserted) {
+      const removalByProduct = new Map<string, number>();
+      for (const item of purchase.items || []) {
+        const prod = products.find(p => p.id === item.productId);
+        if (!prod) continue;
+        const piecesPerUnit = item.unit === 'CARTON'
+          ? prod.piecesPerWholesaleUnit
+          : item.unit === 'PALLET'
+          ? (prod.piecesPerWholesaleUnit * 20)
+          : 1;
+        const quantity = Number(item.quantity) * piecesPerUnit;
+        if (!Number.isFinite(quantity) || quantity < 0) {
+          return { success: false, error: `كمية غير صالحة في فاتورة الشراء للصنف "${prod.name}".` };
+        }
+        removalByProduct.set(item.productId, (removalByProduct.get(item.productId) || 0) + quantity);
+      }
+      if (purchase.bonusType === 'GOODS' && purchase.bonusGoodsQuantity && purchase.items.length > 0) {
+        const firstProd = products.find(p => p.id === purchase.items[0].productId);
+        if (firstProd) {
+          const bonusPieces = Number(purchase.bonusGoodsQuantity) * firstProd.piecesPerWholesaleUnit;
+          removalByProduct.set(firstProd.id, (removalByProduct.get(firstProd.id) || 0) + bonusPieces);
+        }
+      }
+      for (const [productId, requestedRemoval] of removalByProduct) {
+        const prod = products.find(p => p.id === productId)!;
+        const available = Number(prod.stockPieces) || 0;
+        if (requestedRemoval > available) {
+          return {
+            success: false,
+            error: `لا يمكن حذف فاتورة الشراء: رصيد الصنف "${prod.name}" هو ${available} قطعة، وخصم الفاتورة سيحتاج ${requestedRemoval} قطعة. عالج حركة المخزون أولاً.`,
+          };
+        }
+      }
+    }
+
     // 1. إذا كانت البضاعة قد أُدرجت بالمخزن: خصم كمياتها من المخزن
     if (purchase.isStockInserted) {
       for (const item of purchase.items) {
@@ -2935,8 +3015,18 @@ class StorageService {
     const prod = products.find(p => p.id === params.productId);
     if (!prod) return { success: false, error: 'الصنف غير موجود' };
 
-    const prevPieces = prod.stockPieces;
-    const newPieces = prevPieces + params.differencePieces;
+    const prevPieces = Number(prod.stockPieces) || 0;
+    const differencePieces = Number(params.differencePieces);
+    if (!Number.isFinite(differencePieces)) {
+      return { success: false, error: 'كمية التسوية غير صالحة.' };
+    }
+    const newPieces = prevPieces + differencePieces;
+    if (newPieces < 0) {
+      return {
+        success: false,
+        error: `لا يمكن تنفيذ التسوية؛ رصيد الصنف "${prod.name}" هو ${prevPieces} قطعة، والتسوية ستجعله بالسالب.`,
+      };
+    }
     prod.stockPieces = newPieces;
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
 
