@@ -222,7 +222,7 @@ class SnapshotService {
       accountingMode: storage.getAccountingMode(),
       monthlyPoolIncludesCapitalInjection: storage.getMonthlyPoolIncludesCapitalInjection(),
       fundingSources: storage.getFundingSources(),
-      salesReturns: storage.getSalesReturns(),
+      salesReturns: storage.getSalesReturns(),\n      purchaseReturns: storage.getPurchaseReturns(),
       inventoryLots: storage.getInventoryLots(),
       fifoAllocations: storage.getFifoAllocations(),
       fifoInitialized: storage.isFifoInitialized(),
@@ -421,7 +421,7 @@ class SnapshotService {
           stockAdjustments: data.stockAdjustments?.length || 0,
           users: data.users?.length || 0,
           parkedCarts: data.parkedCarts?.length || 0,
-          salesReturns: data.salesReturns?.length || 0,
+          salesReturns: data.salesReturns?.length || 0,\n        purchaseReturns: data.purchaseReturns?.length || 0,\n          purchaseReturns: data.purchaseReturns?.length || 0,
           inventoryLots: data.inventoryLots?.length || 0,
           fifoAllocations: data.fifoAllocations?.length || 0,
         },
@@ -718,6 +718,12 @@ class SnapshotService {
       isLegacy = true;
       checksumStatus = 'missing';
       warning = 'تنبيه: ملف نسخة احتياطية قديم بدون توقيع رقمي، تم التحقق من سلامة البنية الداخلية واكتمال كافة المجموعات الاثنتي عشرة.';
+    }
+
+    if (typeof parsed.recordCounts?.purchaseReturns === 'number' &&
+        Array.isArray(data.purchaseReturns) &&
+        data.purchaseReturns.length !== parsed.recordCounts.purchaseReturns) {
+      return { valid: false, error: 'عدد سجلات مرتجعات المشتريات لا يطابق الفهرس المسجل؛ الملف غير مكتمل أو تالف.' };
     }
 
     // 4. Record count verification if provided (Requirement 1)
