@@ -137,3 +137,13 @@
 - Existing backup checksum tests passing does not prove restoration of the owner's original backup.
 - Existing batch/expiry fields do not constitute lot-level FIFO.
 - HR module was not present in the audited baseline.
+
+### Voice announcer decision update — Windows Arabic voice is not a prerequisite
+- Owner confirmed the target Windows installation has no Arabic speech voice available; do not make setup depend on installing a Windows language/TTS pack.
+- Preferred replacement to evaluate: **bundled offline Piper TTS** with an Arabic model, generating WAV files locally for the existing playlist. Piper has Arabic model candidates including `ar_JO-kareem-medium`; community catalogues also list Saudi Arabic models. This avoids dependence on Windows Speech API voices and keeps announcement text on-device. Sources: Piper voice inventory and Arabic model catalogue.
+- Do not ship a model/runtime until the exact Windows x64 runtime, model/config pair, redistribution licenses, model quality, and package size are verified. The official Kareem medium model is approximately 63 MB before runtime/package overhead; voice dialect is Jordanian Arabic, not Egyptian, so test Egyptian offer copy for pronunciation before selecting it.
+- Proposed runtime contract: app-owned `resources/piper/` containing a pinned Windows x64 Piper executable plus a pinned Arabic `.onnx` model and matching `.onnx.json`; invoke as a child process with text on stdin and WAV output to the existing announcements directory. Validate exit code, output WAV header/size, and a short playback smoke test. Never fall back to `System.Speech` as if Arabic were available.
+- If the offline voice fails quality or licensing review, offer an explicit online TTS provider as an opt-in alternative, clearly disclosing internet use and that announcement text leaves the device. Do not silently upload text.
+- Current status: **decision/technical investigation only**. No Piper binary/model is bundled yet, so do not mark voice generation fixed or claim the new engine works in the installer.
+- Acceptance: test Egyptian Arabic shop announcements on a clean Windows machine with no Arabic language pack; test offline generation, playback, playlist persistence, malformed/missing model errors, and installer inclusion.
+
