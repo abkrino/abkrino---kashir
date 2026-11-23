@@ -1448,6 +1448,7 @@ class CloudBackupService {
 
       const reassembled = chunkStrings.join('');
 
+      let transportChecksumVerified = false;
       if (meta.checksum) {
         const computedPayloadChecksum = await computeTextSha256Hex(reassembled);
         if (computedPayloadChecksum !== meta.checksum) {
@@ -1456,10 +1457,16 @@ class CloudBackupService {
             error: 'فشل التحقق من التوقيع الرقمي (SHA-256) للنسخة السحابية. البيانات تالفة أو ناقصة.',
           };
         }
+        transportChecksumVerified = true;
       }
 
       const jsonStr = await decompressBase64ToString(reassembled, Boolean(meta.compressed));
-      const validation = await snapshotService.validateBackup(jsonStr);
+      const validation = await snapshotService.validateBackup(jsonStr, {
+        // Older cloud releases calculated the inner checksum before JSON.stringify
+        // removed undefined properties. Accept that legacy mismatch only when the
+        // exact downloaded payload has already passed its independent SHA-256 check.
+        allowChecksumMismatchAfterVerifiedTransport: transportChecksumVerified,
+      });
       if (!validation.valid || !validation.validatedData || !validation.preview) {
         return {
           success: false,
