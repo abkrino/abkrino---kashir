@@ -595,7 +595,10 @@ class SnapshotService {
   /**
    * Validates a backup file/object (checksum, schema version, 12 collections, record counts) and returns a preview
    */
-  public async validateBackup(content: string | Record<string, any>): Promise<{
+  public async validateBackup(
+    content: string | Record<string, any>,
+    options?: { allowChecksumMismatchAfterVerifiedTransport?: boolean }
+  ): Promise<{
     valid: boolean;
     error?: string;
     warning?: string;
@@ -662,13 +665,15 @@ class SnapshotService {
       const legacyMatch = calculatedChecksum !== parsed.checksum
         ? await matchesLegacyDataChecksum(data, parsed.checksum)
         : false;
-      if (calculatedChecksum !== parsed.checksum && !legacyMatch) {
+      if (calculatedChecksum !== parsed.checksum && !legacyMatch && !options?.allowChecksumMismatchAfterVerifiedTransport) {
         return {
           valid: false,
           error: 'فشل التحقق من التوقيع الرقمي (SHA-256). ملف النسخة الاحتياطية تالف أو تم التعديل عليه يدوياً.',
         };
       }
-      if (legacyMatch) {
+      if (calculatedChecksum !== parsed.checksum && !legacyMatch) {
+        warning = 'تم التحقق من سلامة محتوى النسخة عبر بصمة SHA-256 للملف السحابي، لكن بصمة البيانات الداخلية لا تطابق بسبب اختلاف تنسيق إصدار سابق. يُنصح بإنشاء نسخة جديدة بعد الاستعادة.';
+      } else if (legacyMatch) {
         warning = 'تم التحقق من النسخة باستخدام طريقة التوقيع المتوافقة مع إصدار أقدم. يُنصح بإنشاء نسخة احتياطية جديدة بعد الاستعادة.';
       }
     } else {
