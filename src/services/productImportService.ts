@@ -1062,6 +1062,7 @@ export async function executeProductImport(params: {
 
   // Step 2: Capture clean deep rollback copies before any modification
   const prevProducts: Product[] = JSON.parse(JSON.stringify(storage.getProducts()));
+  const prevCategories: string[] = JSON.parse(JSON.stringify(storage.getCategories()));
   const prevAdjustments: StockAdjustment[] = JSON.parse(JSON.stringify(storage.getStockAdjustments()));
   const prevAuditLogs = JSON.parse(JSON.stringify(storage.getAuditLogs()));
   const prevWriteError = storage.getWriteError();
@@ -1215,6 +1216,11 @@ export async function executeProductImport(params: {
     const finalAdjustments = [...newAdjustmentsToPrepend, ...nextAdjustments];
 
     storage.setItem(STORAGE_KEYS.PRODUCTS, finalProducts);
+    const importedCategories = Array.from(new Set([
+      ...storage.getCategories(),
+      ...finalProducts.map(product => product.category.trim()).filter(Boolean),
+    ]));
+    storage.setItem(STORAGE_KEYS.CATEGORIES, importedCategories);
     storage.setItem(STORAGE_KEYS.STOCK_ADJUSTMENTS, finalAdjustments);
     storage.addAuditLog(
       'PRODUCT_IMPORT',
@@ -1247,6 +1253,7 @@ export async function executeProductImport(params: {
   } catch (err: any) {
     // Full atomic rollback so NOTHING changes in memory or persistent storage
     storage.setItem(STORAGE_KEYS.PRODUCTS, prevProducts);
+    storage.setItem(STORAGE_KEYS.CATEGORIES, prevCategories);
     storage.setItem(STORAGE_KEYS.STOCK_ADJUSTMENTS, prevAdjustments);
     storage.setItem(STORAGE_KEYS.AUDIT_LOGS, prevAuditLogs);
     storage.setWriteError(prevWriteError);
