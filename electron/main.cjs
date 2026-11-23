@@ -233,6 +233,9 @@ app.whenReady().then(() => {
   }
   createWindow();
 });
+app.on('before-quit', () => {
+  if (activeSpeechChild) activeSpeechChild.kill();
+});
 app.on('second-instance', () => {
   if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
 });
