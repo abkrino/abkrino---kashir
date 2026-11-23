@@ -1001,4 +1001,43 @@ describe('Sales Returns (مرتجعات المبيعات)', () => {
     expect(storage.getPurchases()[0].isStockInserted).toBe(false);
   });
 
+
+  it('refuses to delete a sales invoice when one of its products is missing, without changing records', () => {
+    const invoice = postSampleInvoice();
+    const productsBefore = JSON.stringify(storage.getProducts());
+    const invoicesBefore = JSON.stringify(storage.getSalesInvoices());
+    const cashBefore = JSON.stringify(storage.getCashMovements());
+
+    storage.setItem(STORAGE_KEYS.PRODUCTS, storage.getProducts().filter(p => p.id !== testProduct.id));
+    const productsAfterRemovingReference = JSON.stringify(storage.getProducts());
+    const result = storage.deleteSalesInvoice(invoice.id);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('الصنف المرتبط بها غير موجود');
+    expect(JSON.stringify(storage.getProducts())).toBe(productsAfterRemovingReference);
+    expect(JSON.stringify(storage.getSalesInvoices())).toBe(invoicesBefore);
+    expect(JSON.stringify(storage.getCashMovements())).toBe(cashBefore);
+    expect(productsBefore).not.toBe(productsAfterRemovingReference);
+  });
+
+  it('refuses to delete a credit invoice when its customer record is missing, without restoring stock or removing the invoice', () => {
+    const invoice = postSampleInvoice({
+      customerId: creditCustomer.id,
+      customerName: creditCustomer.name,
+      paymentType: 'CREDIT',
+      paidAmount: 0,
+      remainingAmount: 450,
+    });
+    const stockBefore = storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces;
+    const invoicesBefore = JSON.stringify(storage.getSalesInvoices());
+    storage.setItem(STORAGE_KEYS.CUSTOMERS, storage.getCustomers().filter(c => c.id !== creditCustomer.id));
+
+    const result = storage.deleteSalesInvoice(invoice.id);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('العميل المرتبط بها غير موجود');
+    expect(storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces).toBe(stockBefore);
+    expect(JSON.stringify(storage.getSalesInvoices())).toBe(invoicesBefore);
+  });
+
 });
