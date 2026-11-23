@@ -1382,7 +1382,7 @@ class StorageService {
     if (index >= 0) products[index] = { ...product };
     else products.unshift({ ...product });
     if (this.isFifoInitialized()) {
-      const fifoErrors = validateFifoLedger(products, nextLots);
+      const fifoErrors = [...validateFifoLedger(products, nextLots), ...validateFifoAllocations(nextLots, this.getFifoAllocations())];
       if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
       this.setItem(STORAGE_KEYS.INVENTORY_LOTS, nextLots);
     }
@@ -2023,7 +2023,10 @@ class StorageService {
     }
     invoice.totalCost = Math.round(fifoInvoiceCost * 100) / 100;
     invoice.totalProfit = Math.round((Number(invoice.total) - invoice.totalCost) * 100) / 100;
-    const ledgerErrors = validateFifoLedger(products.map(p => ({ ...p, stockPieces: p.stockPieces - (requestedByProduct.get(p.id) || 0) })), nextLots);
+    const ledgerErrors = [
+      ...validateFifoLedger(products.map(p => ({ ...p, stockPieces: p.stockPieces - (requestedByProduct.get(p.id) || 0) })), nextLots),
+      ...validateFifoAllocations(nextLots, nextAllocations),
+    ];
     if (ledgerErrors.length) return { success: false, error: ledgerErrors[0] };
 
     // Apply stock deductions only after every invoice line and FIFO lot passes validation.
@@ -2139,7 +2142,7 @@ class StorageService {
       product.stockPieces = currentStock + quantity;
     }
 
-    const fifoErrors = validateFifoLedger(nextProducts, releasedFifo.lots);
+    const fifoErrors = [...validateFifoLedger(nextProducts, releasedFifo.lots), ...validateFifoAllocations(releasedFifo.lots, releasedFifo.allocations)];
     if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
 
     const nextCustomers = customers.map(customer => ({ ...customer }));
@@ -2373,7 +2376,7 @@ class StorageService {
     nextInvoices[oldIndex] = updatedInvoice;
 
     // All validation is complete. Apply the prepared records.
-    const fifoErrors = validateFifoLedger(nextProducts, nextLots);
+    const fifoErrors = [...validateFifoLedger(nextProducts, nextLots), ...validateFifoAllocations(nextLots, nextAllocations)];
     if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
     this.setItem(STORAGE_KEYS.PRODUCTS, nextProducts);
     this.setItem(STORAGE_KEYS.INVENTORY_LOTS, nextLots);
@@ -2791,7 +2794,7 @@ class StorageService {
         const product = nextStockProducts.find(candidate => candidate.id === item.productId);
         if (product) product.stockPieces = Math.round((product.stockPieces + item.piecesCount) * 1000) / 1000;
       }
-      const ledgerErrors = validateFifoLedger(nextStockProducts, returnLots);
+      const ledgerErrors = [...validateFifoLedger(nextStockProducts, returnLots), ...validateFifoAllocations(returnLots, returnAllocations)];
       if (ledgerErrors.length) return { success: false, error: ledgerErrors[0] };
       this.setItem(STORAGE_KEYS.PRODUCTS, nextStockProducts);
       this.setItem(STORAGE_KEYS.INVENTORY_LOTS, returnLots);
@@ -3279,7 +3282,7 @@ class StorageService {
           return { success: false, error: error?.message || 'تعذر إنشاء دفعة البونص.' };
         }
       }
-      const fifoErrors = validateFifoLedger(products, lots);
+      const fifoErrors = [...validateFifoLedger(products, lots), ...validateFifoAllocations(lots, this.getFifoAllocations())];
       if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
       this.setItem(STORAGE_KEYS.PRODUCTS, products);
       this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
@@ -3676,7 +3679,7 @@ class StorageService {
       allocations = consumed.allocations;
     }
     const nextProducts = products.map(product => product.id === prod.id ? { ...product, stockPieces: newPieces } : product);
-    const fifoErrors = validateFifoLedger(nextProducts, lots);
+    const fifoErrors = [...validateFifoLedger(nextProducts, lots), ...validateFifoAllocations(lots, allocations)];
     if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
     this.setItem(STORAGE_KEYS.PRODUCTS, nextProducts);
     this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
