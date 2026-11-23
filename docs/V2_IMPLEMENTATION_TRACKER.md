@@ -20,6 +20,14 @@
 - [ ] Cashier responsiveness: profile realistic product and invoice data; record before/after timings.
 - [ ] Inventory responsiveness: benchmark 2,000+ products and evaluate pagination/virtualization.
 
+### Backup SHA-256 investigation — current findings
+- The local export hashes the business-data object using `computeDataChecksum`; file validation parses JSON and hashes the parsed `data` object again.
+- Cloud upload stores two distinct digests: an inner business-data checksum and an outer SHA-256 over the exact Base64 transport string. Download validates the outer digest before decompression, then validates the inner package digest.
+- The cloud path currently permits a legacy inner-checksum mismatch only after the exact downloaded transport payload has independently passed SHA-256. This is a compatibility path, not proof that the local file restore mismatch is fixed.
+- Existing local checksum coverage primarily validates the generated package object. A new regression suite was added to test the actual JSON file round-trip and tamper rejection: `src/services/backupChecksumRoundTrip.test.ts`.
+- New test commit: `8e35b15ee5b08ea43cb7e60c9433558d5f8b0e6f`. No CI status is available for this commit yet; the tests are **not** marked passed.
+- Root cause of the owner's original backup mismatch remains unproven until the exact original backup file is available for isolated inspection. Do not weaken checksum validation or modify the original file.
+
 ## Priority 1 — Inventory, sales, purchasing
 - [ ] Enforce no sale beyond available stock at UI and storage/service boundaries, including invoice edits and concurrent operations.
 - [ ] Permit a negative cash drawer only for explicitly authorized users; never interpret this as permission for negative inventory.
