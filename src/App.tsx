@@ -862,7 +862,7 @@ export default function App() {
 
         {/* Content Viewport with extra bottom padding on mobile/tablet */}
         <main className="flex-1 overflow-y-auto p-2.5 sm:p-4 md:p-6 pb-24 lg:pb-6 bg-slate-100/90 dark:bg-slate-950/90 transition-colors">
-          <div className="max-w-7xl mx-auto">
+          <div className="w-full min-w-0">
             {/* RBAC Route Guard (Requirement 4) */}
             {!canAccessTab(currentUser, currentTab) ? (
               <UnauthorizedState
