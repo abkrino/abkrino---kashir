@@ -60,6 +60,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
   const [suppType, setSuppType] = useState<'COMPANY' | 'WHOLESALER'>('COMPANY');
   const [suppPhone, setSuppPhone] = useState('');
   const [suppContact, setSuppContact] = useState('');
+  const [suppAddress, setSuppAddress] = useState('');
   const [suppTermsDays, setSuppTermsDays] = useState<number | null>(null);
   const [suppOpeningBalance, setSuppOpeningBalance] = useState<number>(0);
 
@@ -95,7 +96,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
   const filteredSuppliers = suppliers.filter(s => {
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase().trim();
-    return s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q) || s.contactPerson.toLowerCase().includes(q) || s.phone.includes(q);
+    return s.name.toLowerCase().includes(q) || s.code.toLowerCase().includes(q) || s.contactPerson.toLowerCase().includes(q) || s.phone.includes(q) || (s.address ?? '').toLowerCase().includes(q);
   });
 
   const totalSupplierPayables = suppliers.reduce((sum, s) => sum + s.currentBalance, 0);
@@ -192,6 +193,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
     setSuppType('COMPANY');
     setSuppPhone('');
     setSuppContact('');
+    setSuppAddress('');
     setSuppTermsDays(null);
     setSuppOpeningBalance(0);
     setIsSupplierModalOpen(true);
@@ -204,6 +206,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
     setSuppType(s.type);
     setSuppPhone(s.phone);
     setSuppContact(s.contactPerson);
+    setSuppAddress(s.address ?? '');
     setSuppTermsDays(s.paymentTermsDays ?? null);
     setSuppOpeningBalance(s.openingBalance || 0);
     setIsSupplierModalOpen(true);
@@ -223,6 +226,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
         type: suppType,
         phone: suppPhone.trim() || '-',
         contactPerson: suppContact.trim() || '-',
+        address: suppAddress.trim() || undefined,
         paymentTermsDays: suppTermsDays ?? undefined,
         openingBalance: suppOpeningBalance,
       };
@@ -235,6 +239,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
         type: suppType,
         phone: suppPhone.trim() || '-',
         contactPerson: suppContact.trim() || '-',
+        address: suppAddress.trim() || undefined,
         paymentTermsDays: suppTermsDays ?? undefined,
         openingBalance: suppOpeningBalance,
         currentBalance: suppOpeningBalance, // يبدأ الرصيد بالرصيد الافتتاحي
@@ -410,6 +415,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
                     <th className="py-3 px-3">النوع</th>
                     <th className="py-3 px-3">المندوب المسؤول</th>
                     <th className="py-3 px-3">رقم الهاتف</th>
+                    <th className="py-3 px-3">العنوان</th>
                     <th className="py-3 px-3">شروط الدفع</th>
                     <th className="py-3 px-3">الرصيد الافتتاحي</th>
                     <th className="py-3 px-3">المستحق له (ج.م)</th>
@@ -439,6 +445,9 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
                           <Phone className="w-3.5 h-3.5 text-slate-400" />
                           <span>{s.phone}</span>
                         </div>
+                      </td>
+                      <td className="py-3 px-3 text-slate-600 dark:text-slate-400 max-w-[180px] truncate" title={s.address || 'غير محدد'}>
+                        {s.address || 'غير محدد'}
                       </td>
                       <td className="py-3 px-3 text-slate-600 dark:text-slate-400">
                         {s.paymentTermsDays == null ? 'غير محدد' : `${s.paymentTermsDays} يوم`}
@@ -1126,6 +1135,17 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
                     className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white font-mono"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="text-slate-700 dark:text-slate-300 block mb-1 font-bold">عنوان المورد — اختياري:</label>
+                <input
+                  type="text"
+                  value={suppAddress}
+                  onChange={(e) => setSuppAddress(e.target.value)}
+                  placeholder="المدينة، المنطقة، العنوان بالتفصيل"
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white"
+                />
               </div>
 
               <div>
