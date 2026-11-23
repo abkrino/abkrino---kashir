@@ -291,14 +291,13 @@ describe('Accounting Modes, Unified evaluateCashOut & Structured Funding Sources
     expect(storage.postPurchaseInvoice(secondPurchase, { user: adminUser }).success).toBe(true);
     expect(storage.getProducts().find(product => product.id === testProduct.id)!.stockPieces).toBe(24);
 
-    const customer = storage.getCustomers()[0];
     const sale: SalesInvoice = {
       id: 'sale-fifo-return-1',
       invoiceNumber: 'INV-FIFO-RETURN-1',
       date: new Date().toISOString().split('T')[0],
       time: '12:00',
-      customerId: customer.id,
-      customerName: customer.name,
+      customerId: 'cust-walkin',
+      customerName: 'عميل نقدي',
       salespersonId: adminUser.id,
       salespersonName: adminUser.fullName,
       items: [{
