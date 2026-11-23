@@ -60,7 +60,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
   const [suppType, setSuppType] = useState<'COMPANY' | 'WHOLESALER'>('COMPANY');
   const [suppPhone, setSuppPhone] = useState('');
   const [suppContact, setSuppContact] = useState('');
-  const [suppTermsDays, setSuppTermsDays] = useState<number>(15);
+  const [suppTermsDays, setSuppTermsDays] = useState<number | null>(null);
   const [suppOpeningBalance, setSuppOpeningBalance] = useState<number>(0);
 
   // Edit Payment Modal State
@@ -192,7 +192,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
     setSuppType('COMPANY');
     setSuppPhone('');
     setSuppContact('');
-    setSuppTermsDays(15);
+    setSuppTermsDays(null);
     setSuppOpeningBalance(0);
     setIsSupplierModalOpen(true);
   };
@@ -204,7 +204,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
     setSuppType(s.type);
     setSuppPhone(s.phone);
     setSuppContact(s.contactPerson);
-    setSuppTermsDays(s.paymentTermsDays);
+    setSuppTermsDays(s.paymentTermsDays ?? null);
     setSuppOpeningBalance(s.openingBalance || 0);
     setIsSupplierModalOpen(true);
   };
@@ -223,7 +223,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
         type: suppType,
         phone: suppPhone.trim() || '-',
         contactPerson: suppContact.trim() || '-',
-        paymentTermsDays: suppTermsDays,
+        paymentTermsDays: suppTermsDays ?? undefined,
         openingBalance: suppOpeningBalance,
       };
       saveRes = storage.saveSupplier(updated);
@@ -235,7 +235,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
         type: suppType,
         phone: suppPhone.trim() || '-',
         contactPerson: suppContact.trim() || '-',
-        paymentTermsDays: suppTermsDays,
+        paymentTermsDays: suppTermsDays ?? undefined,
         openingBalance: suppOpeningBalance,
         currentBalance: suppOpeningBalance, // يبدأ الرصيد بالرصيد الافتتاحي
       };
@@ -410,6 +410,7 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
                     <th className="py-3 px-3">النوع</th>
                     <th className="py-3 px-3">المندوب المسؤول</th>
                     <th className="py-3 px-3">رقم الهاتف</th>
+                    <th className="py-3 px-3">شروط الدفع</th>
                     <th className="py-3 px-3">الرصيد الافتتاحي</th>
                     <th className="py-3 px-3">المستحق له (ج.م)</th>
                     <th className="py-3 px-3 text-center">إجراءات الحساب</th>
@@ -438,6 +439,9 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
                           <Phone className="w-3.5 h-3.5 text-slate-400" />
                           <span>{s.phone}</span>
                         </div>
+                      </td>
+                      <td className="py-3 px-3 text-slate-600 dark:text-slate-400">
+                        {s.paymentTermsDays == null ? 'غير محدد' : `${s.paymentTermsDays} يوم`}
                       </td>
                       <td className="py-3 px-3 font-mono text-slate-600 dark:text-slate-400">
                         {(s.openingBalance || 0).toLocaleString()} ج.م
@@ -1122,6 +1126,20 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
                     className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white font-mono"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="text-slate-700 dark:text-slate-300 block mb-1 font-bold">شروط الدفع (عدد الأيام) — اختياري:</label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={suppTermsDays ?? ''}
+                  onChange={(e) => setSuppTermsDays(e.target.value === '' ? null : Math.max(0, Math.floor(Number(e.target.value))))}
+                  placeholder="اتركه فارغًا إذا لم يتم الاتفاق"
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white font-mono"
+                />
+                <span className="text-[10px] text-slate-500 block mt-1">لن تُسجل مدة افتراضية. أدخل 0 فقط إذا كان السداد فوريًا فعلًا.</span>
               </div>
 
               <div>
