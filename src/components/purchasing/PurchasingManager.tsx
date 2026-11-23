@@ -137,7 +137,6 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
   const reloadData = () => {
     setPurchases(storage.getPurchases());
     setPurchaseReturns(storage.getPurchaseReturns());
-    setPurchaseReturns(storage.getPurchaseReturns());
     setSuppliers(storage.getSuppliers());
     onRefreshData();
   };
