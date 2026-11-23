@@ -2,9 +2,9 @@ import { AttendanceRecord, Expense, HREmployee, PayrollAdjustment, PayrollLine, 
 import { storage, STORAGE_KEYS } from './storageService';
 import { checkUserPermission } from './authSecurityService';
 const round = (n:number) => Math.round((n + Number.EPSILON) * 100) / 100;
-const validTime = (s:string) => /^([01]\\d|2[0-3]):[0-5]\\d$/.test(s);
-const validDate = (s:string) => /^\\d{4}-\\d{2}-\\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
-const validPeriod = (s:string) => /^\\d{4}-(0[1-9]|1[0-2])$/.test(s);
+const validTime = (s:string) => /^([01]\d|2[0-3]):[0-5]\d$/.test(s);
+const validDate = (s:string) => /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
+const validPeriod = (s:string) => /^\d{4}-(0[1-9]|1[0-2])$/.test(s);
 class HRService {
  getEmployees():HREmployee[]{return storage.getItem(STORAGE_KEYS.HR_EMPLOYEES,[])}
  getAttendance():AttendanceRecord[]{return storage.getItem(STORAGE_KEYS.HR_ATTENDANCE,[])}
