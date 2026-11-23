@@ -12,7 +12,8 @@
     "test": "vitest run",
     "check:compat": "npm run build && node scripts/check-compat.js",
     "electron:start": "electron .",
-    "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-icon.ps1 && npm run build && electron-builder --win nsis --publish never"
+    "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-icon.ps1 && npm run build && electron-builder --win nsis --publish never",
+    "predist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-windows-icon.ps1"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
