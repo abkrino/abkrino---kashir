@@ -3209,7 +3209,7 @@ class StorageService {
           lots = receiveLot(lots, {
             id: `lot-purchase-${purchase.id}-${index + 1}`,
             productId: product.id, source: 'PURCHASE', referenceId: purchase.id,
-            referenceNumber: purchase.invoiceNumber, receivedAt: `${purchase.date}T${purchase.time || '00:00:00'}`,
+            referenceNumber: purchase.invoiceNumber, receivedAt: new Date().toISOString(),
             originalQty: receivedQty, remainingQty: receivedQty,
             unitCost: Number(item.unitCost) / factor,
             batchNumber: item.batchNumber, expiryDate: item.expiryDate,
@@ -3225,7 +3225,7 @@ class StorageService {
           lots = receiveLot(lots, {
             id: `lot-bonus-${purchase.id}`, productId: bonusProduct.id, source: 'BONUS',
             referenceId: purchase.id, referenceNumber: purchase.invoiceNumber,
-            receivedAt: `${purchase.date}T${purchase.time || '00:00:00'}`,
+            receivedAt: new Date().toISOString(),
             originalQty: bonusQty, remainingQty: bonusQty, unitCost: 0,
           });
         } catch (error: any) {
@@ -3482,7 +3482,7 @@ class StorageService {
         lots = receiveLot(lots, {
           id: `lot-purchase-${purchase.id}-${index + 1}`, productId: product.id,
           source: 'PURCHASE', referenceId: purchase.id, referenceNumber: purchase.invoiceNumber,
-          receivedAt: `${purchase.date}T${purchase.time || '00:00:00'}`,
+          receivedAt: new Date().toISOString(),
           originalQty: receivedQty, remainingQty: receivedQty, unitCost: Number(item.unitCost) / factor,
           batchNumber: item.batchNumber, expiryDate: item.expiryDate,
         });
@@ -3497,7 +3497,7 @@ class StorageService {
         lots = receiveLot(lots, {
           id: `lot-bonus-${purchase.id}`, productId: bonusProduct.id, source: 'BONUS',
           referenceId: purchase.id, referenceNumber: purchase.invoiceNumber,
-          receivedAt: `${purchase.date}T${purchase.time || '00:00:00'}`,
+          receivedAt: new Date().toISOString(),
           originalQty: bonusQty, remainingQty: bonusQty, unitCost: 0,
         });
       } catch (error: any) {
