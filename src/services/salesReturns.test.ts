@@ -573,6 +573,39 @@ describe('Sales Returns (مرتجعات المبيعات)', () => {
     expect(storage.getProducts().find(p => p.id === kgProduct.id)?.stockPieces).toBe(kgBefore + 2.5);
   });
 
+  it('rejects a restock return when its linked product is missing without changing financial or return records', () => {
+    const inv = postSampleInvoice();
+    storage.setItem(
+      STORAGE_KEYS.PRODUCTS,
+      storage.getProducts().filter(product => product.id !== testProduct.id)
+    );
+
+    const productsBefore = JSON.stringify(storage.getProducts());
+    const customersBefore = JSON.stringify(storage.getCustomers());
+    const cashBefore = JSON.stringify(storage.getCashMovements());
+    const invoicesBefore = JSON.stringify(storage.getSalesInvoices());
+    const returnsBefore = JSON.stringify(storage.getSalesReturns());
+    const auditBefore = JSON.stringify(storage.getAuditLogs());
+
+    const result = storage.processSalesReturn({
+      invoiceId: inv.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 1 }],
+      reason: 'DAMAGED',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: adminUser,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('الصنف المرتبط بالمرتجع غير موجود');
+    expect(JSON.stringify(storage.getProducts())).toBe(productsBefore);
+    expect(JSON.stringify(storage.getCustomers())).toBe(customersBefore);
+    expect(JSON.stringify(storage.getCashMovements())).toBe(cashBefore);
+    expect(JSON.stringify(storage.getSalesInvoices())).toBe(invoicesBefore);
+    expect(JSON.stringify(storage.getSalesReturns())).toBe(returnsBefore);
+    expect(JSON.stringify(storage.getAuditLogs())).toBe(auditBefore);
+  });
+
   it('3. CASH refund creates SALES_REFUND affecting drawer even in CAPITAL mode; CUSTOMER_CREDIT lowers customer debt without drawer outflow', async () => {
     // Credit invoice for creditCustomer: total 300, paid 0, remaining 300
     const creditInv = postSampleInvoice({
