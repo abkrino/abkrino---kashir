@@ -252,4 +252,48 @@ describe('IndexedDB Storage Layer & Migration (idbStore + storageService)', () =
     const restoredProducts = storage.getProducts();
     expect(restoredProducts.some(p => p.id === 'p-export-1')).toBe(true);
   });
+
+  // 7. إدارة التصنيفات: منع التكرار، تحديث الأصناف عند إعادة التسمية، ومنع حذف التصنيف المستخدم
+  it('(7) إدارة التصنيفات تحفظ البيانات وتحمي الأصناف المرتبطة', async () => {
+    await storage.init();
+
+    expect(storage.addCategory('تصنيف تجريبي').success).toBe(true);
+    expect(storage.addCategory(' تصنيف تجريبي ').success).toBe(false);
+
+    const product = {
+      id: 'p-category-1',
+      name: 'صنف اختبار التصنيف',
+      category: 'تصنيف تجريبي',
+      stockPieces: 3,
+    } as unknown as Product;
+    expect(storage.saveProduct(product).success).toBe(true);
+
+    expect(storage.renameCategory('تصنيف تجريبي', 'تصنيف معدل').success).toBe(true);
+    expect(storage.getProducts().find(p => p.id === product.id)?.category).toBe('تصنيف معدل');
+
+    const blockedDelete = storage.deleteCategory('تصنيف معدل');
+    expect(blockedDelete.success).toBe(false);
+    expect(blockedDelete.error).toContain('مرتبط');
+
+    expect(storage.saveProduct({ ...product, category: 'أخرى' }).success).toBe(true);
+    expect(storage.deleteCategory('تصنيف معدل').success).toBe(true);
+    expect(storage.getCategories()).not.toContain('تصنيف معدل');
+    await storage.flush();
+  });
+
+  // 8. التصنيفات جزء من النسخة الاحتياطية وتعود بعد الاستعادة
+  it('(8) النسخة الاحتياطية تحفظ التصنيفات وتستعيدها', async () => {
+    await storage.init();
+    expect(storage.addCategory('تصنيف النسخة الاحتياطية').success).toBe(true);
+    const backup = storage.exportFullBackupJson();
+    const parsed = JSON.parse(backup);
+    expect(parsed.data.categories).toContain('تصنيف النسخة الاحتياطية');
+
+    storage.resetToFactoryDefault();
+    await storage.flush();
+    const restored = storage.restoreBackupJson(backup);
+    expect(restored.success).toBe(true);
+    await storage.flush();
+    expect(storage.getCategories()).toContain('تصنيف النسخة الاحتياطية');
+  });
 });
