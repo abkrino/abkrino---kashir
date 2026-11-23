@@ -210,6 +210,7 @@ describe('Local Snapshots, SHA-256 Checksum, Restore Safety & Bootstrap Idempote
       salePrice: 120,
       purchaseCost: 95,
       stock: 50,
+      stockPieces: 50,
       unit: 'كجم',
     } as unknown as Product;
     storage.saveProduct(initialProd);
@@ -515,6 +516,7 @@ describe('Local Snapshots, SHA-256 Checksum, Restore Safety & Bootstrap Idempote
       salePrice: 150,
       purchaseCost: 100,
       stock: 50,
+      stockPieces: 50,
       unit: 'قطعة',
     } as unknown as Product;
 
@@ -575,6 +577,7 @@ describe('Local Snapshots, SHA-256 Checksum, Restore Safety & Bootstrap Idempote
       salePrice: 200,
       purchaseCost: 150,
       stock: 10,
+      stockPieces: 10,
       unit: 'قطعة',
     } as unknown as Product;
     storage.saveProduct(safeProduct);
