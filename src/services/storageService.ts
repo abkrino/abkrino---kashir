@@ -2721,6 +2721,30 @@ class StorageService {
     const supp = suppliers.find(s => s.id === purchase.supplierId);
     if (!supp) return { success: false, error: 'المورد غير محدد' };
 
+    // Validate the complete purchase before touching cash, supplier balances or stock.
+    if (!Array.isArray(purchase.items) || purchase.items.length === 0) {
+      return { success: false, error: 'فاتورة الشراء يجب أن تحتوي على صنف واحد على الأقل.' };
+    }
+    for (const item of purchase.items) {
+      const prod = products.find(p => p.id === item.productId);
+      const quantity = Number(item.quantity);
+      const unitCost = Number(item.unitCost);
+      if (!prod) return { success: false, error: `الصنف غير موجود في المخزون: ${item.productName || item.productId}.` };
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        return { success: false, error: `كمية الشراء غير صالحة للصنف "${prod.name}".` };
+      }
+      if (!['CARTON', 'PIECE', 'PALLET'].includes(item.unit)) {
+        return { success: false, error: `وحدة الشراء غير صالحة للصنف "${prod.name}".` };
+      }
+      if (!Number.isFinite(unitCost) || unitCost < 0 || !Number.isFinite(Number(item.totalCost)) || Number(item.totalCost) < 0) {
+        return { success: false, error: `تكلفة الشراء غير صالحة للصنف "${prod.name}".` };
+      }
+    }
+    if (purchase.bonusType === 'GOODS' &&
+        (!Number.isFinite(Number(purchase.bonusGoodsQuantity)) || Number(purchase.bonusGoodsQuantity) < 0)) {
+      return { success: false, error: 'كمية بونص البضاعة غير صالحة.' };
+    }
+
     // Service-layer cash-out coverage check BEFORE modifying stock or balances
     let affectsDrawer = true;
     let resolvedFunding: CashMovementFunding | undefined;
@@ -2972,6 +2996,25 @@ class StorageService {
     if (purchase.isStockInserted) return { success: false, error: 'الفاتورة مدرجة بالمخزن بالفعل' };
 
     const products = this.getProducts();
+    // Validate every line and the bonus before applying any stock increase.
+    for (const item of purchase.items || []) {
+      const prod = products.find(p => p.id === item.productId);
+      const quantity = Number(item.quantity);
+      if (!prod) return { success: false, error: `الصنف غير موجود في المخزون: ${item.productName || item.productId}.` };
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        return { success: false, error: `كمية الإدراج غير صالحة للصنف "${prod.name}".` };
+      }
+      if (!['CARTON', 'PIECE', 'PALLET'].includes(item.unit)) {
+        return { success: false, error: `وحدة الإدراج غير صالحة للصنف "${prod.name}".` };
+      }
+    }
+    if (!purchase.items || purchase.items.length === 0) {
+      return { success: false, error: 'لا توجد أصناف لإدراجها بالمخزن.' };
+    }
+    if (purchase.bonusType === 'GOODS' &&
+        (!Number.isFinite(Number(purchase.bonusGoodsQuantity)) || Number(purchase.bonusGoodsQuantity) < 0)) {
+      return { success: false, error: 'كمية بونص البضاعة غير صالحة.' };
+    }
     for (const item of purchase.items) {
       const prod = products.find(p => p.id === item.productId);
       if (prod) {
