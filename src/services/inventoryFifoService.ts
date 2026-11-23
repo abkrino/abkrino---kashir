@@ -186,6 +186,7 @@ export function validateFifoAllocations(lots: InventoryLot[], allocations: FifoA
   const errors: string[] = [];
   const lotById = new Map(lots.map(lot => [lot.id, lot]));
   const ids = new Set<string>();
+  const consumedByLot = new Map<string, number>();
   for (const allocation of allocations) {
     if (!allocation.id || ids.has(allocation.id)) errors.push(`تخصيص FIFO بمعرّف مكرر أو فارغ: ${allocation.id || 'غير معروف'}.`);
     ids.add(allocation.id);
@@ -198,6 +199,15 @@ export function validateFifoAllocations(lots: InventoryLot[], allocations: FifoA
         allocation.returnedQty > allocation.quantity + 1e-6 ||
         !Number.isFinite(allocation.unitCost) || allocation.unitCost < 0) {
       errors.push(`تخصيص FIFO ${allocation.id}: بيانات كمية أو تكلفة غير صالحة.`);
+    }
+    const outstanding = Number(allocation.quantity) - Number(allocation.returnedQty);
+    consumedByLot.set(allocation.lotId, (consumedByLot.get(allocation.lotId) || 0) + (Number.isFinite(outstanding) ? outstanding : 0));
+  }
+  for (const lot of lots) {
+    const lotConsumed = Number(lot.originalQty) - Number(lot.remainingQty);
+    const allocationConsumed = consumedByLot.get(lot.id) || 0;
+    if (Math.abs(lotConsumed - allocationConsumed) > 0.001) {
+      errors.push(`دفعة ${lot.id}: الكمية المستهلكة لا تطابق تخصيصات FIFO المسجلة.`);
     }
   }
   return errors;
