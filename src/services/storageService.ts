@@ -3464,6 +3464,11 @@ class StorageService {
         prod.stockPieces += (item.quantity * piecesPerUnit);
       }
     }
+    if (purchase.bonusType === 'GOODS' && Number(purchase.bonusGoodsQuantity) > 0 && purchase.items.length > 0) {
+      const bonusProduct = products.find(p => p.id === purchase.items[0].productId);
+      if (!bonusProduct) return { success: false, error: 'صنف بونص البضاعة غير موجود.' };
+      bonusProduct.stockPieces += Number(purchase.bonusGoodsQuantity) * Number(bonusProduct.piecesPerWholesaleUnit);
+    }
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
 
     let lots = this.getInventoryLots();
