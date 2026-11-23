@@ -12,7 +12,7 @@
     "test": "vitest run",
     "check:compat": "npm run build && node scripts/check-compat.js",
     "electron:start": "electron .",
-    "dist:win": "npm run build && electron-builder --win nsis --publish never"
+    "dist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-windows-icon.ps1 && npm run build && electron-builder --win nsis --publish never"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -68,7 +68,8 @@
           ]
         }
       ],
-      "artifactName": "Abkrino-Kashir-Setup-${version}-${arch}.${ext}"
+      "artifactName": "Abkrino-Kashir-Setup-${version}-${arch}.${ext}",
+      "icon": "build/abkrino.ico"
     },
     "nsis": {
       "oneClick": false,
@@ -76,7 +77,9 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Abkrino Kashir"
+      "shortcutName": "Abkrino Kashir",
+      "installerIcon": "build/abkrino.ico",
+      "uninstallerIcon": "build/abkrino.ico"
     }
   }
 }
