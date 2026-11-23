@@ -858,7 +858,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
             <div className="p-3 border-b border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300">التصنيفات الحالية ({categoriesFilterList.length - 1})</div>
             <div className="divide-y divide-slate-200 dark:divide-slate-800">
               {categoriesFilterList.filter(name => name !== 'ALL').map(name => {
-                const linkedCount = products.filter(product => product.category.trim().toLocaleLowerCase() === name.toLocaleLowerCase()).length;
+                const linkedCount = products.filter(product => String(product.category || '').trim().toLocaleLowerCase() === name.toLocaleLowerCase()).length;
                 const isManaged = categoryNames.some(item => item.toLocaleLowerCase() === name.toLocaleLowerCase());
                 return (
                   <div key={name} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
