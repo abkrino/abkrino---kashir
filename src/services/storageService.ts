@@ -1338,24 +1338,44 @@ class StorageService {
       return { success: false, error: 'رصيد الصنف يجب أن يكون رقمًا صحيحًا أو كسريًا صالحًا ولا يمكن أن يكون بالسالب.' };
     }
 
-    const products = this.getProducts();
+    const products = this.getProducts().map(existing => ({ ...existing }));
     const categories = this.getCategories();
     if (!categories.some(name => name.toLocaleLowerCase() === product.category.trim().toLocaleLowerCase())) {
       categories.push(product.category.trim());
       this.setItem(STORAGE_KEYS.CATEGORIES, categories);
     }
-    const index = products.findIndex(p => p.id === product.id);
-    if (index >= 0) {
-      products[index] = product;
-    } else {
-      products.unshift(product);
+    const index = products.findIndex(existing => existing.id === product.id);
+    const existingProduct = index >= 0 ? products[index] : undefined;
+    let nextLots = this.getInventoryLots();
+    if (this.isFifoInitialized()) {
+      if (existingProduct && Math.abs(Number(existingProduct.stockPieces) - stockPieces) > 0.001) {
+        return { success: false, error: 'بعد تفعيل FIFO لا يتم تعديل رصيد المخزون من شاشة بيانات الصنف. استخدم شاشة تسوية المخزون حتى تُسجل الحركة في دفعات التكلفة.' };
+      }
+      if (!existingProduct && stockPieces > 0) {
+        try {
+          nextLots = receiveLot(nextLots, {
+            id: `lot-new-product-${product.id}`, productId: product.id, source: 'OPENING',
+            referenceId: 'PRODUCT-CREATION', referenceNumber: 'رصيد عند إضافة الصنف',
+            receivedAt: new Date().toISOString(), originalQty: stockPieces, remainingQty: stockPieces,
+            unitCost: Number(product.costPricePerBase) || 0,
+          });
+        } catch (error: any) {
+          return { success: false, error: error?.message || 'تعذر إنشاء رصيد افتتاحي للصنف الجديد.' };
+        }
+      }
+    }
+    if (index >= 0) products[index] = { ...product };
+    else products.unshift({ ...product });
+    if (this.isFifoInitialized()) {
+      const fifoErrors = validateFifoLedger(products, nextLots);
+      if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
+      this.setItem(STORAGE_KEYS.INVENTORY_LOTS, nextLots);
     }
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
     this.addAuditLog('PRODUCT', 'حفظ صنف', 'الأصناف', product.id, `حفظ الصنف: ${product.name} (المخزن: ${product.stockPieces} قطعة)`);
     this.notifyAction(`حفظ صنف: ${product.name}`);
     return { success: true };
   }
-
   public deleteProduct(productId: string): { success: boolean; error?: string } {
     const gate = this.assertWriteAllowed('ADMIN_DATA', `حذف صنف: ${productId}`);
     if (!gate.allowed) return { success: false, error: gate.error };
@@ -1363,6 +1383,9 @@ class StorageService {
     const products = this.getProducts();
     const prod = products.find(p => p.id === productId);
     if (!prod) return { success: false, error: 'الصنف غير موجود' };
+    if (this.isFifoInitialized() && (this.getInventoryLots().some(lot => lot.productId === productId) || this.getFifoAllocations().some(allocation => allocation.productId === productId))) {
+      return { success: false, error: 'لا يمكن حذف صنف له سجل دفعات أو حركات FIFO؛ أوقف تفعيله بدلاً من حذفه للحفاظ على سجل تكلفة المخزون.' };
+    }
 
     const filtered = products.filter(p => p.id !== productId);
     this.setItem(STORAGE_KEYS.PRODUCTS, filtered);
