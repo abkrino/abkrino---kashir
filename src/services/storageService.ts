@@ -1901,27 +1901,62 @@ class StorageService {
       return { success: false, error: 'لا يمكن حذف فاتورة لها مرتجعات مسجلة. راجع المرتجعات المرتبطة بها أولاً.' };
     }
 
+    // Validate every linked record before preparing any mutation.
+    if (!Array.isArray(invoice.items) || invoice.items.length === 0) {
+      return { success: false, error: 'لا يمكن حذف الفاتورة: تفاصيل الأصناف غير موجودة أو غير مكتملة.' };
+    }
+    const paidAmount = Number(invoice.paidAmount ?? 0);
+    const remainingAmount = Number(invoice.remainingAmount ?? 0);
+    if (!Number.isFinite(paidAmount) || paidAmount < 0 ||
+        !Number.isFinite(remainingAmount) || remainingAmount < 0) {
+      return { success: false, error: 'لا يمكن حذف الفاتورة: بيانات المبالغ غير صالحة.' };
+    }
+
     const products = this.getProducts();
     const customers = this.getCustomers();
+    const nextProducts = products.map(product => ({ ...product }));
+    const quantitiesByProduct = new Map<string, number>();
 
-    // 1. Restore Stock (إعادة الأصناف للمخزن)
     for (const item of invoice.items) {
-      const prod = products.find(p => p.id === item.productId);
-      if (prod) {
-        prod.stockPieces += item.piecesCount;
+      const quantity = Number(item.piecesCount);
+      if (!item.productId || !Number.isFinite(quantity) || quantity <= 0) {
+        return { success: false, error: `لا يمكن حذف الفاتورة: بيانات كمية أو صنف غير صالحة (${item.productName || item.productId || 'غير معروف'}).` };
       }
-    }
-    this.setItem(STORAGE_KEYS.PRODUCTS, products);
-
-    // 2. Remove Customer Debt (حذف مديونية الفاتورة من العميل)
-    const cust = customers.find(c => c.id === invoice.customerId);
-    if (cust && invoice.remainingAmount > 0) {
-      cust.currentBalance = Math.max(0, cust.currentBalance - invoice.remainingAmount);
-      this.setItem(STORAGE_KEYS.CUSTOMERS, customers);
+      if (!products.some(product => product.id === item.productId)) {
+        return { success: false, error: `لا يمكن حذف الفاتورة: الصنف المرتبط بها غير موجود في المخزون (${item.productName || item.productId}).` };
+      }
+      quantitiesByProduct.set(item.productId, (quantitiesByProduct.get(item.productId) || 0) + quantity);
     }
 
-    // 3. Reverse Cash if paid (إلغاء النقدية المحصلة)
-    if (invoice.paidAmount > 0) {
+    for (const [productId, quantity] of quantitiesByProduct) {
+      const product = nextProducts.find(p => p.id === productId)!;
+      const currentStock = Number(product.stockPieces);
+      if (!Number.isFinite(currentStock) || currentStock < 0) {
+        return { success: false, error: `لا يمكن حذف الفاتورة: رصيد المخزون غير صالح للصنف ${product.name}.` };
+      }
+      product.stockPieces = currentStock + quantity;
+    }
+
+    const nextCustomers = customers.map(customer => ({ ...customer }));
+    if (remainingAmount > 0) {
+      const customer = nextCustomers.find(c => c.id === invoice.customerId);
+      if (!customer) {
+        return { success: false, error: 'لا يمكن حذف الفاتورة: العميل المرتبط بها غير موجود، ولا يمكن تسوية مديونيته بأمان.' };
+      }
+      const currentBalance = Number(customer.currentBalance);
+      if (!Number.isFinite(currentBalance) || currentBalance < 0) {
+        return { success: false, error: 'لا يمكن حذف الفاتورة: رصيد العميل غير صالح.' };
+      }
+      customer.currentBalance = Math.max(0, Math.round((currentBalance - remainingAmount) * 100) / 100);
+    }
+
+    // All linked records passed validation; now apply the prepared changes.
+    this.setItem(STORAGE_KEYS.PRODUCTS, nextProducts);
+    if (remainingAmount > 0) {
+      this.setItem(STORAGE_KEYS.CUSTOMERS, nextCustomers);
+    }
+
+    if (paidAmount > 0) {
       this.addCashMovement(
         {
           id: `cm-${Date.now()}`,
@@ -1930,7 +1965,7 @@ class StorageService {
           type: 'OUT',
           category: 'INVOICE_REVERSAL',
           categoryLabelArabic: 'إلغاء فاتورة مبيعات',
-          amount: invoice.paidAmount,
+          amount: paidAmount,
           referenceId: invoice.invoiceNumber,
           description: `رد نقدية لحذف فاتورة المبيعات رقم ${invoice.invoiceNumber}`,
           performedBy: this.getActiveUser()?.fullName || 'النظام',
@@ -1939,16 +1974,13 @@ class StorageService {
       );
     }
 
-    // 4. Remove invoice from list
-    const filteredInvoices = invoices.filter(inv => inv.id !== invoice.id);
-    this.setItem(STORAGE_KEYS.INVOICES, filteredInvoices);
-
+    this.setItem(STORAGE_KEYS.INVOICES, invoices.filter(inv => inv.id !== invoice.id));
     this.addAuditLog(
       'SALES',
       'حذف فاتورة مبيعات',
       'فواتير المبيعات',
       invoice.invoiceNumber,
-      `تم حذف الفاتورة ${invoice.invoiceNumber} وإرجاع بضاعة الأصناف للمخزن وحذف مديونية العميل (${invoice.remainingAmount} ج.م)`
+      `تم حذف الفاتورة ${invoice.invoiceNumber} وإرجاع بضاعة الأصناف للمخزن وحذف مديونية العميل (${remainingAmount} ج.م)`
     );
     this.notifyAction(`حذف فاتورة: ${invoice.invoiceNumber}`);
 
