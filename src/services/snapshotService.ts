@@ -74,43 +74,64 @@ export interface SnapshotPreconditionResult {
 }
 
 /**
- * Deterministic JSON stringify to ensure consistent SHA-256 hashing across platforms
+ * Deterministic JSON serialization for checksums.
+ * Mirrors JSON.stringify semantics: omit undefined/function/symbol object values,
+ * serialize those values as null inside arrays, and normalize non-finite numbers to null.
+ * Object keys are sorted so the result is stable across platforms.
  */
-export function canonicalStringify(obj: any): string {
-  if (obj === null || typeof obj !== 'object') {
-    return JSON.stringify(obj);
-  }
+export function canonicalStringify(value: any): string {
+  const ancestors = new Set<object>();
 
-  if (Array.isArray(obj)) {
-    return '[' + obj.map(canonicalStringify).join(',') + ']';
-  }
+  const normalize = (input: any, inArray = false): any => {
+    if (input === null || typeof input === 'string' || typeof input === 'boolean') return input;
+    if (typeof input === 'number') return Number.isFinite(input) ? input : null;
+    if (typeof input === 'undefined' || typeof input === 'function' || typeof input === 'symbol') {
+      return inArray ? null : undefined;
+    }
+    if (typeof input === 'bigint') {
+      throw new TypeError('BigInt cannot be serialized to JSON');
+    }
 
-  const keys = Object.keys(obj).sort();
-  return '{' + keys.map(k => JSON.stringify(k) + ':' + canonicalStringify(obj[k])).join(',') + '}';
+    let current = input;
+    if (current && typeof current.toJSON === 'function') {
+      current = current.toJSON();
+      if (current === null || typeof current !== 'object') return normalize(current, inArray);
+    }
+
+    if (ancestors.has(current)) throw new TypeError('Converting circular structure to JSON');
+    ancestors.add(current);
+    try {
+      if (Array.isArray(current)) {
+        return current.map(item => normalize(item, true));
+      }
+      const result: Record<string, any> = {};
+      for (const key of Object.keys(current).sort()) {
+        const normalized = normalize(current[key], false);
+        if (normalized !== undefined) result[key] = normalized;
+      }
+      return result;
+    } finally {
+      ancestors.delete(current);
+    }
+  };
+
+  const serialized = JSON.stringify(normalize(value));
+  if (serialized === undefined) {
+    throw new TypeError('Backup data cannot be serialized to JSON');
+  }
+  return serialized;
 }
 
-/**
- * Computes SHA-256 hash using Web Crypto API
- */
+/** Computes a real SHA-256 digest. Never substitutes a non-cryptographic hash. */
 export async function computeDataChecksum(data: any): Promise<string> {
   const canonical = canonicalStringify(data);
-  const encoder = new TextEncoder();
-  const buffer = encoder.encode(canonical);
-
-  if (typeof crypto !== 'undefined' && crypto.subtle && typeof crypto.subtle.digest === 'function') {
-    const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  if (typeof crypto === 'undefined' || !crypto.subtle || typeof crypto.subtle.digest !== 'function') {
+    throw new Error('SHA-256 غير متاح في بيئة التشغيل؛ لم يتم إنشاء بصمة بديلة غير آمنة.');
   }
-
-  // Fallback hash for environments without Web Crypto subtle
-  let hash = 0;
-  for (let i = 0; i < canonical.length; i++) {
-    const char = canonical.charCodeAt(i);
-    hash = (hash << 5) - hash + char;
-    hash |= 0;
-  }
-  return Math.abs(hash).toString(16).padStart(64, '0');
+  const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
+  return Array.from(new Uint8Array(hashBuffer))
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 class SnapshotService {
