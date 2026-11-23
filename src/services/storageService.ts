@@ -3403,6 +3403,8 @@ class StorageService {
     if (purchase.isStockInserted) {
       const fifoInit = this.ensureFifoInitialized();
       if (!fifoInit.success) return { success: false, error: fifoInit.error };
+      nextLots = this.getInventoryLots();
+      nextAllocations = this.getFifoAllocations();
       // New purchases have their own lots. Older pre-FIFO purchases are represented by
       // the opening lots, so deletion consumes the equivalent quantity from those lots.
       const purchaseLots = nextLots.filter(lot => lot.referenceId === purchase.id);
