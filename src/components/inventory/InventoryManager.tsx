@@ -99,24 +99,13 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
 
   const isAdmin = currentUser.role === 'ADMIN' || currentUser.permissions?.canManageProducts;
 
-  // Supermarket & Dairy categories
-  const STANDARD_CATEGORIES = [
-    'منتجات الألبان والأجبان',
-    'بقالة ومواد غذائية جافة',
-    'سناكس وبسكويت وحلويات',
-    'مشروبات وعصائر ومياه',
-    'مخبوزات وتوست',
-    'منظفات وعناية منزلية',
-    'أخرى'
-  ];
-
   const WHOLESALE_UNIT_OPTIONS = ['كرتونة', 'بالتة', 'طرد', 'صندوق', 'باكتة كبيرة'];
   const BASE_UNIT_OPTIONS = ['عبوة', 'قطعة', 'كيس', 'علبة', 'كجم', 'لتر', 'برطمان', 'كوب', 'طبق'];
 
   // Distinct Brands & Categories from Database
   const distinctBrands = Array.from(new Set(products.map(p => p.brand).filter(Boolean)));
   const brandsFilterList = ['ALL', ...distinctBrands];
-  const categoriesFilterList = ['ALL', ...Array.from(new Set([...STANDARD_CATEGORIES, ...categoryNames, ...products.map(p => p.category).filter(Boolean)]))];
+  const categoriesFilterList = ['ALL', ...Array.from(new Set([...categoryNames, ...products.map(p => p.category).filter(Boolean)]))];
 
   // Helper to auto-calculate base prices/costs
   const handleCostCartonChange = (cartonCost: number, pieces: number) => {
