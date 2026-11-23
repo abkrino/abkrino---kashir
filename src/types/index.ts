@@ -105,6 +105,7 @@ export interface Supplier {
   type: 'COMPANY' | 'WHOLESALER'; // شركة منتجة أو تاجر جملة
   phone: string;
   contactPerson: string;
+  address?: string; // العنوان اختياري للتوافق مع الموردين المسجلين سابقًا
   openingBalance?: number; // الرصيد الافتتاحي
   currentBalance: number;
   paymentTermsDays?: number; // غير محدد إذا لم يتم الاتفاق على أجل السداد
