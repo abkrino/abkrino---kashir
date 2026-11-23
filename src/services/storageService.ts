@@ -2887,7 +2887,12 @@ class StorageService {
       const removalByProduct = new Map<string, number>();
       for (const item of purchase.items || []) {
         const prod = products.find(p => p.id === item.productId);
-        if (!prod) continue;
+        if (!prod) {
+          return {
+            success: false,
+            error: `لا يمكن حذف فاتورة الشراء: الصنف المرتبط بها غير موجود حاليًا (معرّف الصنف: ${item.productId}). راجع سجل المخزون قبل الحذف.`,
+          };
+        }
         const piecesPerUnit = item.unit === 'CARTON'
           ? prod.piecesPerWholesaleUnit
           : item.unit === 'PALLET'
