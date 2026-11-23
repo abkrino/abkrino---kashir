@@ -1,8 +1,0 @@
-{
-  "name": "Remix Wholesale Food Distribution Management System - Egypt",
-  "description": "Retail Point of Sale, Supermarket Cashier & Dairy Shop Management System for Egypt with electronic scale weighing, dairy shelf-life tracking, barcode scanner, multi-tender payment, and offline SQLite simulation.",
-  "requestFramePermissions": [],
-  "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
-  ]
-}

@@ -2,123 +2,326 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * ABKRINO POS — Claymorphism design system
+ * Brand assets remain untouched in /public/assets/aistudio/.
+ * These tokens intentionally map to the existing Tailwind-based UI so the
+ * visual refresh does not require changing business components or behavior.
+ */
+
 :root {
-  --app-font-scale: 1.0;
+  --app-font-scale: 1;
   --app-base-font-size: 18px;
   --app-heading-font-size: 26px;
 
-  /* Theme Tokens - Light Mode Default */
-  --bg-app: #f1f5f9;
+  /* ABKRINO light palette */
+  --bg-app: #f0f4f8;
   --bg-surface: #ffffff;
-  --bg-surface-elevated: #f8fafc;
+  --bg-surface-elevated: #ffffff;
   --bg-card: #ffffff;
-  --bg-subtle: #e2e8f0;
-  --border-app: #cbd5e1;
-  --border-strong: #94a3b8;
-  --text-main: #0f172a;
-  --text-muted: #475569;
-  --text-faint: #64748b;
-  
-  --accent-emerald: #059669;
-  --accent-emerald-bg: #ecfdf5;
-  --accent-emerald-border: #a7f3d0;
-  --accent-amber: #d97706;
-  --accent-amber-bg: #fffbeb;
+  --bg-subtle: #e8eef5;
+  --border-app: rgba(30, 36, 43, 0.055);
+  --border-strong: rgba(30, 36, 43, 0.12);
+  --text-main: #1e242b;
+  --text-muted: #5a6572;
+  --text-faint: #7b8794;
+
+  --accent-emerald: #00897b;
+  --accent-emerald-bg: rgba(0, 137, 123, 0.09);
+  --accent-emerald-border: rgba(0, 137, 123, 0.22);
+  --accent-amber: #fbbf24;
+  --accent-amber-bg: rgba(251, 191, 36, 0.14);
   --accent-blue: #2563eb;
-  --accent-blue-bg: #eff6ff;
-  --accent-rose: #dc2626;
-  --accent-rose-bg: #fef2f2;
+  --accent-blue-bg: rgba(37, 99, 235, 0.08);
+  --accent-rose: #8e241c;
+  --accent-rose-bg: rgba(142, 36, 28, 0.08);
+
+  --brand-teal: #00897b;
+  --brand-teal-light: #26a69a;
+  --brand-green: #16a34a;
+  --brand-crimson: #8e241c;
+  --brand-crimson-dark: #5a120e;
+  --brand-yellow: #fbbf24;
+
+  --clay-radius-pill: 999px;
+  --clay-radius-card: 32px;
+  --clay-radius-panel: 24px;
+  --clay-radius-control: 16px;
+  --clay-radius-icon: 24px;
+
+  --clay-shadow:
+    -7px -7px 18px rgba(255, 255, 255, 0.92),
+    8px 9px 20px rgba(148, 163, 184, 0.22),
+    inset 1px 1px 0 rgba(255, 255, 255, 0.92);
+  --clay-shadow-soft:
+    -4px -4px 12px rgba(255, 255, 255, 0.88),
+    5px 6px 14px rgba(148, 163, 184, 0.18),
+    inset 1px 1px 0 rgba(255, 255, 255, 0.9);
+  --clay-shadow-inset:
+    inset 3px 3px 8px rgba(148, 163, 184, 0.18),
+    inset -3px -3px 8px rgba(255, 255, 255, 0.92);
 }
 
-html.dark, [data-theme="dark"] {
-  /* Theme Tokens - Dark Mode */
-  --bg-app: #020617;
-  --bg-surface: #0f172a;
-  --bg-surface-elevated: #1e293b;
-  --bg-card: #0f172a;
-  --bg-subtle: #1e293b;
-  --border-app: #334155;
-  --border-strong: #475569;
-  --text-main: #f8fafc;
-  --text-muted: #cbd5e1;
-  --text-faint: #94a3b8;
+html.dark,
+[data-theme="dark"] {
+  /* ABKRINO dark palette */
+  --bg-app: #15151f;
+  --bg-surface: #1d1d28;
+  --bg-surface-elevated: #22222e;
+  --bg-card: #1d1d28;
+  --bg-subtle: #181822;
+  --border-app: rgba(255, 255, 255, 0.055);
+  --border-strong: rgba(255, 255, 255, 0.11);
+  --text-main: #f3f4f6;
+  --text-muted: #9ca3af;
+  --text-faint: #7c8492;
 
-  --accent-emerald: #10b981;
-  --accent-emerald-bg: rgba(16, 185, 129, 0.12);
-  --accent-emerald-border: rgba(16, 185, 129, 0.35);
-  --accent-amber: #f59e0b;
-  --accent-amber-bg: rgba(245, 158, 11, 0.12);
-  --accent-blue: #3b82f6;
-  --accent-blue-bg: rgba(59, 130, 246, 0.12);
-  --accent-rose: #f43f5e;
-  --accent-rose-bg: rgba(244, 63, 94, 0.12);
+  --accent-emerald: #00c8b3;
+  --accent-emerald-bg: rgba(0, 200, 179, 0.12);
+  --accent-emerald-border: rgba(0, 200, 179, 0.3);
+  --accent-amber: #fde047;
+  --accent-amber-bg: rgba(253, 224, 71, 0.12);
+  --accent-blue: #60a5fa;
+  --accent-blue-bg: rgba(96, 165, 250, 0.12);
+  --accent-rose: #b91c1c;
+  --accent-rose-bg: rgba(185, 28, 28, 0.14);
+
+  --brand-teal: #00c8b3;
+  --brand-teal-light: #26d7c5;
+  --brand-green: #22c55e;
+  --brand-crimson: #b91c1c;
+  --brand-crimson-dark: #7f1d1d;
+  --brand-yellow: #fde047;
+
+  --clay-shadow:
+    -7px -7px 18px rgba(255, 255, 255, 0.025),
+    8px 9px 22px rgba(0, 0, 0, 0.34),
+    inset 1px 1px 0 rgba(255, 255, 255, 0.035);
+  --clay-shadow-soft:
+    -4px -4px 12px rgba(255, 255, 255, 0.02),
+    5px 6px 14px rgba(0, 0, 0, 0.28),
+    inset 1px 1px 0 rgba(255, 255, 255, 0.03);
+  --clay-shadow-inset:
+    inset 3px 3px 8px rgba(0, 0, 0, 0.28),
+    inset -3px -3px 8px rgba(255, 255, 255, 0.018);
 }
 
-/* Accessibility: High Contrast Mode */
+/* Accessibility: preserve high-contrast behavior over the new palette. */
 html.high-contrast {
   --border-app: #000000;
+  --border-strong: #000000;
   --text-main: #000000;
   --text-muted: #1e293b;
 }
 
 html.dark.high-contrast {
   --border-app: #ffffff;
+  --border-strong: #ffffff;
   --text-main: #ffffff;
   --text-muted: #f1f5f9;
 }
 
-/* Base Body Styles */
+html {
+  color-scheme: light;
+}
+
+html.dark,
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
 body {
-  font-family: 'Cairo', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: 'Cairo', 'Tajawal', 'IBM Plex Sans Arabic', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: var(--app-base-font-size);
   line-height: 1.6;
-  background-color: var(--bg-app);
+  background: var(--bg-app);
   color: var(--text-main);
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-variant-numeric: lining-nums tabular-nums;
   transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Accessibility: Visible Focus Rings for Keyboard Navigation */
-*:focus-visible {
-  outline: 3px solid #10b981 !important;
-  outline-offset: 2px !important;
-  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.25) !important;
+#root {
+  min-height: 100vh;
+  background: var(--bg-app);
 }
 
-/* Accessible Interactive Targets (52px - 60px min-height for primary buttons) */
+/* English labels and numeric UI keep a clean, predictable sans-serif face. */
+button,
+input,
+select,
+textarea,
+.font-mono {
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+/* Soft tactile application shell. */
+header.sticky {
+  background: var(--bg-surface) !important;
+  border-color: var(--border-app) !important;
+  box-shadow: var(--clay-shadow-soft) !important;
+  backdrop-filter: blur(14px);
+}
+
+/* Main white cards and panels become raised clay surfaces. */
+div[class~="bg-white"][class*="rounded-"],
+section[class~="bg-white"][class*="rounded-"],
+article[class~="bg-white"][class*="rounded-"] {
+  background-color: var(--bg-card) !important;
+  border-color: var(--border-app) !important;
+  border-radius: var(--clay-radius-panel) !important;
+  box-shadow: var(--clay-shadow) !important;
+}
+
+html.dark div[class~="dark:bg-slate-900"][class*="rounded-"],
+html.dark section[class~="dark:bg-slate-900"][class*="rounded-"],
+html.dark article[class~="dark:bg-slate-900"][class*="rounded-"] {
+  background-color: var(--bg-card) !important;
+  border-color: var(--border-app) !important;
+  box-shadow: var(--clay-shadow) !important;
+}
+
+/* Secondary panels use the softer inset surface treatment. */
+div[class~="bg-slate-50"][class*="rounded-"],
+div[class~="bg-slate-100"][class*="rounded-"] {
+  background-color: var(--bg-subtle) !important;
+  border-color: var(--border-app) !important;
+  box-shadow: var(--clay-shadow-soft) !important;
+}
+
+html.dark div[class~="dark:bg-slate-950"][class*="rounded-"],
+html.dark div[class~="dark:bg-slate-800"][class*="rounded-"] {
+  background-color: var(--bg-subtle) !important;
+  border-color: var(--border-app) !important;
+}
+
+/* Inputs are deliberately inset rather than raised. */
+input:not([type="checkbox"]):not([type="radio"]),
+select,
+textarea {
+  border-color: var(--border-strong) !important;
+  border-radius: var(--clay-radius-control) !important;
+  background-color: var(--bg-subtle);
+  color: var(--text-main);
+  box-shadow: var(--clay-shadow-inset);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-faint);
+  opacity: 1;
+}
+
+/* ABKRINO teal replaces the legacy emerald primary action. */
+button[class~="bg-emerald-600"],
+a[class~="bg-emerald-600"],
+[class~="bg-emerald-600"] button {
+  background-color: var(--brand-teal) !important;
+  border-color: var(--brand-teal) !important;
+  box-shadow: var(--clay-shadow-soft) !important;
+}
+
+button[class~="hover:bg-emerald-500"]:hover,
+button[class~="hover:bg-emerald-600"]:hover {
+  background-color: var(--brand-teal-light) !important;
+}
+
+html.dark button[class~="bg-emerald-600"],
+html.dark a[class~="bg-emerald-600"] {
+  box-shadow:
+    0 0 0 1px rgba(0, 200, 179, 0.12),
+    0 5px 16px rgba(0, 200, 179, 0.13) !important;
+}
+
+/* Payment action hierarchy: pay in crimson; save/print in green. */
+button[class~="bg-rose-600"] {
+  background-color: var(--brand-crimson) !important;
+  border-color: var(--brand-crimson) !important;
+  box-shadow: var(--clay-shadow-soft) !important;
+}
+
+/* Pill navigation and category chips retain their existing behavior. */
+button[class*="rounded-full"],
+[class*="rounded-full"] button {
+  border-radius: var(--clay-radius-pill);
+}
+
+/* Product tiles and tactile controls. */
+button[class*="aspect-square"] {
+  border-radius: var(--clay-radius-panel);
+  box-shadow: var(--clay-shadow-soft);
+}
+
+button,
+[role="button"] {
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+button:active:not(:disabled) {
+  transform: translateY(1px) scale(0.985);
+}
+
+*:focus-visible {
+  outline: 3px solid var(--brand-teal-light) !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 0 4px rgba(0, 137, 123, 0.18) !important;
+}
+
+/* Accessible interactive targets. */
 .btn-primary-accessible {
   min-height: 52px;
-  padding-left: 1.5rem;
-  padding-right: 1.5rem;
+  padding-inline: 1.5rem;
   font-size: 1.05rem;
   font-weight: 700;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  border-radius: 0.75rem;
+  border-radius: var(--clay-radius-control);
   transition: all 0.15s ease;
 }
 
 .btn-secondary-accessible {
   min-height: 48px;
-  padding-left: 1.25rem;
-  padding-right: 1.25rem;
+  padding-inline: 1.25rem;
   font-size: 1rem;
   font-weight: 600;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  border-radius: 0.625rem;
+  border-radius: var(--clay-radius-control);
   transition: all 0.15s ease;
 }
 
-/* Print Styles: Strict Ink-Saving Clean White & Black */
+/* Respect the operating system and user accessibility preference. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Print remains clean, ink-saving, and independent from screen clay effects. */
 @media print {
-  body {
-    background: white !important;
-    color: black !important;
+  body,
+  #root {
+    background: #ffffff !important;
+    color: #000000 !important;
     font-size: 12pt !important;
+  }
+
+  div[class~="bg-white"][class*="rounded-"] {
+    box-shadow: none !important;
+    border: 0 !important;
   }
 }
