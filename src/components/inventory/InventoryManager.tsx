@@ -165,7 +165,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
       return;
     }
     onRefreshData();
-    window.alert('تمت إضافة الشركة كمورد. يمكنك استكمال بيانات المندوب والهاتف وشروط الدفع من شاشة الموردين.');
+    window.alert('تمت إضافة الشركة كمورد. يمكنك استكمال بيانات المندوب والهاتف والعنوان وشروط الدفع من شاشة الموردين.');
   };
 
   // Generate Unique Auto Item Code
