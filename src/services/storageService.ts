@@ -14,6 +14,7 @@ import {
 import { licenseService, WriteOperationCategory, WriteGateContext } from './licenseService';
 export type { WriteOperationCategory, WriteGateContext };
 import { idb, type KVRecord } from './idbStore';
+import { seedOpeningLots, allocateFifo, releaseInvoiceAllocations, receiveLot, returnToOriginalLots, validateFifoLedger, type InventoryLot, type FifoAllocation } from './inventoryFifoService';
 
 const DEFAULT_PRODUCT_CATEGORIES = [
   'منتجات الألبان والأجبان',
@@ -46,6 +47,9 @@ export const STORAGE_KEYS = {
   MONTHLY_POOL_INCLUDES_CAP_INJ: 'sm_monthly_pool_cap_inj_v1',
   FUNDING_SOURCES: 'sm_funding_sources_v1',
   SALES_RETURNS: 'sm_sales_returns_v1',
+  INVENTORY_LOTS: 'sm_inventory_lots_v1',
+  FIFO_ALLOCATIONS: 'sm_fifo_allocations_v1',
+  FIFO_INITIALIZED: 'sm_fifo_initialized_v1',
   DOCUMENT_SEQUENCES: 'sm_doc_sequences_v1',
   CREDENTIALS_RESET_REQUIRED: 'sm_credentials_reset_required_v1',
   SUMMARY_DIRTY: 'sm_summary_dirty_v1',
@@ -84,6 +88,9 @@ export const BUSINESS_KEYS = [
   STORAGE_KEYS.MONTHLY_POOL_INCLUDES_CAP_INJ,
   STORAGE_KEYS.FUNDING_SOURCES,
   STORAGE_KEYS.SALES_RETURNS,
+  STORAGE_KEYS.INVENTORY_LOTS,
+  STORAGE_KEYS.FIFO_ALLOCATIONS,
+  STORAGE_KEYS.FIFO_INITIALIZED,
   STORAGE_KEYS.DOCUMENT_SEQUENCES,
 ];
 
@@ -1265,6 +1272,36 @@ class StorageService {
     this.setItem(STORAGE_KEYS.CATEGORIES, categories.filter(item => item.toLocaleLowerCase() !== cleanName.toLocaleLowerCase()));
     this.addAuditLog('CATEGORY', 'حذف تصنيف', 'التصنيفات', cleanName, 'تم حذف تصنيف غير مرتبط بأصناف.');
     return { success: true };
+  }
+
+  // --- FIFO INVENTORY LEDGER ---
+  public getInventoryLots(): InventoryLot[] {
+    return this.getItem<InventoryLot[]>(STORAGE_KEYS.INVENTORY_LOTS, []);
+  }
+
+  public getFifoAllocations(): FifoAllocation[] {
+    return this.getItem<FifoAllocation[]>(STORAGE_KEYS.FIFO_ALLOCATIONS, []);
+  }
+
+  /** Idempotently seeds current stock as opening lots on first FIFO activation. */
+  public ensureFifoInitialized(): { success: boolean; error?: string } {
+    if (this.getItem<boolean>(STORAGE_KEYS.FIFO_INITIALIZED, false)) return { success: true };
+    try {
+      const products = this.getProducts();
+      const lots = seedOpeningLots(products, this.getInventoryLots());
+      const errors = validateFifoLedger(products, lots);
+      if (errors.length) return { success: false, error: errors[0] };
+      this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
+      this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, this.getFifoAllocations());
+      this.setItem(STORAGE_KEYS.FIFO_INITIALIZED, true);
+      return { success: true };
+    } catch (error: any) {
+      return { success: false, error: error?.message || 'تعذر تهيئة دفعات FIFO.' };
+    }
+  }
+
+  public validateInventoryFifo(): { valid: boolean; errors: string[] } {
+    return { valid: this.getItem<boolean>(STORAGE_KEYS.FIFO_INITIALIZED, false), errors: validateFifoLedger(this.getProducts(), this.getInventoryLots()) };
   }
 
   // --- PRODUCTS (SINGLE WAREHOUSE) ---
