@@ -51,7 +51,7 @@ describe('Backup checksum JSON compatibility', () => {
       currentShift: null,
     };
     expect(canonicalStringify(oldBackupData)).toBe(
-      '{"auditLogs":[],"cashMovements":[],"customers":[],"currentShift":null,"expenses":[],"invoices":[],"parkedCarts":[],"products":[{"id":"p1","name":"صنف","stockPieces":5}],"purchases":[],"stockAdjustments":[],"suppliers":[],"users":[]}'
+      '{"auditLogs":[],"cashMovements":[],"currentShift":null,"customers":[],"expenses":[],"invoices":[],"parkedCarts":[],"products":[{"id":"p1","name":"صنف","stockPieces":5}],"purchases":[],"stockAdjustments":[],"suppliers":[],"users":[]}'
     );
   });
 });
