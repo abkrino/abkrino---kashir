@@ -3,7 +3,7 @@ import { storage, STORAGE_KEYS } from './storageService';
 import { validateFifoLedger, validateFifoAllocations } from './inventoryFifoService';
 import { DEFAULT_STORE_PROFILE, LEGACY_STORE_PROFILE, DEFAULT_FUNDING_SOURCES } from '../types';
 
-export const CURRENT_SCHEMA_VERSION = 3;
+export const CURRENT_SCHEMA_VERSION = 4;
 export const APP_VERSION = '1.0.0';
 
 export const REQUIRED_COLLECTIONS: { key: string; label: string; isArray: boolean }[] = [
@@ -227,6 +227,10 @@ class SnapshotService {
       inventoryLots: storage.getInventoryLots(),
       fifoAllocations: storage.getFifoAllocations(),
       fifoInitialized: storage.isFifoInitialized(),
+      hrEmployees: storage.getItem(STORAGE_KEYS.HR_EMPLOYEES, []),
+      hrAttendance: storage.getItem(STORAGE_KEYS.HR_ATTENDANCE, []),
+      hrAdjustments: storage.getItem(STORAGE_KEYS.HR_ADJUSTMENTS, []),
+      hrPayroll: storage.getItem(STORAGE_KEYS.HR_PAYROLL, []),
     };
   }
 
@@ -426,6 +430,10 @@ class SnapshotService {
           purchaseReturns: data.purchaseReturns?.length || 0,
           inventoryLots: data.inventoryLots?.length || 0,
           fifoAllocations: data.fifoAllocations?.length || 0,
+          hrEmployees: data.hrEmployees?.length || 0,
+          hrAttendance: data.hrAttendance?.length || 0,
+          hrAdjustments: data.hrAdjustments?.length || 0,
+          hrPayroll: data.hrPayroll?.length || 0,
         },
         schemaVersion: CURRENT_SCHEMA_VERSION,
         appVersion: APP_VERSION,
@@ -598,6 +606,10 @@ class SnapshotService {
         purchaseReturns: data.purchaseReturns?.length || 0,
         inventoryLots: data.inventoryLots?.length || 0,
         fifoAllocations: data.fifoAllocations?.length || 0,
+        hrEmployees: data.hrEmployees?.length || 0,
+        hrAttendance: data.hrAttendance?.length || 0,
+        hrAdjustments: data.hrAdjustments?.length || 0,
+        hrPayroll: data.hrPayroll?.length || 0,
       },
       checksum,
       data,
@@ -638,6 +650,10 @@ class SnapshotService {
     if (!Array.isArray(data.inventoryLots)) data.inventoryLots = [];
     if (!Array.isArray(data.fifoAllocations)) data.fifoAllocations = [];
     if (typeof data.fifoInitialized !== 'boolean') data.fifoInitialized = false;
+    // HR collections were introduced in schema v4; older backups remain compatible.
+    for (const key of ['hrEmployees', 'hrAttendance', 'hrAdjustments', 'hrPayroll']) {
+      if (!Array.isArray(data[key])) data[key] = [];
+    }
     if (data.fifoInitialized) {
       const fifoErrors = [
         ...validateFifoLedger(Array.isArray(data.products) ? data.products : [], data.inventoryLots),
@@ -827,8 +843,12 @@ class SnapshotService {
     try {
       // Step 0: Support both enveloped { data: { ... } } and raw payload { products: ... }
       const payload = (data && typeof data === 'object' && data.data && typeof data.data === 'object' && !Array.isArray(data.data))
-        ? data.data
-        : data;
+        ? { ...data.data }
+        : { ...data };
+      // Backward compatibility: backups created before HR support restore with empty HR collections.
+      for (const key of ['hrEmployees', 'hrAttendance', 'hrAdjustments', 'hrPayroll']) {
+        if (!Array.isArray(payload[key])) payload[key] = [];
+      }
 
       // Validate that payload contains all 12 collections before touching anything!
       for (const col of REQUIRED_COLLECTIONS) {
@@ -954,6 +974,10 @@ class SnapshotService {
         { key: STORAGE_KEYS.INVENTORY_LOTS, value: Array.isArray(payload.inventoryLots) ? payload.inventoryLots : [], updatedAt: Date.now() },
         { key: STORAGE_KEYS.FIFO_ALLOCATIONS, value: Array.isArray(payload.fifoAllocations) ? payload.fifoAllocations : [], updatedAt: Date.now() },
         { key: STORAGE_KEYS.FIFO_INITIALIZED, value: Boolean(payload.fifoInitialized), updatedAt: Date.now() },
+        { key: STORAGE_KEYS.HR_EMPLOYEES, value: payload.hrEmployees, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.HR_ATTENDANCE, value: payload.hrAttendance, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.HR_ADJUSTMENTS, value: payload.hrAdjustments, updatedAt: Date.now() },
+        { key: STORAGE_KEYS.HR_PAYROLL, value: payload.hrPayroll, updatedAt: Date.now() },
       ];
 
       if (typeof indexedDB !== 'undefined' && idb.restore_staging) {
