@@ -3235,14 +3235,13 @@ class StorageService {
     const suppliers = this.getSuppliers().map(supplier => ({ ...supplier }));
     const supplier = suppliers.find(entry => entry.id === purchase.supplierId);
     if (!supplier) return { success: false, error: 'المورد الأصلي غير موجود.' };
-    if (params.settlement === 'SUPPLIER_BALANCE') {
-      const balance = Number(supplier.currentBalance);
-      if (!Number.isFinite(balance)) {
-        return { success: false, error: 'رصيد المورد غير صالح؛ تعذر تسوية المرتجع.' };
-      }
-      // A negative supplier balance represents a credit/advance owed back to the shop.
-      supplier.currentBalance = Math.round((balance - totalAmount) * 100) / 100;
+    const supplierBalance = Number(supplier.currentBalance);
+    if (!Number.isFinite(supplierBalance)) {
+      return { success: false, error: 'رصيد المورد غير صالح؛ تعذر تسوية المرتجع.' };
     }
+    // A purchase return reduces the supplier payable in either settlement mode.
+    // Cash refund additionally records the money received in the drawer below.
+    supplier.currentBalance = Math.round((supplierBalance - totalAmount) * 100) / 100;
 
     const record: PurchaseReturn = {
       id: returnId,
@@ -3267,7 +3266,7 @@ class StorageService {
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
     this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
     this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, allocations);
-    if (params.settlement === 'SUPPLIER_BALANCE') this.setItem(STORAGE_KEYS.SUPPLIERS, suppliers);
+    this.setItem(STORAGE_KEYS.SUPPLIERS, suppliers);
     const returns = this.getPurchaseReturns();
     returns.unshift(record);
     this.setItem(STORAGE_KEYS.PURCHASE_RETURNS, returns);
