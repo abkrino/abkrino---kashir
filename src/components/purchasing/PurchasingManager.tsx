@@ -693,7 +693,7 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
                         )}
                         <button
                           type="button"
-                          onClick={() => handleOpenEditInvoice(p)
+                          onClick={() => handleOpenEditInvoice(p)}
                           className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
                           title="تعديل فاتورة الشراء"
                         >
