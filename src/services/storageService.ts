@@ -1932,6 +1932,8 @@ class StorageService {
       };
     }
 
+    const fifoInit = this.ensureFifoInitialized();
+    if (!fifoInit.success) return { success: false, error: fifoInit.error };
     const products = this.getProducts();
     const customers = this.getCustomers();
 
@@ -1963,12 +1965,33 @@ class StorageService {
     }
     invoice.hasNegativeStockItem = false;
 
-    // Apply stock deductions only after every invoice line passes validation.
+    // Allocate every sale line from the oldest available inventory lots before mutating stock.
+    let nextLots = this.getInventoryLots();
+    let nextAllocations = this.getFifoAllocations();
+    let fifoInvoiceCost = 0;
+    for (const item of invoice.items || []) {
+      const allocated = allocateFifo(nextLots, nextAllocations, invoice.id, item.id, item.productId, Number(item.piecesCount), `${invoice.date}T${invoice.time || '00:00:00'}`);
+      if (allocated.error) return { success: false, error: allocated.error };
+      nextLots = allocated.lots;
+      nextAllocations = allocated.allocations;
+      fifoInvoiceCost += allocated.costTotal;
+      const lineCost = allocated.costTotal;
+      item.costPrice = Number(item.quantity) > 0 ? Math.round((lineCost / Number(item.quantity)) * 100) / 100 : 0;
+      item.lineProfit = Math.round((Number(item.totalPrice) - lineCost) * 100) / 100;
+    }
+    invoice.totalCost = Math.round(fifoInvoiceCost * 100) / 100;
+    invoice.totalProfit = Math.round((Number(invoice.total) - invoice.totalCost) * 100) / 100;
+    const ledgerErrors = validateFifoLedger(products.map(p => ({ ...p, stockPieces: p.stockPieces - (requestedByProduct.get(p.id) || 0) })), nextLots);
+    if (ledgerErrors.length) return { success: false, error: ledgerErrors[0] };
+
+    // Apply stock deductions only after every invoice line and FIFO lot passes validation.
     for (const [productId, requested] of requestedByProduct) {
       const prod = products.find(p => p.id === productId)!;
       prod.stockPieces -= requested;
     }
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
+    this.setItem(STORAGE_KEYS.INVENTORY_LOTS, nextLots);
+    this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, nextAllocations);
 
     // Update Customer Balance
     const cust = customers.find(c => c.id === invoice.customerId);
@@ -2992,6 +3015,8 @@ class StorageService {
     const gate = this.assertWriteAllowed('PURCHASES', `تسجيل فاتورة شراء ${purchase.invoiceNumber}`);
     if (!gate.allowed) return { success: false, error: gate.error };
 
+    const fifoInit = this.ensureFifoInitialized();
+    if (!fifoInit.success) return { success: false, error: fifoInit.error };
     const products = this.getProducts();
     const suppliers = this.getSuppliers();
     const supp = suppliers.find(s => s.id === purchase.supplierId);
@@ -3093,6 +3118,45 @@ class StorageService {
       }
 
       this.setItem(STORAGE_KEYS.PRODUCTS, products);
+
+      // Create one immutable cost lot per received purchase line.
+      let lots = this.getInventoryLots();
+      for (let index = 0; index < purchase.items.length; index++) {
+        const item = purchase.items[index];
+        const product = products.find(p => p.id === item.productId)!;
+        const factor = item.unit === 'CARTON' ? Number(product.piecesPerWholesaleUnit)
+          : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * 20 : 1;
+        const receivedQty = Number(item.quantity) * factor;
+        try {
+          lots = receiveLot(lots, {
+            id: `lot-purchase-${purchase.id}-${index + 1}`,
+            productId: product.id, source: 'PURCHASE', referenceId: purchase.id,
+            referenceNumber: purchase.invoiceNumber, receivedAt: `${purchase.date}T${purchase.time || '00:00:00'}`,
+            originalQty: receivedQty, remainingQty: receivedQty,
+            unitCost: Number(item.unitCost) / factor,
+            batchNumber: item.batchNumber, expiryDate: item.expiryDate,
+          });
+        } catch (error: any) {
+          return { success: false, error: error?.message || 'تعذر إنشاء دفعة مشتريات.' };
+        }
+      }
+      if (purchase.bonusType === 'GOODS' && Number(purchase.bonusGoodsQuantity) > 0 && purchase.items.length > 0) {
+        const bonusProduct = products.find(p => p.id === purchase.items[0].productId)!;
+        const bonusQty = Number(purchase.bonusGoodsQuantity) * Number(bonusProduct.piecesPerWholesaleUnit);
+        try {
+          lots = receiveLot(lots, {
+            id: `lot-bonus-${purchase.id}`, productId: bonusProduct.id, source: 'BONUS',
+            referenceId: purchase.id, referenceNumber: purchase.invoiceNumber,
+            receivedAt: `${purchase.date}T${purchase.time || '00:00:00'}`,
+            originalQty: bonusQty, remainingQty: bonusQty, unitCost: 0,
+          });
+        } catch (error: any) {
+          return { success: false, error: error?.message || 'تعذر إنشاء دفعة البونص.' };
+        }
+      }
+      const fifoErrors = validateFifoLedger(products, lots);
+      if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
+      this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
     }
 
     // تحديث رصيد المورد
