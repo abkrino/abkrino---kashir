@@ -2113,7 +2113,7 @@ class StorageService {
     if (releasedFifo.error) return { success: false, error: releasedFifo.error };
 
     for (const item of invoice.items) {
-      const quantity = Number(item.piecesCount);
+      const quantity = Number(item.unit === 'KG' ? item.quantity : item.piecesCount);
       if (!item.productId || !Number.isFinite(quantity) || quantity <= 0) {
         return { success: false, error: `لا يمكن حذف الفاتورة: بيانات كمية أو صنف غير صالحة (${item.productName || item.productId || 'غير معروف'}).` };
       }
@@ -2251,7 +2251,7 @@ class StorageService {
 
     for (const item of oldInvoice.items || []) {
       const current = projectedStock.get(item.productId);
-      const quantity = Number(item.piecesCount);
+      const quantity = Number(item.unit === 'KG' ? item.quantity : item.piecesCount);
       if (current === undefined || !Number.isFinite(quantity) || quantity < 0) {
         return {
           success: false,
@@ -2267,7 +2267,7 @@ class StorageService {
 
     const requestedByProduct = new Map<string, number>();
     for (const item of updatedInvoice.items) {
-      const quantity = Number(item.piecesCount);
+      const quantity = Number(item.unit === 'KG' ? item.quantity : item.piecesCount);
       if (!Number.isFinite(quantity) || quantity <= 0) {
         return { success: false, error: `كمية غير صالحة للصنف ${item.productName || item.productId}.` };
       }
