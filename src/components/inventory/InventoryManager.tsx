@@ -34,7 +34,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
 }) => {
   const storeProfile = storage.getStoreProfile();
   const [products, setProducts] = useState<Product[]>(storage.getProducts());
-  const [activeSubTab, setActiveSubTab] = useState<'PRODUCTS' | 'COMPANIES' | 'ADJUSTMENTS'>('PRODUCTS');
+  const [activeSubTab, setActiveSubTab] = useState<'PRODUCTS' | 'COMPANIES' | 'CATEGORIES' | 'ADJUSTMENTS'>('PRODUCTS');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedBrand, setSelectedBrand] = useState<string>('ALL');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
@@ -92,6 +92,10 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
   const [expiryDate, setExpiryDate] = useState<string>('2027-06-30');
   const [batchNumber, setBatchNumber] = useState<string>('');
   const [actionError, setActionError] = useState<string | null>(null);
+  const [categoryNames, setCategoryNames] = useState<string[]>(storage.getCategories());
+  const [categoryDraft, setCategoryDraft] = useState('');
+  const [editingCategoryName, setEditingCategoryName] = useState<string | null>(null);
+  const [categoryError, setCategoryError] = useState<string | null>(null);
 
   const isAdmin = currentUser.role === 'ADMIN' || currentUser.permissions?.canManageProducts;
 
@@ -112,7 +116,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
   // Distinct Brands & Categories from Database
   const distinctBrands = Array.from(new Set(products.map(p => p.brand).filter(Boolean)));
   const brandsFilterList = ['ALL', ...distinctBrands];
-  const categoriesFilterList = ['ALL', ...Array.from(new Set([...STANDARD_CATEGORIES, ...products.map(p => p.category).filter(Boolean)]))];
+  const categoriesFilterList = ['ALL', ...Array.from(new Set([...STANDARD_CATEGORIES, ...categoryNames, ...products.map(p => p.category).filter(Boolean)]))];
 
   // Helper to auto-calculate base prices/costs
   const handleCostCartonChange = (cartonCost: number, pieces: number) => {
@@ -420,6 +424,37 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
 
   const stockAdjustmentsList = storage.getStockAdjustments();
 
+  const refreshCategories = () => {
+    setCategoryNames(storage.getCategories());
+    setProducts(storage.getProducts());
+    onRefreshData();
+  };
+
+  const handleSaveCategory = () => {
+    setCategoryError(null);
+    const result = editingCategoryName
+      ? storage.renameCategory(editingCategoryName, categoryDraft)
+      : storage.addCategory(categoryDraft);
+    if (!result.success) {
+      setCategoryError(result.error || 'تعذر حفظ التصنيف.');
+      return;
+    }
+    setCategoryDraft('');
+    setEditingCategoryName(null);
+    refreshCategories();
+  };
+
+  const handleDeleteCategory = (name: string) => {
+    if (!window.confirm(`هل تريد حذف التصنيف "${name}"؟`)) return;
+    const result = storage.deleteCategory(name);
+    if (!result.success) {
+      setCategoryError(result.error || 'تعذر حذف التصنيف.');
+      return;
+    }
+    setCategoryError(null);
+    refreshCategories();
+  };
+
   return (
     <div className="space-y-5" dir="rtl">
       {actionError && (
@@ -461,6 +496,15 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                 }`}
               >
                 دليل الشركات والمصانع 🏢
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveSubTab('CATEGORIES')}
+                className={`px-3 py-1.5 rounded-lg transition-all cursor-pointer ${
+                  activeSubTab === 'CATEGORIES' ? 'bg-emerald-600 text-white shadow-xs' : 'text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                إدارة التصنيفات
               </button>
               <button
                 type="button"
@@ -788,6 +832,60 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* PRODUCT CATEGORY MANAGEMENT */}
+      {activeSubTab === 'CATEGORIES' && (
+        <div className="space-y-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl p-4 shadow-sm space-y-3">
+            <h3 className="font-black text-slate-900 dark:text-white">إدارة تصنيفات الأصناف</h3>
+            <p className="text-xs text-slate-500 dark:text-slate-400">تعديل الاسم يحدّث الأصناف المرتبطة به تلقائيًا. لا يمكن حذف تصنيف مستخدم قبل نقل أصنافه إلى تصنيف آخر.</p>
+            {categoryError && (
+              <div role="alert" className="bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-rose-700 dark:text-rose-300 rounded-xl p-3 text-xs font-bold">{categoryError}</div>
+            )}
+            {isAdmin && (
+              <div className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="text"
+                  value={categoryDraft}
+                  onChange={e => setCategoryDraft(e.target.value)}
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleSaveCategory(); } }}
+                  placeholder="اسم التصنيف"
+                  className="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-900 dark:text-white"
+                />
+                <button type="button" onClick={handleSaveCategory} disabled={!categoryDraft.trim()} className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-xl px-4 py-2 text-xs font-bold">
+                  {editingCategoryName ? 'حفظ التعديل' : 'إضافة تصنيف'}
+                </button>
+                {editingCategoryName && (
+                  <button type="button" onClick={() => { setEditingCategoryName(null); setCategoryDraft(''); setCategoryError(null); }} className="border border-slate-300 dark:border-slate-700 rounded-xl px-4 py-2 text-xs font-bold">إلغاء</button>
+                )}
+              </div>
+            )}
+          </div>
+          <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl overflow-hidden">
+            <div className="p-3 border-b border-slate-200 dark:border-slate-800 text-xs font-bold text-slate-600 dark:text-slate-300">التصنيفات الحالية ({categoriesFilterList.length - 1})</div>
+            <div className="divide-y divide-slate-200 dark:divide-slate-800">
+              {categoriesFilterList.filter(name => name !== 'ALL').map(name => {
+                const linkedCount = products.filter(product => product.category.trim().toLocaleLowerCase() === name.toLocaleLowerCase()).length;
+                const isManaged = categoryNames.some(item => item.toLocaleLowerCase() === name.toLocaleLowerCase());
+                return (
+                  <div key={name} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-bold text-slate-900 dark:text-white">{name}</div>
+                      <div className="text-[11px] text-slate-500 dark:text-slate-400">{linkedCount} صنف مرتبط{!isManaged ? ' • تصنيف أساسي أو مستنتج من الأصناف' : ''}</div>
+                    </div>
+                    {isAdmin && isManaged && (
+                      <div className="flex items-center gap-2">
+                        <button type="button" onClick={() => { setEditingCategoryName(name); setCategoryDraft(name); setCategoryError(null); }} className="border border-slate-300 dark:border-slate-700 rounded-lg px-3 py-1.5 text-xs font-bold">تعديل الاسم</button>
+                        <button type="button" onClick={() => handleDeleteCategory(name)} disabled={linkedCount > 0} title={linkedCount > 0 ? 'انقل الأصناف المرتبطة أولًا' : 'حذف التصنيف'} className="border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300 disabled:opacity-40 rounded-lg px-3 py-1.5 text-xs font-bold">حذف</button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </div>
         </div>
       )}
