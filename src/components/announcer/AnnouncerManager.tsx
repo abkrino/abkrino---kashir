@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Megaphone, Plus, Play, Trash2, Volume2, RefreshCw, AlertCircle } from 'lucide-react';
+import { Megaphone, Plus, Play, Trash2, Volume2, RefreshCw, AlertCircle, XCircle } from 'lucide-react';
 
 export const AnnouncerManager: React.FC = () => {
   const [title, setTitle] = useState('');
@@ -17,6 +17,14 @@ export const AnnouncerManager: React.FC = () => {
     catch (e: any) { setError(e?.message || 'تعذر تحميل قائمة التشغيل.'); }
   };
   useEffect(() => { void loadItems(); }, []);
+
+  const cancelGeneration = async () => {
+    if (!desktopApi?.cancel) return;
+    try {
+      const cancelled = await desktopApi.cancel();
+      if (cancelled) setError('تم طلب إيقاف توليد الإعلان.');
+    } catch (e: any) { setError(e?.message || 'تعذر إيقاف التوليد.'); }
+  };
 
   const createAnnouncement = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -61,7 +69,10 @@ export const AnnouncerManager: React.FC = () => {
       <form onSubmit={createAnnouncement} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-4">
         <div><label className="block text-sm font-bold mb-1 text-slate-700 dark:text-slate-200">اسم الإعلان (اختياري)</label><input value={title} onChange={e => setTitle(e.target.value)} maxLength={80} placeholder="مثال: عرض آخر الأسبوع" className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 p-3 text-sm" /></div>
         <div><div className="flex justify-between items-center mb-1"><label className="text-sm font-bold text-slate-700 dark:text-slate-200">نص العرض</label><span className="text-xs text-slate-500">{text.length}/700</span></div><textarea value={text} onChange={e => setText(e.target.value.slice(0,700))} rows={5} placeholder="أهلاً وسهلاً بحضراتكم... عرض خاص على منتجاتنا اليوم..." className="w-full rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 p-3 text-sm leading-7 resize-y" /></div>
-        <button type="submit" disabled={busy || !text.trim() || !desktopApi} className="rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white px-5 py-3 font-black flex items-center gap-2">{busy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}{busy ? 'جاري توليد الصوت...' : 'توليد الصوت وإضافته للقائمة'}</button>
+        <div className="flex flex-wrap gap-2">
+          <button type="submit" disabled={busy || !text.trim() || !desktopApi} className="rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white px-5 py-3 font-black flex items-center gap-2">{busy ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}{busy ? 'جاري توليد الصوت...' : 'توليد الصوت وإضافته للقائمة'}</button>
+          {busy && <button type="button" onClick={() => void cancelGeneration()} className="rounded-xl bg-rose-600 hover:bg-rose-500 text-white px-5 py-3 font-bold flex items-center gap-2"><XCircle className="w-4 h-4" /> إلغاء التوليد</button>}
+        </div>
         <p className="text-xs text-slate-500">يستخدم صوت Windows العربي المثبّت، ويحفظ ملفات WAV وقائمة التشغيل محلياً دون إرسال النص إلى الإنترنت.</p>
       </form>
       <section className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
