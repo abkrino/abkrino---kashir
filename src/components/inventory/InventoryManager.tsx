@@ -212,6 +212,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
     setWholesaleUnit('كرتونة');
     setBaseUnit('عبوة');
     setPiecesPerWholesaleUnit(12);
+    setPiecesPerPallet(20);
     setCostPricePerCarton(456);
     setCostPricePerBase(38);
     setWholesalePricePerCarton(504);
