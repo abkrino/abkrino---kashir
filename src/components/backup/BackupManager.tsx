@@ -213,6 +213,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
       snapshotId: snapshot.id,
     });
     setIsDoubleConfirmed(false);
+    setIsChecksumRecoveryConfirmed(false);
   };
 
   // File Select & Validation (Requirement ثانياً: 3)
