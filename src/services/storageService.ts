@@ -1206,6 +1206,11 @@ class StorageService {
     const gate = this.assertWriteAllowed('ADMIN_DATA', `حفظ صنف: ${product.name}`);
     if (!gate.allowed) return { success: false, error: gate.error };
 
+    const stockPieces = Number(product.stockPieces);
+    if (!Number.isFinite(stockPieces) || stockPieces < 0) {
+      return { success: false, error: 'رصيد الصنف يجب أن يكون رقمًا صحيحًا أو كسريًا صالحًا ولا يمكن أن يكون بالسالب.' };
+    }
+
     const products = this.getProducts();
     const index = products.findIndex(p => p.id === product.id);
     if (index >= 0) {
