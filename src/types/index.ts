@@ -69,6 +69,7 @@ export interface Product {
   baseUnit: string; // قطعة / عبوة / كيس / كجم / لتر / برطمان / كوب
   wholesaleUnit: string; // كرتونة / علبة / بالتة
   piecesPerWholesaleUnit: number; // عدد القطع بالكرتونة
+  piecesPerPallet?: number; // عدد الكراتين في البالتة؛ 20 للتوافق مع المنتجات القديمة
 
   // Costs (Admin only visible)
   costPricePerBase: number;
