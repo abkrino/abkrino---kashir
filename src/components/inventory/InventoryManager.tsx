@@ -156,7 +156,6 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
       type: 'COMPANY',
       phone: '-',
       contactPerson: '-',
-      paymentTermsDays: 15,
       openingBalance: 0,
       currentBalance: 0,
     };
