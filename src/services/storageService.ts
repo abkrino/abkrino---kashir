@@ -2824,7 +2824,11 @@ class StorageService {
     this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, returnAllocations);
 
     // Use the exact historical lot costs, not the invoice line's blended average.
-    totalCost = Math.round(returnItems.reduce((sum, item) => sum + item.costTotal, 0) * 100) / 100;
+    const originalReturnedCost = Math.round(returnItems.reduce((sum, item) => sum + item.costTotal, 0) * 100) / 100;
+    const nonRestockedCostTotal = params.returnToStock ? 0 : originalReturnedCost;
+    totalCost = params.returnToStock ? originalReturnedCost : 0;
+    // Damaged goods that do not re-enter inventory remain in COGS; only restocked
+    // quantities reverse COGS. The refund itself always reduces profit.
     const totalProfitReversed = Math.round((totalAmount - totalCost) * 100) / 100;
 
     if (params.refundMethod === 'CUSTOMER_CREDIT' && targetCustomer) {
@@ -2874,6 +2878,7 @@ class StorageService {
       discountAdjustedAmount,
       totalAmount,
       totalCost,
+      nonRestockedCostTotal,
       totalProfitReversed,
       performedByUserId: actingUser.id,
       performedBy: actingUser.fullName,

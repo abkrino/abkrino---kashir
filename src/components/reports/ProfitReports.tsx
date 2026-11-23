@@ -102,6 +102,7 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
   const totalDiscounts = filteredInvoices.reduce((sum, inv) => sum + inv.discountAmount, 0);
   const totalReturnsAmount = Math.round(filteredReturns.reduce((sum, ret) => sum + (ret.totalAmount || 0), 0) * 100) / 100;
   const totalReturnsCost = Math.round(filteredReturns.reduce((sum, ret) => sum + (ret.totalCost || 0), 0) * 100) / 100;
+  const totalNonRestockedReturnsCost = Math.round(filteredReturns.reduce((sum, ret) => sum + (ret.nonRestockedCostTotal || 0), 0) * 100) / 100;
   const netSalesRevenue = grossSales - totalDiscounts - totalReturnsAmount;
 
   let grossCOGS = 0;
@@ -418,7 +419,7 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
             <span className="text-xs text-slate-500 dark:text-slate-400 mr-1.5 font-bold">ج.م</span>
           </div>
           <span className="text-[10px] text-slate-400 dark:text-slate-500 block mt-1 font-medium">
-            تكلفة الشراء الصافية بعد خصم تكلفة المرتجعات ({totalReturnsCost.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م)
+            تكلفة البضاعة المباعة بعد خصم تكلفة ما عاد للمخزون فقط ({totalReturnsCost.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م)
           </span>
         </div>
 
@@ -460,7 +461,7 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
           </span>
         </div>
         <div className="text-[11px] text-amber-800 dark:text-amber-300 font-medium">
-          تكلفة المرتجعات وقت البيع: <strong className="font-mono">{totalReturnsCost.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</strong> • الربح المخصوم: <strong className="font-mono">{(totalReturnsAmount - totalReturnsCost).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</strong>
+          تكلفة ما عاد للمخزون: <strong className="font-mono">{totalReturnsCost.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</strong> • تكلفة التالف الذي لم يعد للمخزون: <strong className="font-mono">{totalNonRestockedReturnsCost.toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</strong> • أثر المرتجعات على الربح: <strong className="font-mono">{(totalReturnsAmount - totalReturnsCost).toLocaleString('ar-EG', { minimumFractionDigits: 2 })} ج.م</strong>
         </div>
       </div>
 

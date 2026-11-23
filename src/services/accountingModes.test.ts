@@ -343,7 +343,9 @@ describe('Accounting Modes, Unified evaluateCashOut & Structured Funding Sources
       user: adminUser,
     });
     expect(damagedReturn.success).toBe(true);
-    expect(damagedReturn.salesReturn?.totalCost).toBe(100);
+    expect(damagedReturn.salesReturn?.totalCost).toBe(0);
+    expect(damagedReturn.salesReturn?.nonRestockedCostTotal).toBe(100);
+    expect(damagedReturn.salesReturn?.totalProfitReversed).toBe(300);
     expect(damagedReturn.salesReturn?.items[0].costTotal).toBe(100);
 
     const stockableReturn = storage.processSalesReturn({
@@ -356,6 +358,8 @@ describe('Accounting Modes, Unified evaluateCashOut & Structured Funding Sources
     });
     expect(stockableReturn.success).toBe(true);
     expect(stockableReturn.salesReturn?.totalCost).toBe(40);
+    expect(stockableReturn.salesReturn?.nonRestockedCostTotal).toBe(0);
+    expect(stockableReturn.salesReturn?.totalProfitReversed).toBe(50);
     expect(stockableReturn.salesReturn?.items[0].costTotal).toBe(40);
     expect(storage.getProducts().find(product => product.id === testProduct.id)!.stockPieces).toBe(14);
 

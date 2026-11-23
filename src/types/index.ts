@@ -554,8 +554,9 @@ export interface SalesReturn {
   subtotal: number;
   discountAdjustedAmount: number;
   totalAmount: number; // صافي قيمة المرتجع المردودة
-  totalCost: number; // إجمالي التكلفة المستردة/المعكوسة
-  totalProfitReversed: number; // صافي الربح المعكوس = totalAmount - totalCost
+  totalCost: number; // تكلفة البضاعة التي عادت فعلياً للمخزون فقط
+  nonRestockedCostTotal?: number; // تكلفة البضاعة المرتجعة التي لم تعد للمخزون وتظل ضمن تكلفة المبيعات
+  totalProfitReversed: number; // صافي أثر المرتجع على الربح = totalAmount - تكلفة المخزون المستردة
   performedByUserId: string;
   performedBy: string;
   fundingDetails?: CashMovementFunding;
