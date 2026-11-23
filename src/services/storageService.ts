@@ -2112,9 +2112,6 @@ class StorageService {
     const customers = this.getCustomers();
     const nextProducts = products.map(product => ({ ...product }));
     const quantitiesByProduct = new Map<string, number>();
-    const releasedFifo = releaseInvoiceAllocations(this.getInventoryLots(), currentAllocations, invoice.id);
-    if (releasedFifo.error) return { success: false, error: releasedFifo.error };
-
     for (const item of invoice.items) {
       const quantity = Number(item.unit === 'KG' ? item.quantity : item.piecesCount);
       if (!item.productId || !Number.isFinite(quantity) || quantity <= 0) {
@@ -2132,6 +2129,9 @@ class StorageService {
     if (!currentAllocations.some(allocation => allocation.invoiceId === invoice.id)) {
       return { success: false, error: 'لا يمكن حذف فاتورة بيع قديمة لا تحتوي على تخصيصات FIFO؛ يلزم ترحيلها أو تسويتها أولاً.' };
     }
+
+    const releasedFifo = releaseInvoiceAllocations(this.getInventoryLots(), currentAllocations, invoice.id);
+    if (releasedFifo.error) return { success: false, error: releasedFifo.error };
 
     for (const [productId, quantity] of quantitiesByProduct) {
       const product = nextProducts.find(p => p.id === productId)!;
