@@ -202,6 +202,7 @@ ipcMain.handle('announcer:delete', async (_event, id) => {
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440, height: 920, minWidth: 1024, minHeight: 700,
+    icon: path.resolve(__dirname, '..', app.isPackaged ? 'dist' : 'public', 'assets', 'aistudio', 'icon.png'),
     show: false, autoHideMenuBar: true, backgroundColor: '#0f172a',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
