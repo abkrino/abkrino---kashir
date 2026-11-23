@@ -3049,9 +3049,9 @@ class StorageService {
           const firstItem = purchase.items[0];
           const firstProduct = products.find(p => p.id === firstItem.productId);
           if (!firstProduct) return { success: false, error: 'صنف بونص البضاعة غير موجود.' };
-          const factor = firstItem.unit === 'PIECE' ? 1
-            : firstItem.unit === 'PALLET' ? Number(firstProduct.piecesPerWholesaleUnit) * 20
-            : Number(firstProduct.piecesPerWholesaleUnit);
+          // Match postPurchaseInvoice: bonusGoodsQuantity is stored in wholesale units
+          // and is always converted using the product's piecesPerWholesaleUnit.
+          const factor = Number(firstProduct.piecesPerWholesaleUnit);
           if (!Number.isFinite(factor) || factor <= 0) {
             return { success: false, error: 'معامل تحويل بونص البضاعة غير صالح.' };
           }
