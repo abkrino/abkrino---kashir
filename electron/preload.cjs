@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('electronAPI', Object.freeze({
 contextBridge.exposeInMainWorld('kashirAnnouncer', Object.freeze({
   list: () => ipcRenderer.invoke('announcer:list'),
   create: (payload) => ipcRenderer.invoke('announcer:create', payload),
+  cancel: () => ipcRenderer.invoke('announcer:cancel'),
   readAudio: (id) => ipcRenderer.invoke('announcer:audio', id),
   remove: (id) => ipcRenderer.invoke('announcer:delete', id)
 }));
