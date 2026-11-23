@@ -3557,6 +3557,9 @@ class StorageService {
     if (data.currentShift !== undefined) this.cache.set(STORAGE_KEYS.SHIFT, data.currentShift);
     if (data.parkedCarts !== undefined) this.cache.set(STORAGE_KEYS.PARKED_CARTS, data.parkedCarts);
     this.cache.set(STORAGE_KEYS.SALES_RETURNS, Array.isArray(data.salesReturns) ? data.salesReturns : []);
+    this.cache.set(STORAGE_KEYS.INVENTORY_LOTS, Array.isArray(data.inventoryLots) ? data.inventoryLots : []);
+    this.cache.set(STORAGE_KEYS.FIFO_ALLOCATIONS, Array.isArray(data.fifoAllocations) ? data.fifoAllocations : []);
+    this.cache.set(STORAGE_KEYS.FIFO_INITIALIZED, Boolean(data.fifoInitialized));
 
     if (data.storeProfile !== undefined) {
       this.cache.set(STORAGE_KEYS.STORE_PROFILE, data.storeProfile);
