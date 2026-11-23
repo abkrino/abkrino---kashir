@@ -42,9 +42,12 @@
 - [ ] Implement category create/edit and safe deletion with product-reference checks.
 
 ## Priority 3 — Companies and suppliers
-- [ ] Add an "Add as supplier" action to each company entry, creating a supplier named after that company.
-- [ ] Support later completion of representative, phone, address, and payment terms.
-- [ ] Rename supplier action "سند صرف" to "إضافة دفعة" where applicable.
+- [x] Add an "Add as supplier" action to each company entry, creating a supplier named after that company.
+- [x] Support later completion of representative, phone, address, and payment terms; payment terms remain genuinely optional until specified.
+- [x] Rename supplier action "سند صرف" to "إضافة دفعة" where applicable.
+- [x] Add optional supplier address to the supplier data model, editor, list, and search; existing records remain compatible.
+
+**Verification:** Windows CI run `45177508595` on commit `9f8c95a` completed successfully (type check, unit tests, Windows installer build, artifact upload). Address-field changes were committed after that run and require a new CI run; do not treat them as verified yet.
 
 ## Priority 4 — Human Resources
 - [ ] Add employee profiles and per-employee QR identifiers.
