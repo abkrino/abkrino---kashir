@@ -341,6 +341,126 @@ describe('Sales Returns (مرتجعات المبيعات)', () => {
     expect(storage.getSalesInvoices().some(invoice => invoice.id === second.id)).toBe(true);
   });
 
+  it('reassigns an edited credit invoice debt from the old customer to the new customer', () => {
+    const invoice = postSampleInvoice({
+      customerId: creditCustomer.id,
+      customerName: creditCustomer.name,
+      paymentType: 'CREDIT',
+      paidAmount: 0,
+      remainingAmount: 450,
+    });
+    expect(storage.getCustomers().find(c => c.id === creditCustomer.id)!.currentBalance).toBe(450);
+
+    const edited: SalesInvoice = {
+      ...invoice,
+      customerId: walkinCustomer.id,
+      customerName: walkinCustomer.name,
+      remainingAmount: 450,
+      paidAmount: 0,
+    };
+    const result = storage.updateSalesInvoice(edited);
+
+    expect(result.success).toBe(true);
+    expect(storage.getCustomers().find(c => c.id === creditCustomer.id)!.currentBalance).toBe(0);
+    expect(storage.getCustomers().find(c => c.id === walkinCustomer.id)!.currentBalance).toBe(450);
+    expect(storage.getSalesInvoices().find(i => i.id === invoice.id)!.customerId).toBe(walkinCustomer.id);
+  });
+
+  it('adjusts the same customer debt by the difference instead of reversing and re-adding the full debt', () => {
+    const invoice = postSampleInvoice({
+      customerId: creditCustomer.id,
+      customerName: creditCustomer.name,
+      paymentType: 'CREDIT',
+      paidAmount: 0,
+      remainingAmount: 450,
+    });
+    const edited: SalesInvoice = { ...invoice, remainingAmount: 300, total: 300 };
+
+    const result = storage.updateSalesInvoice(edited);
+
+    expect(result.success).toBe(true);
+    expect(storage.getCustomers().find(c => c.id === creditCustomer.id)!.currentBalance).toBe(300);
+    expect(storage.getSalesInvoices().find(i => i.id === invoice.id)!.newCustomerBalance).toBe(300);
+  });
+
+  it('rejects an edited invoice with a missing customer without changing stock, balances, cash or invoice data', () => {
+    const invoice = postSampleInvoice({
+      customerId: creditCustomer.id,
+      customerName: creditCustomer.name,
+      paymentType: 'CREDIT',
+      paidAmount: 0,
+      remainingAmount: 450,
+    });
+    const productsBefore = JSON.stringify(storage.getProducts());
+    const customersBefore = JSON.stringify(storage.getCustomers());
+    const cashBefore = JSON.stringify(storage.getCashMovements());
+    const invoicesBefore = JSON.stringify(storage.getSalesInvoices());
+
+    const result = storage.updateSalesInvoice({
+      ...invoice,
+      customerId: 'missing-customer',
+      customerName: 'عميل غير موجود',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('العميل المحدد غير موجود');
+    expect(JSON.stringify(storage.getProducts())).toBe(productsBefore);
+    expect(JSON.stringify(storage.getCustomers())).toBe(customersBefore);
+    expect(JSON.stringify(storage.getCashMovements())).toBe(cashBefore);
+    expect(JSON.stringify(storage.getSalesInvoices())).toBe(invoicesBefore);
+  });
+
+  it('reverses the previous collected amount and records the new amount when editing payment values', () => {
+    const invoice = postSampleInvoice({
+      paymentType: 'SPLIT',
+      paidAmount: 100,
+      remainingAmount: 350,
+    });
+    const cashBeforeEdit = storage.getCashMovements().filter(m => m.referenceId === invoice.invoiceNumber);
+    expect(cashBeforeEdit.some(m => m.type === 'IN' && m.amount === 100)).toBe(true);
+
+    const result = storage.updateSalesInvoice({
+      ...invoice,
+      paidAmount: 150,
+      remainingAmount: 300,
+    });
+
+    expect(result.success).toBe(true);
+    const movements = storage.getCashMovements().filter(m => m.referenceId === invoice.invoiceNumber);
+    expect(movements.some(m => m.type === 'OUT' && m.category === 'INVOICE_REVERSAL' && m.amount === 100)).toBe(true);
+    expect(movements.some(m => m.type === 'IN' && m.category === 'SALES_CASH' && m.amount === 150)).toBe(true);
+  });
+
+  it('blocks editing or deleting an invoice after a return has been registered', () => {
+    const invoice = postSampleInvoice();
+    const returned = storage.processSalesReturn({
+      invoiceId: invoice.id,
+      items: [{ invoiceItemId: 'line-1', productId: testProduct.id, unit: 'PIECE', quantity: 1 }],
+      reason: 'DAMAGED',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: adminUser,
+    });
+    expect(returned.success).toBe(true);
+
+    const productsBefore = JSON.stringify(storage.getProducts());
+    const customersBefore = JSON.stringify(storage.getCustomers());
+    const invoicesBefore = JSON.stringify(storage.getSalesInvoices());
+    const returnsBefore = JSON.stringify(storage.getSalesReturns());
+
+    const editResult = storage.updateSalesInvoice({ ...invoice, total: invoice.total + 10 });
+    const deleteResult = storage.deleteSalesInvoice(invoice.id);
+
+    expect(editResult.success).toBe(false);
+    expect(editResult.error).toContain('لها مرتجعات مسجلة');
+    expect(deleteResult.success).toBe(false);
+    expect(deleteResult.error).toContain('لها مرتجعات مسجلة');
+    expect(JSON.stringify(storage.getProducts())).toBe(productsBefore);
+    expect(JSON.stringify(storage.getCustomers())).toBe(customersBefore);
+    expect(JSON.stringify(storage.getSalesInvoices())).toBe(invoicesBefore);
+    expect(JSON.stringify(storage.getSalesReturns())).toBe(returnsBefore);
+  });
+
   it('rejects negative stock through product editing and inventory adjustments', () => {
     const before = storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces;
     const edited = storage.saveProduct({ ...testProduct, stockPieces: -1 });
