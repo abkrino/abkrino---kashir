@@ -222,6 +222,9 @@ class SnapshotService {
       monthlyPoolIncludesCapitalInjection: storage.getMonthlyPoolIncludesCapitalInjection(),
       fundingSources: storage.getFundingSources(),
       salesReturns: storage.getSalesReturns(),
+      inventoryLots: storage.getInventoryLots(),
+      fifoAllocations: storage.getFifoAllocations(),
+      fifoInitialized: true,
     };
   }
 
@@ -418,6 +421,10 @@ class SnapshotService {
           users: data.users?.length || 0,
           parkedCarts: data.parkedCarts?.length || 0,
           salesReturns: data.salesReturns?.length || 0,
+        inventoryLots: data.inventoryLots?.length || 0,
+        fifoAllocations: data.fifoAllocations?.length || 0,
+          inventoryLots: data.inventoryLots?.length || 0,
+          fifoAllocations: data.fifoAllocations?.length || 0,
         },
         schemaVersion: CURRENT_SCHEMA_VERSION,
         appVersion: APP_VERSION,
@@ -621,6 +628,10 @@ class SnapshotService {
     }
 
     const data = parsed.data || parsed;
+    // FIFO collections were introduced after legacy backup schemas; old files remain restorable.
+    if (!Array.isArray(data.inventoryLots)) data.inventoryLots = [];
+    if (!Array.isArray(data.fifoAllocations)) data.fifoAllocations = [];
+    if (typeof data.fifoInitialized !== 'boolean') data.fifoInitialized = false;
     if (!data || typeof data !== 'object') {
       return { valid: false, error: 'هيكل بيانات النسخة الاحتياطية فارغ أو تالف' };
     }
@@ -907,6 +918,9 @@ class SnapshotService {
           value: Array.isArray(payload.salesReturns) ? payload.salesReturns : [],
           updatedAt: Date.now(),
         },
+        { key: STORAGE_KEYS.INVENTORY_LOTS, value: Array.isArray(payload.inventoryLots) ? payload.inventoryLots : [], updatedAt: Date.now() },
+        { key: STORAGE_KEYS.FIFO_ALLOCATIONS, value: Array.isArray(payload.fifoAllocations) ? payload.fifoAllocations : [], updatedAt: Date.now() },
+        { key: STORAGE_KEYS.FIFO_INITIALIZED, value: Boolean(payload.fifoInitialized), updatedAt: Date.now() },
       ];
 
       if (typeof indexedDB !== 'undefined' && idb.restore_staging) {
