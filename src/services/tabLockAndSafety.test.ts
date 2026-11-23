@@ -224,7 +224,7 @@ describe('Single Tab Lock, Migration Anti-Regression & Safety Tests', () => {
     const errorSpy = vi.spyOn(idb.kv, 'bulkPut').mockRejectedValue(new Error('QuotaExceededError: Database limit reached'));
 
     // Perform an invoice save or critical write
-    const testProd: Product = { id: 'p-crit-1', name: 'صنف حرج', category: 'dairy', salePrice: 20, purchaseCost: 15, stock: 10, unit: 'علبة' } as unknown as Product;
+    const testProd: Product = { id: 'p-crit-1', name: 'صنف حرج', category: 'dairy', salePrice: 20, purchaseCost: 15, stock: 10, stockPieces: 10, unit: 'علبة' } as unknown as Product;
     storage.saveProduct(testProd);
 
     // Flush should report error
