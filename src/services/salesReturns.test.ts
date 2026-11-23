@@ -911,6 +911,56 @@ describe('Sales Returns (مرتجعات المبيعات)', () => {
   });
 
 
+  it('refuses to delete a received purchase when its linked product is missing without deleting the purchase', () => {
+    const product = { ...testProduct, stockPieces: 50 };
+    const purchase = {
+      id: 'pur-missing-product',
+      invoiceNumber: 'PUR-MISSING-PRODUCT',
+      date: new Date().toISOString().slice(0, 10),
+      supplierId: 'supplier-test',
+      supplierName: 'مورد اختبار',
+      supplierType: 'WHOLESALER',
+      items: [{ productId: product.id, productName: product.name, quantity: 5, unit: 'PIECE' }],
+      subtotal: 100, discountAmount: 0, freightCost: 0, bonusType: 'NONE',
+      bonusGoodsQuantity: 0, totalCost: 100, paidAmount: 0, remainingAmount: 0,
+      paymentType: 'CASH', previousSupplierBalance: 0, newSupplierBalance: 0,
+      isStockInserted: true,
+    };
+    storage.setItem(STORAGE_KEYS.PRODUCTS, []);
+    storage.setItem(STORAGE_KEYS.PURCHASES, [purchase]);
+    const result = storage.deletePurchaseInvoice(purchase.id);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('الصنف المرتبط بها غير موجود');
+    expect(storage.getPurchases()).toHaveLength(1);
+    expect(storage.getProducts()).toHaveLength(0);
+  });
+
+  it('refuses to delete a credit purchase when its supplier record is missing without changing stock', () => {
+    const product = { ...testProduct, stockPieces: 50 };
+    const purchase = {
+      id: 'pur-missing-supplier',
+      invoiceNumber: 'PUR-MISSING-SUPPLIER',
+      date: new Date().toISOString().slice(0, 10),
+      supplierId: 'supplier-that-does-not-exist',
+      supplierName: 'مورد مفقود',
+      supplierType: 'WHOLESALER',
+      items: [{ productId: product.id, productName: product.name, quantity: 5, unit: 'PIECE' }],
+      subtotal: 100, discountAmount: 0, freightCost: 0, bonusCost: 0,
+      bonusType: 'NONE', bonusGoodsQuantity: 0, totalCost: 100,
+      paidAmount: 0, remainingAmount: 75, paymentType: 'CREDIT',
+      previousSupplierBalance: 0, newSupplierBalance: 75, isStockInserted: true,
+    };
+    storage.setItem(STORAGE_KEYS.PRODUCTS, [product]);
+    storage.setItem(STORAGE_KEYS.SUPPLIERS, []);
+    storage.setItem(STORAGE_KEYS.PURCHASES, [purchase]);
+    const stockBefore = storage.getProducts()[0].stockPieces;
+    const result = storage.deletePurchaseInvoice(purchase.id);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('المورد المرتبط بها غير موجود');
+    expect(storage.getProducts()[0].stockPieces).toBe(stockBefore);
+    expect(storage.getPurchases()).toHaveLength(1);
+  });
+
   it('rejects negative or zero purchase quantities before posting stock or financial records', () => {
     const product = { ...testProduct, stockPieces: 10 };
     const supplier = {
