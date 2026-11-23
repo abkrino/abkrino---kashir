@@ -280,6 +280,26 @@ describe('Accounting Modes, Unified evaluateCashOut & Structured Funding Sources
     expect(storage.validateInventoryFifo().valid).toBe(true);
   });
 
+  it('uses the configured cartons-per-pallet value for stock and FIFO lot quantities', () => {
+    testProduct.piecesPerPallet = 10;
+    const purchase = makePurchaseInvoice(0, 1200);
+    purchase.items[0].unit = 'PALLET';
+    purchase.items[0].quantity = 1;
+    purchase.items[0].unitCost = 1200;
+    purchase.items[0].totalCost = 1200;
+    purchase.subtotal = 1200;
+    purchase.totalCost = 1200;
+
+    const result = storage.postPurchaseInvoice(purchase, { user: adminUser });
+    expect(result.success).toBe(true);
+    expect(storage.getProducts().find(product => product.id === testProduct.id)!.stockPieces).toBe(220);
+
+    const lot = storage.getInventoryLots().find(entry => entry.referenceId === purchase.id && entry.source === 'PURCHASE');
+    expect(lot?.originalQty).toBe(120);
+    expect(lot?.unitCost).toBe(10);
+    expect(storage.validateInventoryFifo().valid).toBe(true);
+  });
+
   it('defaults to DAILY_DRAWER and structured DEFAULT_FUNDING_SOURCES', () => {
     expect(storage.getAccountingMode()).toBe('DAILY_DRAWER');
     const sources = storage.getFundingSources();
