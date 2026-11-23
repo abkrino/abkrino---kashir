@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <script>
+      (function() {
+        try {
+          var _fetch = window.fetch ? window.fetch.bind(window) : null;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return _fetch;
+            },
+            set: function(val) {
+              _fetch = val;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="icon" type="image/png" href="/assets/aistudio/icon.png" />
+    <link rel="apple-touch-icon" href="/assets/aistudio/icon.png" />
+    <meta name="theme-color" content="#00897B" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ABKRINO POS | SEARCH, DEVELOP, RUN</title>
+    <meta name="description" content="ABKRINO POS — SEARCH, DEVELOP, RUN. نظام نقاط البيع وإدارة المتاجر." />
+    <meta property="og:title" content="ABKRINO POS | SEARCH, DEVELOP, RUN" />
+    <meta property="og:description" content="ABKRINO POS — نظام نقاط البيع وإدارة المتاجر." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+

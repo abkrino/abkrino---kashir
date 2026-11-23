@@ -1,0 +1,86 @@
+{
+  "name": "abkrino-kashir",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "clean": "rm -rf dist server.js",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "check:compat": "npm run build && node scripts/check-compat.js",
+    "electron:start": "electron .",
+    "dist:win": "npm run build && electron-builder --win nsis --publish never",
+    "predist:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-windows-icon.ps1"
+  },
+  "dependencies": {
+    "@google/genai": "^2.4.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "dexie": "^4.4.7",
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "fake-indexeddb": "^6.2.8",
+    "firebase": "^13.2.0",
+    "lucide-react": "^0.546.0",
+    "motion": "^12.23.24",
+    "react": "^19.0.1",
+    "react-dom": "^19.0.1",
+    "read-excel-file": "^9.3.15",
+    "vite": "^8.3.0",
+    "write-excel-file": "^4.1.1"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^6.0.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.14.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "autoprefixer": "^10.4.21",
+    "esbuild": "^0.28.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "3.4.17",
+    "tsx": "^4.21.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0",
+    "electron": "^45.4.1",
+    "electron-builder": "^26.0.12"
+  },
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.abkrino.kashir",
+    "productName": "ABKRINO POS",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Abkrino-Kashir-Setup-${version}-${arch}.${ext}",
+      "icon": "build/abkrino.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ABKRINO POS",
+      "installerIcon": "build/abkrino.ico",
+      "uninstallerIcon": "build/abkrino.ico"
+    }
+  }
+}
