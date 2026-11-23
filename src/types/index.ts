@@ -107,7 +107,7 @@ export interface Supplier {
   contactPerson: string;
   openingBalance?: number; // الرصيد الافتتاحي
   currentBalance: number;
-  paymentTermsDays: number;
+  paymentTermsDays?: number; // غير محدد إذا لم يتم الاتفاق على أجل السداد
 }
 
 export interface InvoiceLineItem {
