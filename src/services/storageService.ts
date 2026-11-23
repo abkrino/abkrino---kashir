@@ -3338,22 +3338,8 @@ class StorageService {
     const purchase = purchases.find(p => p.id === invoiceId || p.invoiceNumber === invoiceId);
     if (!purchase) return { success: false, error: 'فاتورة الشراء غير موجودة' };
 
-    const fifoInit = this.ensureFifoInitialized();
-    if (!fifoInit.success) return { success: false, error: fifoInit.error };
     const products = this.getProducts();
     const suppliers = this.getSuppliers();
-    const purchaseLots = this.getInventoryLots().filter(lot => lot.referenceId === purchase.id);
-    if (purchase.isStockInserted && purchaseLots.length === 0) {
-      return { success: false, error: 'لا يمكن حذف فاتورة شراء قديمة غير ممثلة بدفعات FIFO؛ يلزم تسويتها أولاً.' };
-    }
-    const purchaseLotIds = new Set(purchaseLots.map(lot => lot.id));
-    if (this.getFifoAllocations().some(allocation => purchaseLotIds.has(allocation.lotId))) {
-      return { success: false, error: 'لا يمكن حذف فاتورة الشراء: توجد تخصيصات FIFO تاريخية مرتبطة بدفعاتها. استخدم عكسًا محاسبيًا ومخزنيًا بدلاً من الحذف.' };
-    }
-    if (purchaseLots.some(lot => Math.abs(lot.remainingQty - lot.originalQty) > 0.001)) {
-      return { success: false, error: 'لا يمكن حذف فاتورة الشراء: تم استهلاك جزء من دفعاتها في المبيعات أو المرتجعات. استخدم عملية مرتجع/عكس مخزون مخصصة.' };
-    }
-    const remainingLotsAfterDelete = this.getInventoryLots().filter(lot => lot.referenceId !== purchase.id);
     const paidAmount = Number(purchase.paidAmount ?? 0);
     const remainingAmount = Number(purchase.remainingAmount ?? 0);
     if (!Number.isFinite(paidAmount) || paidAmount < 0 ||
@@ -3362,6 +3348,9 @@ class StorageService {
     }
     if (!Array.isArray(purchase.items) || purchase.items.length === 0) {
       return { success: false, error: 'لا يمكن حذف فاتورة الشراء: تفاصيل الأصناف غير موجودة.' };
+    }
+    if (remainingAmount > 0 && !suppliers.some(supplier => supplier.id === purchase.supplierId)) {
+      return { success: false, error: 'لا يمكن حذف فاتورة الشراء: المورد المرتبط بها غير موجود، ولا يمكن تسوية مديونيته بأمان.' };
     }
 
     const nextProducts = products.map(product => ({ ...product }));
@@ -3382,8 +3371,7 @@ class StorageService {
         if (!Number.isFinite(piecesPerUnit) || piecesPerUnit <= 0) {
           return { success: false, error: `معامل تحويل الوحدة غير صالح للصنف "${product.name}".` };
         }
-        const pieces = quantity * piecesPerUnit;
-        removalByProduct.set(item.productId, (removalByProduct.get(item.productId) || 0) + pieces);
+        removalByProduct.set(item.productId, (removalByProduct.get(item.productId) || 0) + quantity * piecesPerUnit);
       }
       if (purchase.bonusType === 'GOODS') {
         const bonusQuantity = Number(purchase.bonusGoodsQuantity);
@@ -3391,11 +3379,8 @@ class StorageService {
           return { success: false, error: 'كمية بونص البضاعة غير صالحة.' };
         }
         if (bonusQuantity > 0) {
-          const firstItem = purchase.items[0];
-          const firstProduct = products.find(p => p.id === firstItem.productId);
+          const firstProduct = products.find(p => p.id === purchase.items[0].productId);
           if (!firstProduct) return { success: false, error: 'صنف بونص البضاعة غير موجود.' };
-          // Match postPurchaseInvoice: bonusGoodsQuantity is stored in wholesale units
-          // and is always converted using the product's piecesPerWholesaleUnit.
           const factor = Number(firstProduct.piecesPerWholesaleUnit);
           if (!Number.isFinite(factor) || factor <= 0) {
             return { success: false, error: 'معامل تحويل بونص البضاعة غير صالح.' };
@@ -3413,12 +3398,53 @@ class StorageService {
       }
     }
 
+    let nextLots = this.getInventoryLots();
+    let nextAllocations = this.getFifoAllocations();
+    if (purchase.isStockInserted) {
+      const fifoInit = this.ensureFifoInitialized();
+      if (!fifoInit.success) return { success: false, error: fifoInit.error };
+      // New purchases have their own lots. Older pre-FIFO purchases are represented by
+      // the opening lots, so deletion consumes the equivalent quantity from those lots.
+      const purchaseLots = nextLots.filter(lot => lot.referenceId === purchase.id);
+      const purchaseLotIds = new Set(purchaseLots.map(lot => lot.id));
+      if (nextAllocations.some(allocation => purchaseLotIds.has(allocation.lotId))) {
+        return { success: false, error: 'لا يمكن حذف فاتورة الشراء: توجد تخصيصات FIFO تاريخية مرتبطة بدفعاتها. استخدم عكسًا محاسبيًا ومخزنيًا بدلاً من الحذف.' };
+      }
+      if (purchaseLots.some(lot => Math.abs(lot.remainingQty - lot.originalQty) > 0.001)) {
+        return { success: false, error: 'لا يمكن حذف فاتورة الشراء: تم استهلاك جزء من دفعاتها في المبيعات أو المرتجعات. استخدم عملية مرتجع/عكس مخزون مخصصة.' };
+      }
+
+      if (purchaseLots.length > 0) {
+        nextLots = nextLots.filter(lot => lot.referenceId !== purchase.id);
+      } else {
+        for (const [productId, requested] of removalByProduct) {
+          const consumed = allocateFifo(
+            nextLots,
+            nextAllocations,
+            `purchase-delete-${purchase.id}`,
+            `purchase-delete-${productId}`,
+            productId,
+            requested,
+            new Date().toISOString()
+          );
+          if (consumed.error) {
+            return { success: false, error: `لا يمكن حذف فاتورة الشراء: ${consumed.error}` };
+          }
+          nextLots = consumed.lots;
+          nextAllocations = consumed.allocations;
+        }
+      }
+
+      const fifoErrors = [
+        ...validateFifoLedger(nextProducts, nextLots),
+        ...validateFifoAllocations(nextLots, nextAllocations),
+      ];
+      if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
+    }
+
     const nextSuppliers = suppliers.map(supplier => ({ ...supplier }));
     if (remainingAmount > 0) {
-      const supplier = nextSuppliers.find(s => s.id === purchase.supplierId);
-      if (!supplier) {
-        return { success: false, error: 'لا يمكن حذف فاتورة الشراء: المورد المرتبط بها غير موجود، ولا يمكن تسوية مديونيته بأمان.' };
-      }
+      const supplier = nextSuppliers.find(s => s.id === purchase.supplierId)!;
       const balance = Number(supplier.currentBalance);
       if (!Number.isFinite(balance) || balance < 0) {
         return { success: false, error: 'رصيد المورد غير صالح؛ تم إيقاف الحذف لحماية الحسابات.' };
@@ -3428,10 +3454,9 @@ class StorageService {
 
     // All linked records are validated before the first persistent mutation.
     if (purchase.isStockInserted) {
-      const fifoErrors = validateFifoLedger(nextProducts, remainingLotsAfterDelete);
-      if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
       this.setItem(STORAGE_KEYS.PRODUCTS, nextProducts);
-      this.setItem(STORAGE_KEYS.INVENTORY_LOTS, remainingLotsAfterDelete);
+      this.setItem(STORAGE_KEYS.INVENTORY_LOTS, nextLots);
+      this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, nextAllocations);
     }
     if (remainingAmount > 0) this.setItem(STORAGE_KEYS.SUPPLIERS, nextSuppliers);
 
