@@ -3232,8 +3232,6 @@ class StorageService {
       });
     }
     totalAmount = Math.round(totalAmount * 100) / 100;
-    if (totalAmount <= 0) return { success: false, error: 'قيمة المرتجع صفر؛ لا يمكن تسجيل تسوية مالية.' };
-
     const suppliers = this.getSuppliers().map(supplier => ({ ...supplier }));
     const supplier = suppliers.find(entry => entry.id === purchase.supplierId);
     if (!supplier) return { success: false, error: 'المورد الأصلي غير موجود.' };
@@ -3272,7 +3270,7 @@ class StorageService {
     const returns = this.getPurchaseReturns();
     returns.unshift(record);
     this.setItem(STORAGE_KEYS.PURCHASE_RETURNS, returns);
-    if (params.settlement === 'CASH_REFUND') {
+    if (params.settlement === 'CASH_REFUND' && totalAmount > 0) {
       const cashResult = this.addCashMovement({
         id: `cm-${returnId}`,
         date: record.date,
