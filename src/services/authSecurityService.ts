@@ -13,7 +13,11 @@ export type SensitiveOperation =
   | 'manage_cash'
   | 'withdraw_negative_cash'
   | 'process_returns'
-  | 'manage_users';
+  | 'manage_users'
+  | 'view_hr'
+  | 'manage_hr'
+  | 'manage_attendance'
+  | 'manage_payroll';
 
 export interface LockoutRecord {
   failedAttempts: number;
@@ -182,6 +186,10 @@ export function checkUserPermission(
       return Boolean(perms.canProcessReturns);
     case 'manage_users':
       return false; // Cashiers can never manage users
+    case 'view_hr': return Boolean(perms.canViewHR || perms.canManageHR || perms.canManageAttendance || perms.canManagePayroll);
+    case 'manage_hr': return Boolean(perms.canManageHR);
+    case 'manage_attendance': return Boolean(perms.canManageAttendance || perms.canManageHR);
+    case 'manage_payroll': return Boolean(perms.canManagePayroll || perms.canManageHR);
     default:
       return false;
   }
@@ -222,6 +230,8 @@ export function canAccessTab(user: User | null | undefined, tab: TabType): boole
       return checkUserPermission(user, 'manage_purchases');
     case 'reports':
       return checkUserPermission(user, 'view_profits');
+    case 'hr':
+      return checkUserPermission(user, 'view_hr');
     case 'users':
     case 'settings':
     case 'store-profile':

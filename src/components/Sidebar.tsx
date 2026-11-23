@@ -19,6 +19,7 @@ import {
   Store,
   Layers,
   Megaphone,
+  CalendarCheck,
   LucideIcon
 } from 'lucide-react';
 
@@ -58,6 +59,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     daily: false,
     inventory: false,
     reports: false,
+    hr: false,
     admin: false,
   });
 
@@ -131,6 +133,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Building2,
         },
       ],
+    },
+    {
+      id: 'hr', title: 'الموارد البشرية',
+      items: [{ id: 'hr', label: 'الموظفون والحضور والرواتب', icon: CalendarCheck }],
     },
     {
       id: 'reports',

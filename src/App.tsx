@@ -14,6 +14,7 @@ import { SupplierLedger } from './components/suppliers/SupplierLedger';
 import { CashManager } from './components/cash/CashManager';
 import { AnnouncerManager } from './components/announcer/AnnouncerManager';
 import { UsersManager } from './components/users/UsersManager';
+import { HRManager } from './components/hr/HRManager';
 import { ProfitReports } from './components/reports/ProfitReports';
 import { ThemeAccessibilitySettings } from './components/settings/ThemeAccessibilitySettings';
 import { BackupManager } from './components/backup/BackupManager';
@@ -966,6 +967,8 @@ export default function App() {
                     onRefreshData={refreshAll}
                   />
                 )}
+
+                {currentTab === 'hr' && <HRManager currentUser={currentUser} onRefreshData={refreshAll} />}
 
                 {currentTab === 'reports' && (
                   <ProfitReports currentUser={currentUser} />

@@ -17,7 +17,8 @@ export type TabType =
   | 'store-profile'
   | 'settings'
   | 'backup'
-  | 'audit';
+  | 'audit'
+  | 'hr';
 
 export interface UserPermissions {
   canEditPrice: boolean; // تعديل سعر بيع الوحدة في الفاتورة
@@ -31,6 +32,10 @@ export interface UserPermissions {
   canManageCash: boolean; // إدارة الخزينة والمصروفات
   canWithdrawNegativeCash?: boolean; // السحب بالسالب من الدرج أو بتمويل خارجي
   canProcessReturns?: boolean; // تسجيل وإدارة مرتجعات المبيعات
+  canViewHR?: boolean;
+  canManageHR?: boolean;
+  canManageAttendance?: boolean;
+  canManagePayroll?: boolean;
 }
 
 export interface User {
@@ -48,6 +53,11 @@ export interface User {
   permissions?: UserPermissions;
 }
 
+export interface HREmployee { id:string; code:string; fullName:string; phone?:string; jobTitle:string; hireDate:string; hourlyRate:number; standardDailyHours:number; overtimeMultiplier:number; shiftStart:string; isActive:boolean; linkedUserId?:string; notes?:string; }
+export interface AttendanceRecord { id:string; employeeId:string; employeeName:string; date:string; checkIn?:string; checkOut?:string; status:'PRESENT'|'ABSENT'|'LEAVE'; regularHours:number; overtimeHours:number; lateMinutes:number; recordedBy:string; createdAt:string; notes?:string; }
+export interface PayrollAdjustment { id:string; employeeId:string; period:string; type:'BONUS'|'DEDUCTION'|'ADVANCE'; amount:number; notes:string; createdAt:string; createdBy:string; }
+export interface PayrollLine { employeeId:string; employeeName:string; regularHours:number; overtimeHours:number; basePay:number; overtimePay:number; bonuses:number; deductions:number; advances:number; netPay:number; }
+export interface PayrollPeriod { id:string; period:string; lines:PayrollLine[]; totalNet:number; status:'DRAFT'|'PAID'; createdAt:string; paidAt?:string; paidBy?:string; expenseId?:string; }
 export interface Product {
   id: string;
   code: string;

@@ -51,6 +51,7 @@ export const STORAGE_KEYS = {
   INVENTORY_LOTS: 'sm_inventory_lots_v1',
   FIFO_ALLOCATIONS: 'sm_fifo_allocations_v1',
   FIFO_INITIALIZED: 'sm_fifo_initialized_v1',
+  HR_EMPLOYEES: 'sm_hr_employees_v1', HR_ATTENDANCE: 'sm_hr_attendance_v1', HR_ADJUSTMENTS: 'sm_hr_adjustments_v1', HR_PAYROLL: 'sm_hr_payroll_v1',
   DOCUMENT_SEQUENCES: 'sm_doc_sequences_v1',
   CREDENTIALS_RESET_REQUIRED: 'sm_credentials_reset_required_v1',
   SUMMARY_DIRTY: 'sm_summary_dirty_v1',
@@ -94,6 +95,7 @@ export const BUSINESS_KEYS = [
   STORAGE_KEYS.INVENTORY_LOTS,
   STORAGE_KEYS.FIFO_ALLOCATIONS,
   STORAGE_KEYS.FIFO_INITIALIZED,
+  STORAGE_KEYS.HR_EMPLOYEES, STORAGE_KEYS.HR_ATTENDANCE, STORAGE_KEYS.HR_ADJUSTMENTS, STORAGE_KEYS.HR_PAYROLL,
   STORAGE_KEYS.DOCUMENT_SEQUENCES,
 ];
 
@@ -3957,6 +3959,8 @@ class StorageService {
         monthlyPoolIncludesCapitalInjection: this.getMonthlyPoolIncludesCapitalInjection(),
         fundingSources: this.getFundingSources(),
         salesReturns: this.getSalesReturns(),
+        purchaseReturns: this.getPurchaseReturns(), inventoryLots: this.getInventoryLots(), fifoAllocations: this.getFifoAllocations(), fifoInitialized: this.isFifoInitialized(),
+        hrEmployees: this.getItem(STORAGE_KEYS.HR_EMPLOYEES, []), hrAttendance: this.getItem(STORAGE_KEYS.HR_ATTENDANCE, []), hrAdjustments: this.getItem(STORAGE_KEYS.HR_ADJUSTMENTS, []), hrPayroll: this.getItem(STORAGE_KEYS.HR_PAYROLL, []),
       }
     };
     return JSON.stringify(backupData, null, 2);
@@ -3987,6 +3991,14 @@ class StorageService {
       this.setItem(STORAGE_KEYS.EXPENSES, parsed.data.expenses || []);
       this.setItem(STORAGE_KEYS.AUDIT_LOGS, parsed.data.auditLogs || []);
       this.setItem(STORAGE_KEYS.SALES_RETURNS, Array.isArray(parsed.data.salesReturns) ? parsed.data.salesReturns : []);
+      this.setItem(STORAGE_KEYS.PURCHASE_RETURNS, Array.isArray(parsed.data.purchaseReturns) ? parsed.data.purchaseReturns : []);
+      this.setItem(STORAGE_KEYS.INVENTORY_LOTS, Array.isArray(parsed.data.inventoryLots) ? parsed.data.inventoryLots : []);
+      this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, Array.isArray(parsed.data.fifoAllocations) ? parsed.data.fifoAllocations : []);
+      this.setItem(STORAGE_KEYS.FIFO_INITIALIZED, Boolean(parsed.data.fifoInitialized));
+      this.setItem(STORAGE_KEYS.HR_EMPLOYEES, Array.isArray(parsed.data.hrEmployees) ? parsed.data.hrEmployees : []);
+      this.setItem(STORAGE_KEYS.HR_ATTENDANCE, Array.isArray(parsed.data.hrAttendance) ? parsed.data.hrAttendance : []);
+      this.setItem(STORAGE_KEYS.HR_ADJUSTMENTS, Array.isArray(parsed.data.hrAdjustments) ? parsed.data.hrAdjustments : []);
+      this.setItem(STORAGE_KEYS.HR_PAYROLL, Array.isArray(parsed.data.hrPayroll) ? parsed.data.hrPayroll : []);
       if (parsed.data.stockAdjustments) this.setItem(STORAGE_KEYS.STOCK_ADJUSTMENTS, parsed.data.stockAdjustments);
       if (parsed.data.users) this.setItem(STORAGE_KEYS.USERS, parsed.data.users);
 
@@ -4051,6 +4063,10 @@ class StorageService {
     this.cache.set(STORAGE_KEYS.INVENTORY_LOTS, Array.isArray(data.inventoryLots) ? data.inventoryLots : []);
     this.cache.set(STORAGE_KEYS.FIFO_ALLOCATIONS, Array.isArray(data.fifoAllocations) ? data.fifoAllocations : []);
     this.cache.set(STORAGE_KEYS.FIFO_INITIALIZED, Boolean(data.fifoInitialized));
+    this.cache.set(STORAGE_KEYS.HR_EMPLOYEES, Array.isArray(data.hrEmployees) ? data.hrEmployees : []);
+    this.cache.set(STORAGE_KEYS.HR_ATTENDANCE, Array.isArray(data.hrAttendance) ? data.hrAttendance : []);
+    this.cache.set(STORAGE_KEYS.HR_ADJUSTMENTS, Array.isArray(data.hrAdjustments) ? data.hrAdjustments : []);
+    this.cache.set(STORAGE_KEYS.HR_PAYROLL, Array.isArray(data.hrPayroll) ? data.hrPayroll : []);
 
     if (data.storeProfile !== undefined) {
       this.cache.set(STORAGE_KEYS.STORE_PROFILE, data.storeProfile);

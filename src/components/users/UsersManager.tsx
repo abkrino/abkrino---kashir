@@ -42,6 +42,7 @@ const DEFAULT_ADMIN_PERMISSIONS: UserPermissions = {
   canManageCash: true,
   canWithdrawNegativeCash: true,
   canProcessReturns: true,
+  canViewHR: true, canManageHR: true, canManageAttendance: true, canManagePayroll: true,
 };
 
 const DEFAULT_SALES_PERMISSIONS: UserPermissions = {
@@ -56,6 +57,7 @@ const DEFAULT_SALES_PERMISSIONS: UserPermissions = {
   canManageCash: false,
   canWithdrawNegativeCash: false,
   canProcessReturns: false,
+  canViewHR: false, canManageHR: false, canManageAttendance: false, canManagePayroll: false,
 };
 
 export const UsersManager: React.FC<UsersManagerProps> = ({
@@ -856,6 +858,17 @@ export const UsersManager: React.FC<UsersManagerProps> = ({
                     />
                     <span>تسجيل وإدارة مرتجعات المبيعات</span>
                   </label>
+                  {([
+                    ['canViewHR', 'عرض بيانات الموارد البشرية'],
+                    ['canManageHR', 'إدارة ملفات الموظفين'],
+                    ['canManageAttendance', 'تسجيل الحضور والانصراف'],
+                    ['canManagePayroll', 'إعداد الرواتب والمكافآت والخصومات والسلف'],
+                  ] as const).map(([key, label]) => (
+                    <label key={key} className="flex items-center gap-2 text-slate-700 dark:text-slate-300 cursor-pointer font-medium">
+                      <input type="checkbox" checked={Boolean(permissions[key])} onChange={() => togglePermission(key)} className="rounded accent-emerald-600 w-4 h-4 cursor-pointer" />
+                      <span>{label}</span>
+                    </label>
+                  ))}
                 </div>
               </div>
 
