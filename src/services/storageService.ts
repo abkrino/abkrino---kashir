@@ -17,6 +17,7 @@ import { idb, type KVRecord } from './idbStore';
 
 export const STORAGE_KEYS = {
   PRODUCTS: 'sm_products_v3',
+  CATEGORIES: 'sm_categories_v1',
   CUSTOMERS: 'sm_customers_v3',
   SUPPLIERS: 'sm_suppliers_v3',
   INVOICES: 'sm_invoices_v3',
@@ -55,6 +56,7 @@ export const SUMMARY_TRACKED_KEYS = new Set<string>([
 
 export const BUSINESS_KEYS = [
   STORAGE_KEYS.PRODUCTS,
+  STORAGE_KEYS.CATEGORIES,
   STORAGE_KEYS.CUSTOMERS,
   STORAGE_KEYS.SUPPLIERS,
   STORAGE_KEYS.INVOICES,
@@ -1178,6 +1180,69 @@ class StorageService {
     user.pinCode = newPin.trim();
     this.setItem(STORAGE_KEYS.USERS, users);
     this.addAuditLog('AUTH', 'تعديل الباسورد', 'الأمان', user.id, `تم تغيير الرقم السري للمستخدم: ${user.fullName}`);
+    return { success: true };
+  }
+
+  // --- PRODUCT CATEGORIES ---
+  public getCategories(): string[] {
+    const stored = this.getItem<unknown>(STORAGE_KEYS.CATEGORIES, []);
+    return Array.isArray(stored)
+      ? Array.from(new Set(stored.filter((name): name is string => typeof name === 'string').map(name => name.trim()).filter(Boolean)))
+      : [];
+  }
+
+  public addCategory(name: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'إضافة تصنيف صنف');
+    if (!gate.allowed) return { success: false, error: gate.error };
+    const cleanName = (name || '').trim();
+    if (!cleanName) return { success: false, error: 'اسم التصنيف مطلوب.' };
+    const categories = this.getCategories();
+    if (categories.some(item => item.toLocaleLowerCase() === cleanName.toLocaleLowerCase())) {
+      return { success: false, error: 'هذا التصنيف موجود بالفعل.' };
+    }
+    categories.push(cleanName);
+    this.setItem(STORAGE_KEYS.CATEGORIES, categories);
+    this.addAuditLog('CATEGORY', 'إضافة تصنيف', 'التصنيفات', cleanName, 'تمت إضافة تصنيف جديد.');
+    return { success: true };
+  }
+
+  public renameCategory(oldName: string, newName: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'تعديل تصنيف صنف');
+    if (!gate.allowed) return { success: false, error: gate.error };
+    const oldClean = (oldName || '').trim();
+    const newClean = (newName || '').trim();
+    if (!oldClean || !newClean) return { success: false, error: 'اسم التصنيف مطلوب.' };
+    const categories = this.getCategories();
+    if (!categories.some(item => item.toLocaleLowerCase() === oldClean.toLocaleLowerCase())) {
+      return { success: false, error: 'التصنيف المطلوب غير موجود.' };
+    }
+    if (categories.some(item => item.toLocaleLowerCase() === newClean.toLocaleLowerCase() && item.toLocaleLowerCase() !== oldClean.toLocaleLowerCase())) {
+      return { success: false, error: 'يوجد تصنيف آخر بهذا الاسم بالفعل.' };
+    }
+    if (oldClean.toLocaleLowerCase() === newClean.toLocaleLowerCase()) return { success: true };
+    const products = this.getProducts();
+    const linkedProducts = products.filter(product => product.category.trim().toLocaleLowerCase() === oldClean.toLocaleLowerCase());
+    linkedProducts.forEach(product => { product.category = newClean; });
+    this.setItem(STORAGE_KEYS.PRODUCTS, products);
+    this.setItem(STORAGE_KEYS.CATEGORIES, categories.map(item => item.toLocaleLowerCase() === oldClean.toLocaleLowerCase() ? newClean : item));
+    this.addAuditLog('CATEGORY', 'تعديل تصنيف', 'التصنيفات', oldClean, `تم تغيير الاسم إلى "${newClean}" وتحديث ${linkedProducts.length} صنف.`);
+    return { success: true };
+  }
+
+  public deleteCategory(name: string): { success: boolean; error?: string } {
+    const gate = this.assertWriteAllowed('ADMIN_DATA', 'حذف تصنيف صنف');
+    if (!gate.allowed) return { success: false, error: gate.error };
+    const cleanName = (name || '').trim();
+    const categories = this.getCategories();
+    if (!categories.some(item => item.toLocaleLowerCase() === cleanName.toLocaleLowerCase())) {
+      return { success: false, error: 'التصنيف المطلوب غير موجود.' };
+    }
+    const linkedCount = this.getProducts().filter(product => product.category.trim().toLocaleLowerCase() === cleanName.toLocaleLowerCase()).length;
+    if (linkedCount > 0) {
+      return { success: false, error: `لا يمكن حذف التصنيف لأنه مرتبط بعدد ${linkedCount} صنف. انقل الأصناف إلى تصنيف آخر أولاً.` };
+    }
+    this.setItem(STORAGE_KEYS.CATEGORIES, categories.filter(item => item.toLocaleLowerCase() !== cleanName.toLocaleLowerCase()));
+    this.addAuditLog('CATEGORY', 'حذف تصنيف', 'التصنيفات', cleanName, 'تم حذف تصنيف غير مرتبط بأصناف.');
     return { success: true };
   }
 
@@ -3322,6 +3387,7 @@ class StorageService {
       app: 'WholesaleFoodSystem_Egypt',
       data: {
         products: this.getProducts(),
+        categories: this.getCategories(),
         customers: this.getCustomers(),
         suppliers: this.getSuppliers(),
         invoices: this.getSalesInvoices(),
@@ -3353,6 +3419,7 @@ class StorageService {
       }
 
       this.setItem(STORAGE_KEYS.PRODUCTS, parsed.data.products);
+      if (Array.isArray(parsed.data.categories)) this.setItem(STORAGE_KEYS.CATEGORIES, parsed.data.categories);
       this.setItem(STORAGE_KEYS.CUSTOMERS, parsed.data.customers);
       this.setItem(STORAGE_KEYS.SUPPLIERS, parsed.data.suppliers || []);
       this.setItem(STORAGE_KEYS.INVOICES, parsed.data.invoices || []);
@@ -3404,6 +3471,7 @@ class StorageService {
       ? rawInput.data
       : rawInput;
     if (data.products !== undefined) this.cache.set(STORAGE_KEYS.PRODUCTS, data.products);
+    if (data.categories !== undefined) this.cache.set(STORAGE_KEYS.CATEGORIES, data.categories);
     if (data.customers !== undefined) this.cache.set(STORAGE_KEYS.CUSTOMERS, data.customers);
     if (data.suppliers !== undefined) this.cache.set(STORAGE_KEYS.SUPPLIERS, data.suppliers);
     if (data.invoices !== undefined) this.cache.set(STORAGE_KEYS.INVOICES, data.invoices);
