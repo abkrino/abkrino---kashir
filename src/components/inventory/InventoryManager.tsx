@@ -38,6 +38,8 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedBrand, setSelectedBrand] = useState<string>('ALL');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
+  const [inventoryPage, setInventoryPage] = useState<number>(1);
+  const INVENTORY_PAGE_SIZE = 50;
 
   // Modal States
   const [isAddProductModalOpen, setIsAddProductModalOpen] = useState<boolean>(false);
@@ -154,6 +156,13 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
       p.barcode.includes(q)
     );
   });
+
+  const inventoryTotalPages = Math.max(1, Math.ceil(filteredProducts.length / INVENTORY_PAGE_SIZE));
+  const safeInventoryPage = Math.min(inventoryPage, inventoryTotalPages);
+  const visibleProducts = filteredProducts.slice(
+    (safeInventoryPage - 1) * INVENTORY_PAGE_SIZE,
+    safeInventoryPage * INVENTORY_PAGE_SIZE
+  );
 
   // Calculate Overall Inventory Valuation
   const totalInventoryPurchaseCost = products.reduce((sum, p) => sum + (p.stockPieces * p.costPricePerBase), 0);
@@ -518,7 +527,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                 <input
                   type="text"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => { setSearchQuery(e.target.value); setInventoryPage(1); }}
                   placeholder="بحث بكود الصنف، اسم المنتج، الشركة، الباركود..."
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl pr-10 pl-3 py-2 text-xs text-slate-900 dark:text-white placeholder:text-slate-400 focus:outline-none focus:border-emerald-500 transition-colors font-medium"
                 />
@@ -527,7 +536,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
               {/* Brand Filter */}
               <select
                 value={selectedBrand}
-                onChange={(e) => setSelectedBrand(e.target.value)}
+                onChange={(e) => { setSelectedBrand(e.target.value); setInventoryPage(1); }}
                 className="bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-xs rounded-xl px-3 py-2 font-bold w-full sm:w-auto"
               >
                 <option value="ALL">🏢 جميع الشركات والمصانع</option>
@@ -539,7 +548,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
               {/* Category Filter */}
               <select
                 value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
+                onChange={(e) => { setSelectedCategory(e.target.value); setInventoryPage(1); }}
                 className="bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-200 text-xs rounded-xl px-3 py-2 font-bold w-full sm:w-auto"
               >
                 <option value="ALL">📦 جميع التصنيفات</option>
@@ -567,7 +576,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
-                  {filteredProducts.map(prod => {
+                  {visibleProducts.map(prod => {
                     const cartons = Math.floor(prod.stockPieces / prod.piecesPerWholesaleUnit);
                     const pieces = prod.stockPieces % prod.piecesPerWholesaleUnit;
                     const isBelowZero = prod.stockPieces < 0;
@@ -664,6 +673,28 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                   })}
                 </tbody>
               </table>
+            </div>
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-950/60 text-xs">
+              <span className="text-slate-600 dark:text-slate-300 font-bold">
+                عرض {filteredProducts.length === 0 ? 0 : ((safeInventoryPage - 1) * INVENTORY_PAGE_SIZE) + 1}
+                {' '}إلى {Math.min(safeInventoryPage * INVENTORY_PAGE_SIZE, filteredProducts.length)}
+                {' '}من إجمالي {filteredProducts.length} صنف
+              </span>
+              <div className="flex items-center gap-2">
+                <button type="button" disabled={safeInventoryPage <= 1}
+                  onClick={() => setInventoryPage(p => Math.max(1, p - 1))}
+                  className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white dark:hover:bg-slate-800">
+                  السابق
+                </button>
+                <span className="font-mono font-bold text-slate-700 dark:text-slate-200">
+                  صفحة {safeInventoryPage} / {inventoryTotalPages}
+                </span>
+                <button type="button" disabled={safeInventoryPage >= inventoryTotalPages}
+                  onClick={() => setInventoryPage(p => Math.min(inventoryTotalPages, p + 1))}
+                  className="px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-white dark:hover:bg-slate-800">
+                  التالي
+                </button>
+              </div>
             </div>
           </div>
         </div>
