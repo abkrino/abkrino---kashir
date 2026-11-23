@@ -14,6 +14,10 @@ protocol.registerSchemesAsPrivileged([{
 }]);
 let mainWindow;
 let cachedMachineId = null;
+let activeSpeechChild = null;
+let speechGenerationActive = false;
+const SPEECH_TIMEOUT_MS = 90000;
+const MAX_SPEECH_OUTPUT_CHARS = 12000;
 
 function getStableMachineId() {
   if (cachedMachineId) return cachedMachineId;
@@ -103,12 +107,23 @@ function runArabicSpeech(text, outputPath) {
       windowsHide: true,
       env: { ...process.env, LANG: 'en_US.UTF-8' }
     });
+    activeSpeechChild = child;
     let stderr = '';
     let stdout = '';
-    child.stdout.on('data', chunk => { stdout += chunk.toString('utf8'); });
-    child.stderr.on('data', chunk => { stderr += chunk.toString('utf8'); });
-    child.on('error', reject);
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (!settled) child.kill();
+    }, SPEECH_TIMEOUT_MS);
+    const appendBounded = (current, chunk) => (current + chunk.toString('utf8')).slice(-MAX_SPEECH_OUTPUT_CHARS);
+    child.stdout.on('data', chunk => { stdout = appendBounded(stdout, chunk); });
+    child.stderr.on('data', chunk => { stderr = appendBounded(stderr, chunk); });
+    child.on('error', error => {
+      if (settled) return;
+      settled = true; clearTimeout(timeout); activeSpeechChild = null; reject(error);
+    });
     child.on('close', async code => {
+      if (settled) return;
+      settled = true; clearTimeout(timeout); activeSpeechChild = null;
       if (code === 0) {
         try {
           const stat = await fs.stat(outputPath);
@@ -117,7 +132,10 @@ function runArabicSpeech(text, outputPath) {
         } catch (error) { reject(error); }
       } else {
         const details = (stderr || stdout).replace(/#< CLIXML[\\s\\S]*/i, '').trim();
-        const message = details || 'تعذر توليد الإعلان الصوتي. تأكد من تثبيت صوت عربي متوافق في Windows.';
+        const timedOut = code === null;
+        const message = timedOut
+          ? 'تم إيقاف توليد الصوت لتجاوز الحد الزمني (90 ثانية). يمكنك المحاولة مرة أخرى.'
+          : (details || 'تعذر توليد الإعلان الصوتي. تأكد من تثبيت صوت عربي متوافق في Windows.');
         reject(new Error(message));
       }
     });
@@ -126,6 +144,7 @@ function runArabicSpeech(text, outputPath) {
 ipcMain.handle('announcer:list', async () => readPlaylist());
 ipcMain.handle('announcer:create', async (_event, payload) => {
   if (!isWindows) throw new Error('توليد الصوت المحلي متاح في نسخة Windows فقط.');
+  if (speechGenerationActive) throw new Error('يوجد إعلان قيد التوليد بالفعل. انتظر انتهاءه أو ألغِ العملية الحالية.');
   const text = typeof payload?.text === 'string' ? payload.text.trim() : '';
   const title = typeof payload?.title === 'string' ? payload.title.trim().slice(0, 80) : '';
   if (!text) throw new Error('اكتب نص العرض أولاً.');
@@ -133,12 +152,26 @@ ipcMain.handle('announcer:create', async (_event, payload) => {
   const id = crypto.randomUUID();
   const fileName = id + '.wav';
   const audioPath = path.join(await getAnnouncementDir(), fileName);
-  await runArabicSpeech(text, audioPath);
-  const items = await readPlaylist();
-  const item = { id, title: title || text.slice(0, 48), text, fileName, createdAt: new Date().toISOString() };
-  items.unshift(item);
-  await writePlaylist(items);
-  return item;
+  speechGenerationActive = true;
+  try {
+    await runArabicSpeech(text, audioPath);
+    const items = await readPlaylist();
+    const item = { id, title: title || text.slice(0, 48), text, fileName, createdAt: new Date().toISOString() };
+    items.unshift(item);
+    await writePlaylist(items);
+    return item;
+  } catch (error) {
+    await fs.rm(audioPath, { force: true }).catch(() => {});
+    throw error;
+  } finally {
+    speechGenerationActive = false;
+    activeSpeechChild = null;
+  }
+});
+ipcMain.handle('announcer:cancel', async () => {
+  if (!activeSpeechChild) return false;
+  activeSpeechChild.kill();
+  return true;
 });
 ipcMain.handle('announcer:audio', async (_event, id) => {
   if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id)) throw new Error('معرّف ملف صوت غير صالح.');
