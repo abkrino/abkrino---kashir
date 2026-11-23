@@ -452,10 +452,10 @@ export const SupplierLedger: React.FC<SupplierLedgerProps> = ({
                             type="button"
                             onClick={() => openPayModal(s)}
                             className="bg-rose-50 hover:bg-rose-100 dark:bg-rose-600/20 dark:hover:bg-rose-600/40 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-500/40 px-2.5 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-all flex items-center gap-1 shadow-xs"
-                            title="إصدار سند صرف نقدية للمورد"
+                            title="إضافة دفعة نقدية للمورد"
                           >
                             <ArrowDownCircle className="w-3.5 h-3.5" />
-                            <span>سند صرف</span>
+                            <span>إضافة دفعة</span>
                           </button>
 
                           {/* Print & View Statement Button */}
