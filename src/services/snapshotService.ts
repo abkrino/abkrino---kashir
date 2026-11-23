@@ -592,6 +592,8 @@ class SnapshotService {
         users: data.users?.length || 0,
         parkedCarts: data.parkedCarts?.length || 0,
         salesReturns: data.salesReturns?.length || 0,
+        inventoryLots: data.inventoryLots?.length || 0,
+        fifoAllocations: data.fifoAllocations?.length || 0,
       },
       checksum,
       data,
@@ -720,6 +722,11 @@ class SnapshotService {
               error: `عدد سجلات ${col.label} في الملف (${actual}) لا يطابق الفهرس المسجل (${expected})، الملف غير مكتمل أو تالف.`,
             };
           }
+        }
+      }
+      for (const key of ['inventoryLots', 'fifoAllocations']) {
+        if (typeof parsed.recordCounts[key] === 'number' && Array.isArray(data[key]) && data[key].length !== parsed.recordCounts[key]) {
+          return { valid: false, error: `عدد سجلات ${key} في الملف لا يطابق الفهرس المسجل.` };
         }
       }
       if (
