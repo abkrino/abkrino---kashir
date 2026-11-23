@@ -341,6 +341,24 @@ describe('Sales Returns (مرتجعات المبيعات)', () => {
     expect(storage.getSalesInvoices().some(invoice => invoice.id === second.id)).toBe(true);
   });
 
+  it('rejects negative stock through product editing and inventory adjustments', () => {
+    const before = storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces;
+    const edited = storage.saveProduct({ ...testProduct, stockPieces: -1 });
+    expect(edited.success).toBe(false);
+    expect(storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces).toBe(before);
+
+    const adjustment = storage.recordStockAdjustment({
+      productId: testProduct.id,
+      differencePieces: -(before + 1),
+      reason: 'CORRECTION',
+      reasonArabic: 'اختبار منع الرصيد السالب',
+      performedBy: adminUser.fullName,
+    });
+    expect(adjustment.success).toBe(false);
+    expect(storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces).toBe(before);
+    expect(storage.getStockAdjustments()).toHaveLength(0);
+  });
+
   it('1. Enforces quantity cap (sold - previouslyReturned) and supports multiple partial returns up to FULL', () => {
     const inv = postSampleInvoice();
     const initialInvoiceSnapshot = JSON.stringify(storage.getSalesInvoices().find(i => i.id === inv.id));
