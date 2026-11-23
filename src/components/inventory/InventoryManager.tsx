@@ -201,7 +201,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
     setCode(generateNewProductCode());
     setBarcode('');
     setCartonBarcode('');
-    setCategory('منتجات الألبان والأجبان');
+    setCategory(categoryNames[0] || 'أخرى');
     setBrand(targetBrand || (selectedBrand !== 'ALL' ? selectedBrand : distinctBrands[0] || 'شركة جهينة'));
     setIsNewBrandInput(false);
     setCustomBrandName('');
@@ -441,6 +441,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
       return;
     }
     setCategoryError(null);
+    if (category === name) setCategory(categoryNames.find(item => item !== name) || '');
     refreshCategories();
   };
 
@@ -1012,7 +1013,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                     onChange={(e) => setCategory(e.target.value)}
                     className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl p-2.5 text-slate-900 dark:text-white font-bold"
                   >
-                    {STANDARD_CATEGORIES.map(cat => (
+                    {categoryNames.map(cat => (
                       <option key={cat} value={cat}>{cat}</option>
                     ))}
                   </select>
@@ -1532,6 +1533,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
           onClose={() => setIsImportModalOpen(false)}
           onImportComplete={() => {
             setProducts(storage.getProducts());
+            setCategoryNames(storage.getCategories());
             onRefreshData();
           }}
         />
