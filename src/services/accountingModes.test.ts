@@ -281,7 +281,8 @@ describe('Accounting Modes, Unified evaluateCashOut & Structured Funding Sources
   });
 
   it('uses the configured cartons-per-pallet value for stock and FIFO lot quantities', () => {
-    testProduct.piecesPerPallet = 10;
+    testProduct = { ...testProduct, piecesPerPallet: 10 };
+    expect(storage.saveProduct(testProduct).success).toBe(true);
     const purchase = makePurchaseInvoice(0, 1200);
     purchase.items[0].unit = 'PALLET';
     purchase.items[0].quantity = 1;
