@@ -3236,9 +3236,10 @@ class StorageService {
     if (!supplier) return { success: false, error: 'المورد الأصلي غير موجود.' };
     if (params.settlement === 'SUPPLIER_BALANCE') {
       const balance = Number(supplier.currentBalance);
-      if (!Number.isFinite(balance) || balance + 0.001 < totalAmount) {
-        return { success: false, error: 'رصيد المورد المستحق أقل من قيمة المرتجع؛ اختر استرداد نقدي أو راجع حساب المورد.' };
+      if (!Number.isFinite(balance)) {
+        return { success: false, error: 'رصيد المورد غير صالح؛ تعذر تسوية المرتجع.' };
       }
+      // A negative supplier balance represents a credit/advance owed back to the shop.
       supplier.currentBalance = Math.round((balance - totalAmount) * 100) / 100;
     }
 
