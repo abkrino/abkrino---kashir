@@ -1283,6 +1283,10 @@ class StorageService {
     return this.getItem<FifoAllocation[]>(STORAGE_KEYS.FIFO_ALLOCATIONS, []);
   }
 
+  public isFifoInitialized(): boolean {
+    return this.getItem<boolean>(STORAGE_KEYS.FIFO_INITIALIZED, false);
+  }
+
   /** Idempotently seeds current stock as opening lots on first FIFO activation. */
   public ensureFifoInitialized(): { success: boolean; error?: string } {
     if (this.getItem<boolean>(STORAGE_KEYS.FIFO_INITIALIZED, false)) return { success: true };
