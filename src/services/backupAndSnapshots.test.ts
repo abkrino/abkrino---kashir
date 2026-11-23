@@ -149,7 +149,16 @@ describe('Local Snapshots, SHA-256 Checksum, Restore Safety & Bootstrap Idempote
     expect(badChecksumResult.valid).toBe(false);
     expect(badChecksumResult.error).toContain('SHA-256');
 
-    // 4. Legacy file without checksum is accepted with a visible warning (if all 12 collections present)
+    // 4. Checksum mismatch remains blocked by default, but explicit recovery is
+    // clearly marked and can only be requested through the dedicated option.
+    const recoveryResult = await snapshotService.validateBackup(badChecksumPkg, {
+      allowChecksumMismatchAfterExplicitRecovery: true,
+    });
+    expect(recoveryResult.valid).toBe(true);
+    expect(recoveryResult.preview?.checksumStatus).toBe('mismatch');
+    expect(recoveryResult.warning).toContain('تحذير أمني');
+
+    // 5. Legacy file without checksum is accepted with a visible warning (if all 12 collections present)
     const legacyPkg = {
       version: '2.0',
       timestamp: new Date().toISOString(),
