@@ -1298,6 +1298,11 @@ class StorageService {
     }
 
     const products = this.getProducts();
+    const categories = this.getCategories();
+    if (!categories.some(name => name.toLocaleLowerCase() === product.category.trim().toLocaleLowerCase())) {
+      categories.push(product.category.trim());
+      this.setItem(STORAGE_KEYS.CATEGORIES, categories);
+    }
     const index = products.findIndex(p => p.id === product.id);
     if (index >= 0) {
       products[index] = product;
