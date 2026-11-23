@@ -2389,6 +2389,25 @@ class StorageService {
         return { success: false, error: 'أحد الأصناف المختارة غير موجود في فاتورة البيع الأصلية' };
       }
 
+      // A restock return must have a valid destination product before any refund,
+      // customer balance, stock, return record, or audit-log mutation can occur.
+      if (params.returnToStock) {
+        const stockProduct = products.find(p => p.id === origItem.productId);
+        if (!stockProduct) {
+          return {
+            success: false,
+            error: `لا يمكن إعادة المرتجع للمخزون: الصنف المرتبط بالمرتجع غير موجود (معرّف: ${origItem.productId}).`,
+          };
+        }
+        const currentStock = Number(stockProduct.stockPieces);
+        if (!Number.isFinite(currentStock) || currentStock < 0) {
+          return {
+            success: false,
+            error: `لا يمكن إعادة المرتجع للمخزون: رصيد الصنف "${stockProduct.name}" غير صالح.`,
+          };
+        }
+      }
+
       const lineKey = this.getInvoiceLineKey(origItem);
       const fallbackKey = `${origItem.productId}::${origItem.unit}`;
       const alreadyReturned =
