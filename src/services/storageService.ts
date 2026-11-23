@@ -3190,6 +3190,12 @@ class StorageService {
       purchase.fundingDetails = resolvedFunding;
     }
 
+    // Allocate invoice-level discount, freight and cash bonus proportionally across merchandise cost.
+    const purchaseItemsSubtotal = purchase.items.reduce((sum, item) => sum + (Number(item.totalCost) || 0), 0);
+    const purchaseCashBonus = purchase.bonusType === 'CASH' ? (Number(purchase.bonusAmount) || 0) : 0;
+    const landedPurchaseCost = Math.max(0, purchaseItemsSubtotal - (Number(purchase.discountAmount) || 0) + (Number(purchase.freightCost) || 0) - purchaseCashBonus);
+    const landedCostMultiplier = purchaseItemsSubtotal > 0 ? landedPurchaseCost / purchaseItemsSubtotal : 0;
+
     // حساب المديونيات
     purchase.previousSupplierBalance = supp.currentBalance;
 
@@ -3211,7 +3217,7 @@ class StorageService {
 
           // Moving Weighted Average Cost update
           const totalOldValue = Math.max(0, totalPiecesBefore) * prod.costPricePerBase;
-          const unitPieceCostReceived = item.unitCost / piecesPerUnit;
+          const unitPieceCostReceived = (item.unitCost * landedCostMultiplier) / piecesPerUnit;
           const totalNewAddedValue = addedPieces * unitPieceCostReceived;
           
           const newTotalPieces = Math.max(0, totalPiecesBefore) + addedPieces;
@@ -3247,7 +3253,7 @@ class StorageService {
             productId: product.id, source: 'PURCHASE', referenceId: purchase.id,
             referenceNumber: purchase.invoiceNumber, receivedAt: new Date().toISOString(),
             originalQty: receivedQty, remainingQty: receivedQty,
-            unitCost: Number(item.unitCost) / factor,
+            unitCost: (Number(item.unitCost) * landedCostMultiplier) / factor,
             batchNumber: item.batchNumber, expiryDate: item.expiryDate,
           });
         } catch (error: any) {
@@ -3493,16 +3499,28 @@ class StorageService {
         (!Number.isFinite(Number(purchase.bonusGoodsQuantity)) || Number(purchase.bonusGoodsQuantity) < 0)) {
       return { success: false, error: 'كمية بونص البضاعة غير صالحة.' };
     }
+    const purchaseItemsSubtotal = purchase.items.reduce((sum, item) => sum + (Number(item.totalCost) || 0), 0);
+    const purchaseCashBonus = purchase.bonusType === 'CASH' ? (Number(purchase.bonusAmount) || 0) : 0;
+    const landedPurchaseCost = Math.max(0, purchaseItemsSubtotal - (Number(purchase.discountAmount) || 0) + (Number(purchase.freightCost) || 0) - purchaseCashBonus);
+    const landedCostMultiplier = purchaseItemsSubtotal > 0 ? landedPurchaseCost / purchaseItemsSubtotal : 0;
     for (const item of purchase.items) {
       const prod = products.find(p => p.id === item.productId);
       if (prod) {
-        const piecesPerUnit = item.unit === 'CARTON' 
-          ? prod.piecesPerWholesaleUnit 
-          : item.unit === 'PALLET' 
-          ? (prod.piecesPerWholesaleUnit * 20) 
+        const piecesPerUnit = item.unit === 'CARTON'
+          ? Number(prod.piecesPerWholesaleUnit)
+          : item.unit === 'PALLET'
+          ? Number(prod.piecesPerWholesaleUnit) * 20
           : 1;
-
-        prod.stockPieces += (item.quantity * piecesPerUnit);
+        const addedPieces = Number(item.quantity) * piecesPerUnit;
+        const totalPiecesBefore = Number(prod.stockPieces) || 0;
+        const oldValue = Math.max(0, totalPiecesBefore) * (Number(prod.costPricePerBase) || 0);
+        const receivedUnitCost = (Number(item.unitCost) * landedCostMultiplier) / piecesPerUnit;
+        prod.stockPieces += addedPieces;
+        const newTotalPieces = Math.max(0, totalPiecesBefore) + addedPieces;
+        if (newTotalPieces > 0) {
+          prod.costPricePerBase = Math.round(((oldValue + addedPieces * receivedUnitCost) / newTotalPieces) * 100) / 100;
+          prod.costPricePerCarton = Math.round(prod.costPricePerBase * Number(prod.piecesPerWholesaleUnit) * 100) / 100;
+        }
       }
     }
     if (purchase.bonusType === 'GOODS' && Number(purchase.bonusGoodsQuantity) > 0 && purchase.items.length > 0) {
