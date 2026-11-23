@@ -327,7 +327,8 @@ export interface CashMovement {
     | 'OPENING_BALANCE' 
     | 'DRAWER_ADJUSTMENT' 
     | 'INVOICE_REVERSAL'
-    | 'SALES_REFUND'\n    | 'PURCHASE_RETURN'
+    | 'SALES_REFUND'
+    | 'PURCHASE_RETURN'
     | 'CAPITAL_INJECTION';
   categoryLabelArabic: string;
   amount: number;
