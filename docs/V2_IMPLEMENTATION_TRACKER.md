@@ -57,12 +57,69 @@
 - [ ] Add per-employee permissions, including shifts, inventory, accounting, and HR.
 - [ ] Add dashboard indicators for sales, inventory, profits, and employees.
 
-## Priority 6 — Abkrino design system
-- [ ] Apply a coherent Claymorphism design system across all screens (not a separate "Design" tab).
-- [ ] Use Abkrino identity from installer through application, including a custom app icon.
-- [ ] Improve installer branding.
-- [ ] Keep animations lightweight and preserve responsiveness.
-- [ ] Remove restrictive content-width constraints so each tab uses available workspace width.
+## Priority 6 — Abkrino visual identity and complete Claymorphism design system
+
+### Brand assets — immutable source of truth
+- [ ] Locate and verify the original `logo.jpg` and `icon_2.png` assets in the repository or owner-provided project assets before implementation. The previous code search did not confirm their repository paths; do not recreate or approximate either asset.
+- [ ] Preserve the exact ABKRINO wordmark, the exact tagline `SEARCH, DEVELOP, RUN`, and the original mascot/logo composition, shapes, text, and spatial proportions from `logo.jpg`.
+- [ ] Use `icon_2.png` as the exact application/file icon. Preserve its geometry, spiky hair, circular glasses, teal eyes and offset pupils, central nose/mouth line, three lower prongs, colors, and proportions.
+- [ ] Apply clay-like surface treatment only to surrounding UI surfaces; never redraw, simplify, distort, recolor, crop, or alter the source logo or mascot artwork.
+- [ ] Do not misspell ABKRINO or modify the tagline. Avoid cyberpunk neon edges and heavy/grungy visual clutter.
+
+### Branding must start at installation — not only after the app opens
+- [ ] Apply ABKRINO branding to the Windows installer experience from its first visible screen: installer icon, wizard/window identity, header or welcome artwork where supported, progress/completion screens, and shortcuts.
+- [ ] Use the exact `icon_2.png` for the installer executable/file icon, installed application icon, taskbar/window icon, desktop shortcut, and Start Menu shortcut. Confirm Windows displays the intended icon after installation.
+- [ ] Use the full `logo.jpg` wordmark/tagline in installer artwork only where it can be shown without distortion or illegible scaling.
+- [ ] Carry the same brand identity through first launch, login/loading states, app title/header, navigation, all modules, dialogs, and relevant empty/error states.
+- [ ] Ensure the uninstaller and Windows app metadata use the ABKRINO POS product name and consistent branding where the installer technology permits.
+- [ ] Build and inspect the actual Windows installer on Windows; a branded in-app screen alone does not satisfy this requirement.
+
+### Global visual language
+- [ ] Apply Claymorphism consistently across the entire application: soft tactile 3D clay surfaces, puffy rounded controls, clean uncluttered composition, and a friendly modern POS feel without sacrificing cashier speed or readability.
+- [ ] Use soft diffused top-left studio lighting; subtle top-left inset/highlight bevels; gentle bottom-right inner shadows; soft ambient outer shadows; minimal harsh outlines.
+- [ ] Standard radii: pill buttons `999px`; large cards `32px`; medium cards `24px`; buttons/inputs `16px`; icon containers `24px`.
+- [ ] Use the specified clay elevation/inset shadow language as design references, adapting opacity to maintain readable contrast and avoid muddy or overly embossed text.
+- [ ] Use a clean geometric UI font with Arabic and English support (Cairo, Tajawal, or IBM Plex Sans Arabic for Arabic; Inter or Plus Jakarta Sans for English/numerals).
+- [ ] Use tabular lining numerals for prices, totals, quantities, barcodes, and receipt amounts.
+- [ ] Keep motion subtle and lightweight; respect reduced-motion/accessibility preferences and avoid delaying cashier actions.
+
+### Light theme palette and component behavior
+- [ ] Main background `#F0F4F8`; card `#FFFFFF`; secondary surface `#E8EEF5`.
+- [ ] Primary teal `#00897B`; light teal `#26A69A`; secondary green `#16A34A`.
+- [ ] Accent crimson `#8E241C`; dark brand crimson `#5A120E`; accent yellow `#FBBF24`.
+- [ ] Primary text `#1E242B`; secondary text `#5A6572`; subtle border `rgba(0,0,0,0.05)`.
+- [ ] Header uses card surface and clay elevation; preserve the logo artwork while applying teal only to surrounding brand accents.
+- [ ] Product cards use white clay surfaces and green add buttons.
+- [ ] Checkout panel uses the secondary surface with an inset clay treatment.
+- [ ] Pay action uses crimson with white text; save/print action uses green with white text.
+- [ ] Active sidebar item uses teal with white text and a subtle inset treatment.
+
+### Dark theme palette and component behavior
+- [ ] Main background `#15151F`; card `#1D1D28`; secondary surface `#181822`.
+- [ ] Teal glow `#00C8B3`; green glow `#22C55E`; dark crimson `#B91C1C`; yellow glow `#FDE047`.
+- [ ] Primary text `#F3F4F6`; secondary text `#9CA3AF`; subtle border `rgba(255,255,255,0.05)`.
+- [ ] Header uses card surface and a restrained dark shadow; preserve source logo colors/artwork.
+- [ ] Product cards use dark card surfaces and green add buttons.
+- [ ] Checkout panel uses `#181822` with a subtle inset shadow.
+- [ ] Pay action uses dark crimson with white text; save/print uses green with dark text.
+- [ ] Active sidebar item uses glowing teal with dark text and a subtle inset treatment.
+- [ ] Ensure glow is restrained and never harms text contrast or causes visual noise.
+
+### POS-specific interaction and layout rules
+- [ ] Product cards: clear title, price badge, soft clay surface, and tactile press feedback.
+- [ ] Category tabs: rounded pill controls; active category uses brand teal elevation, inactive categories remain visually quiet.
+- [ ] Cart/checkout: clearly itemized lines, subtotal, discount/tax breakdown, and prominent pay/save/print actions; checkout panel may use inset clay treatment.
+- [ ] Numpad and quick actions: large finger-friendly keys with clear pressed states for fast cash entry.
+- [ ] Top bar: exact mascot icon and/or undistorted full logo, branch/shift status, search, and quick actions.
+- [ ] Maintain high information density where needed for cashier work; clay styling must not reduce scan speed, hit targets, or numeric legibility.
+- [ ] Remove restrictive fixed/max content-width wrappers so every tab uses the available application workspace while retaining sensible responsive gutters.
+
+### Design acceptance criteria
+- [ ] A visual review confirms installer → first launch → login → dashboard → cashier → inventory → suppliers → HR → reports → settings all share one coherent system.
+- [ ] Both light and dark themes are checked for contrast, Arabic shaping, English labels, numeric alignment, focus/hover/pressed/disabled/error states.
+- [ ] Exact source assets are visually compared against installer, app icon, and in-app logo outputs; no redraw or distortion is accepted.
+- [ ] Test at the supported minimum window size and common Windows display scaling settings; verify no clipped controls or unusable cashier layout.
+- [ ] Performance check confirms shadows/animations do not materially slow the cashier or inventory screens.
 
 ## Verification / release gates
 - [ ] Type check and automated tests pass.
