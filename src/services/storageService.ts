@@ -2519,6 +2519,8 @@ class StorageService {
       return { success: false, error: 'يرجى اختيار صنف واحد على الأقل بكمية مرتجعة موجبة' };
     }
 
+    const fifoInit = this.ensureFifoInitialized();
+    if (!fifoInit.success) return { success: false, error: fifoInit.error };
     const products = this.getProducts();
     const summary = this.getInvoiceReturnSummary(invoice);
     const requestedPerKey: Record<string, number> = {};
@@ -2673,14 +2675,45 @@ class StorageService {
     const timeStr = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
     const returnNumber = this.nextDocumentNumber('RET', now);
 
+    let returnLots = this.getInventoryLots();
+    let returnAllocations = this.getFifoAllocations();
     if (params.returnToStock) {
       for (const item of returnItems) {
-        const prod = products.find(p => p.id === item.productId);
-        if (prod) {
-          prod.stockPieces = Math.round((prod.stockPieces + item.piecesCount) * 1000) / 1000;
+        const originalItem = invoice.items.find(candidate => this.getInvoiceLineKey(candidate) === item.itemKey);
+        if (!originalItem) return { success: false, error: 'تعذر ربط المرتجع بسطر البيع الأصلي.' };
+        const hasOriginalAllocation = returnAllocations.some(allocation => allocation.invoiceId === invoice.id && allocation.invoiceItemId === originalItem.id);
+        if (hasOriginalAllocation) {
+          const returned = returnToOriginalLots(returnLots, returnAllocations, invoice.id, originalItem.id, item.piecesCount);
+          if (returned.error) return { success: false, error: returned.error };
+          returnLots = returned.lots;
+          returnAllocations = returned.allocations;
+        } else if (!returnAllocations.some(allocation => allocation.invoiceId === invoice.id)) {
+          // Compatibility path for sales invoices posted before FIFO activation.
+          const unitCost = item.piecesCount > 0 ? item.costTotal / item.piecesCount : 0;
+          try {
+            returnLots = receiveLot(returnLots, {
+              id: `lot-return-${returnNumber}-${item.itemKey}`, productId: item.productId,
+              source: 'RETURN', referenceId: returnNumber, referenceNumber: invoice.invoiceNumber,
+              receivedAt: `${dateStr}T${timeStr}`, originalQty: item.piecesCount,
+              remainingQty: item.piecesCount, unitCost,
+            });
+          } catch (error: any) {
+            return { success: false, error: error?.message || 'تعذر إنشاء دفعة المرتجع.' };
+          }
+        } else {
+          return { success: false, error: 'تخصيص FIFO لسطر البيع الأصلي غير مكتمل؛ تم إيقاف المرتجع لحماية تكلفة المخزون.' };
         }
       }
-      this.setItem(STORAGE_KEYS.PRODUCTS, products);
+      const nextStockProducts = products.map(product => ({ ...product }));
+      for (const item of returnItems) {
+        const product = nextStockProducts.find(candidate => candidate.id === item.productId);
+        if (product) product.stockPieces = Math.round((product.stockPieces + item.piecesCount) * 1000) / 1000;
+      }
+      const ledgerErrors = validateFifoLedger(nextStockProducts, returnLots);
+      if (ledgerErrors.length) return { success: false, error: ledgerErrors[0] };
+      this.setItem(STORAGE_KEYS.PRODUCTS, nextStockProducts);
+      this.setItem(STORAGE_KEYS.INVENTORY_LOTS, returnLots);
+      this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, returnAllocations);
     }
 
     if (params.refundMethod === 'CUSTOMER_CREDIT' && targetCustomer) {
@@ -3337,6 +3370,8 @@ class StorageService {
     if (!purchase) return { success: false, error: 'فاتورة الشراء غير موجودة' };
     if (purchase.isStockInserted) return { success: false, error: 'الفاتورة مدرجة بالمخزن بالفعل' };
 
+    const fifoInit = this.ensureFifoInitialized();
+    if (!fifoInit.success) return { success: false, error: fifoInit.error };
     const products = this.getProducts();
     // Validate every line and the bonus before applying any stock increase.
     for (const item of purchase.items || []) {
@@ -3370,6 +3405,43 @@ class StorageService {
       }
     }
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
+
+    let lots = this.getInventoryLots();
+    for (let index = 0; index < purchase.items.length; index++) {
+      const item = purchase.items[index];
+      const product = products.find(p => p.id === item.productId)!;
+      const factor = item.unit === 'CARTON' ? Number(product.piecesPerWholesaleUnit)
+        : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * 20 : 1;
+      const receivedQty = Number(item.quantity) * factor;
+      try {
+        lots = receiveLot(lots, {
+          id: `lot-purchase-${purchase.id}-${index + 1}`, productId: product.id,
+          source: 'PURCHASE', referenceId: purchase.id, referenceNumber: purchase.invoiceNumber,
+          receivedAt: `${purchase.date}T${purchase.time || '00:00:00'}`,
+          originalQty: receivedQty, remainingQty: receivedQty, unitCost: Number(item.unitCost) / factor,
+          batchNumber: item.batchNumber, expiryDate: item.expiryDate,
+        });
+      } catch (error: any) {
+        return { success: false, error: error?.message || 'تعذر إنشاء دفعة المشتريات.' };
+      }
+    }
+    if (purchase.bonusType === 'GOODS' && Number(purchase.bonusGoodsQuantity) > 0) {
+      const bonusProduct = products.find(p => p.id === purchase.items[0].productId)!;
+      const bonusQty = Number(purchase.bonusGoodsQuantity) * Number(bonusProduct.piecesPerWholesaleUnit);
+      try {
+        lots = receiveLot(lots, {
+          id: `lot-bonus-${purchase.id}`, productId: bonusProduct.id, source: 'BONUS',
+          referenceId: purchase.id, referenceNumber: purchase.invoiceNumber,
+          receivedAt: `${purchase.date}T${purchase.time || '00:00:00'}`,
+          originalQty: bonusQty, remainingQty: bonusQty, unitCost: 0,
+        });
+      } catch (error: any) {
+        return { success: false, error: error?.message || 'تعذر إنشاء دفعة البونص.' };
+      }
+    }
+    const ledgerErrors = validateFifoLedger(products, lots);
+    if (ledgerErrors.length) return { success: false, error: ledgerErrors[0] };
+    this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
 
     purchase.isStockInserted = true;
     this.setItem(STORAGE_KEYS.PURCHASES, purchases);
