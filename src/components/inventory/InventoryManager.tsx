@@ -77,6 +77,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
   const [wholesaleUnit, setWholesaleUnit] = useState('كرتونة');
   const [baseUnit, setBaseUnit] = useState('عبوة');
   const [piecesPerWholesaleUnit, setPiecesPerWholesaleUnit] = useState<number>(12);
+  const [piecesPerPallet, setPiecesPerPallet] = useState<number>(20);
   
   // Costs & Prices
   const [costPricePerCarton, setCostPricePerCarton] = useState<number>(456);
@@ -240,6 +241,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
     setWholesaleUnit(p.wholesaleUnit || 'كرتونة');
     setBaseUnit(p.baseUnit || 'قطعة');
     setPiecesPerWholesaleUnit(p.piecesPerWholesaleUnit);
+    setPiecesPerPallet(Number(p.piecesPerPallet) > 0 ? Number(p.piecesPerPallet) : 20);
     setCostPricePerCarton(p.costPricePerCarton);
     setCostPricePerBase(p.costPricePerBase);
     setWholesalePricePerCarton(p.wholesalePricePerCarton);
@@ -281,6 +283,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
         baseUnit,
         wholesaleUnit,
         piecesPerWholesaleUnit: totalPiecesPerCarton,
+        piecesPerPallet: Math.max(1, Number(piecesPerPallet) || 20),
         costPricePerBase: finalCostPerBase,
         costPricePerCarton,
         wholesalePricePerCarton,
@@ -1180,6 +1183,18 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                     onChange={(e) => handlePiecesPerCartonChange(parseInt(e.target.value) || 1)}
                     className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl p-2 text-slate-900 dark:text-white font-bold font-mono"
                   />
+                </div>
+                <div>
+                  <label className="text-slate-800 dark:text-slate-200 block mb-1 font-bold">عدد الكراتين في البالتة:</label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={piecesPerPallet}
+                    onChange={(e) => setPiecesPerPallet(Math.max(1, parseInt(e.target.value) || 1))}
+                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl p-2 text-slate-900 dark:text-white font-bold font-mono"
+                  />
+                  <span className="text-[10px] text-slate-500">يستخدم في تحويل البالتة إلى قطع عند الشراء والمرتجعات</span>
                 </div>
               </div>
 
