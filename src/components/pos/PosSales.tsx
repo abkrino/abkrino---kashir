@@ -106,6 +106,12 @@ export const PosSales: React.FC<PosSalesProps> = ({
   // Catalog Search & Category Filter
   const [catalogSearchQuery, setCatalogSearchQuery] = useState<string>('');
   const [catalogCategory, setCatalogCategory] = useState<string>('ALL');
+  const [catalogPage, setCatalogPage] = useState<number>(1);
+  const CATALOG_PAGE_SIZE = 60;
+
+  useEffect(() => {
+    setCatalogPage(1);
+  }, [catalogCategory, catalogSearchQuery]);
 
   // Grid Capacity & Column Sizing Control (3, 4, 5, 6, 7 columns)
   const [gridColumns, setGridColumns] = useState<number>(() => {
@@ -698,6 +704,13 @@ export const PosSales: React.FC<PosSalesProps> = ({
     });
   }, [products, catalogCategory, catalogSearchQuery, productUsageScores]);
 
+  const catalogPageCount = Math.max(1, Math.ceil(filteredCatalogProducts.length / CATALOG_PAGE_SIZE));
+  const safeCatalogPage = Math.min(catalogPage, catalogPageCount);
+  const paginatedCatalogProducts = useMemo(() => {
+    const start = (safeCatalogPage - 1) * CATALOG_PAGE_SIZE;
+    return filteredCatalogProducts.slice(start, start + CATALOG_PAGE_SIZE);
+  }, [filteredCatalogProducts, safeCatalogPage]);
+
   return (
     <div className="abkrino-pos grid grid-cols-1 lg:grid-cols-12 gap-4" dir="rtl">
       {/* Toast Alert */}
@@ -1010,11 +1023,12 @@ export const PosSales: React.FC<PosSalesProps> = ({
                   ? 'grid-cols-3 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-7 xl:grid-cols-7'
                   : 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-5'
               }`}>
-                {filteredCatalogProducts.map((prod, index) => {
+                {paginatedCatalogProducts.map((prod, index) => {
                   const isDairy = prod.category === 'منتجات الألبان والأجبان';
                   const isWeighed = prod.isWeighing;
                   const unitPrice = getDefaultPrice(prod, isWeighed ? 'KG' : 'PIECE', selectedCustomer);
-                  const isPopular = index < 10 || (productUsageScores[prod.id] || 0) >= 30;
+                  const absoluteIndex = (safeCatalogPage - 1) * CATALOG_PAGE_SIZE + index;
+                  const isPopular = absoluteIndex < 10 || (productUsageScores[prod.id] || 0) >= 30;
 
                   return (
                     <div
@@ -1108,6 +1122,19 @@ export const PosSales: React.FC<PosSalesProps> = ({
               </div>
             )}
           </div>
+
+          {filteredCatalogProducts.length > 0 && (
+            <div className="mt-2 flex flex-col sm:flex-row items-center justify-between gap-2 border-t border-slate-200 dark:border-slate-800 pt-2">
+              <span className="text-[11px] text-slate-500 font-bold" aria-live="polite">
+                عرض {(safeCatalogPage - 1) * CATALOG_PAGE_SIZE + 1}–{Math.min(safeCatalogPage * CATALOG_PAGE_SIZE, filteredCatalogProducts.length)} من {filteredCatalogProducts.length} صنف
+              </span>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={() => setCatalogPage(page => Math.max(1, page - 1))} disabled={safeCatalogPage <= 1} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="الصفحة السابقة">السابق</button>
+                <span className="text-xs font-mono font-bold text-slate-700 dark:text-slate-300" aria-label={`صفحة ${safeCatalogPage} من ${catalogPageCount}`}>{safeCatalogPage} / {catalogPageCount}</span>
+                <button type="button" onClick={() => setCatalogPage(page => Math.min(catalogPageCount, page + 1))} disabled={safeCatalogPage >= catalogPageCount} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="الصفحة التالية">التالي</button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
