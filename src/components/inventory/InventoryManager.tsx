@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Product, User, StockAdjustment } from '../../types';
+import { Product, User, StockAdjustment, Supplier } from '../../types';
 import { storage } from '../../services/storageService';
 import { 
   Boxes, 
@@ -136,6 +136,37 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
     setPiecesPerWholesaleUnit(safePieces);
     setCostPricePerBase(Math.round((costPricePerCarton / safePieces) * 100) / 100);
     setRetailPricePerBase(Math.round((wholesalePricePerCarton / safePieces) * 1.15 * 100) / 100);
+  };
+
+  // Create a supplier record from a company directory entry (without inventing contact or balance data).
+  const addCompanyAsSupplier = (companyName: string) => {
+    const normalizedName = companyName.trim().toLocaleLowerCase();
+    const existing = storage.getSuppliers().find(
+      supplier => supplier.name.trim().toLocaleLowerCase() === normalizedName
+    );
+    if (existing) {
+      window.alert('هذه الشركة مسجلة بالفعل كمورد.');
+      return;
+    }
+
+    const supplier: Supplier = {
+      id: `s-${Date.now()}`,
+      code: `SUP-${Math.floor(100 + Math.random() * 900)}`,
+      name: companyName.trim(),
+      type: 'COMPANY',
+      phone: '-',
+      contactPerson: '-',
+      paymentTermsDays: 15,
+      openingBalance: 0,
+      currentBalance: 0,
+    };
+    const result = storage.saveSupplier(supplier);
+    if (!result.success) {
+      window.alert(result.error || 'تعذر إضافة الشركة كمورد.');
+      return;
+    }
+    onRefreshData();
+    window.alert('تمت إضافة الشركة كمورد. يمكنك استكمال بيانات المندوب والهاتف وشروط الدفع من شاشة الموردين.');
   };
 
   // Generate Unique Auto Item Code
@@ -728,6 +759,17 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
                     >
                       + صنف جديد
                     </button>
+                    {isAdmin && (
+                      <button
+                        type="button"
+                        onClick={() => addCompanyAsSupplier(bName)}
+                        disabled={storage.getSuppliers().some(s => s.name.trim().toLocaleLowerCase() === bName.trim().toLocaleLowerCase())}
+                        className="bg-teal-50 hover:bg-teal-100 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-teal-950/50 text-teal-800 dark:text-teal-300 border border-teal-300 dark:border-teal-800 text-xs font-bold px-2.5 py-1.5 rounded-lg cursor-pointer"
+                        title="إضافة الشركة إلى دليل الموردين"
+                      >
+                        {storage.getSuppliers().some(s => s.name.trim().toLocaleLowerCase() === bName.trim().toLocaleLowerCase()) ? 'مورد مسجل' : '+ إضافة كمورد'}
+                      </button>
+                    )}
                   </div>
 
                   <div className="bg-slate-50 dark:bg-slate-950 p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-xs flex justify-between font-mono">
