@@ -379,7 +379,6 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
       contactPerson: newSuppContact || '-',
       openingBalance: newSuppOpeningBalance,
       currentBalance: newSuppOpeningBalance,
-      paymentTermsDays: newSuppType === 'WHOLESALER' ? 3 : 15,
     };
 
     const saveRes = storage.saveSupplier(newSupplier);
