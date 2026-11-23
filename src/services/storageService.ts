@@ -4,7 +4,7 @@ import {
   StoreProfile, DEFAULT_STORE_PROFILE, LEGACY_STORE_PROFILE,
   AccountingMode, FundingSource, FundingSourceType, CashMovementFunding,
   CashOutEvaluation, DEFAULT_FUNDING_SOURCES,
-  SalesReturn, SalesReturnItem, SalesReturnReason, SalesReturnRefundMethod,
+  SalesReturn, SalesReturnItem, SalesReturnReason, SalesReturnRefundMethod, PurchaseReturn,
   SALES_RETURN_REASON_LABELS, InvoiceLineItem
 } from '../types';
 import {
@@ -46,7 +46,7 @@ export const STORAGE_KEYS = {
   ACCOUNTING_MODE: 'sm_accounting_mode_v1',
   MONTHLY_POOL_INCLUDES_CAP_INJ: 'sm_monthly_pool_cap_inj_v1',
   FUNDING_SOURCES: 'sm_funding_sources_v1',
-  SALES_RETURNS: 'sm_sales_returns_v1',
+  SALES_RETURNS: 'sm_sales_returns_v1',\n  PURCHASE_RETURNS: 'sm_purchase_returns_v1',
   INVENTORY_LOTS: 'sm_inventory_lots_v1',
   FIFO_ALLOCATIONS: 'sm_fifo_allocations_v1',
   FIFO_INITIALIZED: 'sm_fifo_initialized_v1',
@@ -3124,6 +3124,171 @@ class StorageService {
   // --- PURCHASING (RECEIVING STOCK & INVOICE MANAGEMENT) ---
   public getPurchases(): PurchaseInvoice[] {
     return this.getItem<PurchaseInvoice[]>(STORAGE_KEYS.PURCHASES, []);
+  }
+
+  public getPurchaseReturns(purchaseInvoiceId?: string): PurchaseReturn[] {
+    const all = this.getItem<PurchaseReturn[]>(STORAGE_KEYS.PURCHASE_RETURNS, []);
+    return purchaseInvoiceId ? all.filter(item => item.purchaseInvoiceId === purchaseInvoiceId) : all;
+  }
+
+  public processPurchaseReturn(params: {
+    purchaseInvoiceId: string;
+    items: Array<{ productId: string; quantityPieces: number }>;
+    settlement: 'SUPPLIER_BALANCE' | 'CASH_REFUND';
+    notes?: string;
+    user?: User | null;
+  }): { success: boolean; error?: string; purchaseReturn?: PurchaseReturn } {
+    const gate = this.assertWriteAllowed('PURCHASES', `تسجيل مرتجع مشتريات ${params.purchaseInvoiceId}`);
+    if (!gate.allowed) return { success: false, error: gate.error };
+    const user = params.user !== undefined ? params.user : this.getActiveUser();
+    if (!user || user.isActive === false || (user.role !== 'ADMIN' && !user.permissions?.canManagePurchases)) {
+      return { success: false, error: 'غير مصرح: ليس لديك صلاحية تسجيل مرتجعات المشتريات.' };
+    }
+    const purchase = this.getPurchases().find(item => item.id === params.purchaseInvoiceId);
+    if (!purchase) return { success: false, error: 'فاتورة الشراء الأصلية غير موجودة.' };
+    if (!purchase.isStockInserted) return { success: false, error: 'لا يمكن إرجاع مشتريات لم يتم إدراجها بالمخزن.' };
+    if (!Array.isArray(params.items) || params.items.length === 0) return { success: false, error: 'اختر صنفًا واحدًا على الأقل للمرتجع.' };
+    if (!['SUPPLIER_BALANCE', 'CASH_REFUND'].includes(params.settlement)) return { success: false, error: 'طريقة تسوية المرتجع غير صحيحة.' };
+
+    const fifoInit = this.ensureFifoInitialized();
+    if (!fifoInit.success) return { success: false, error: fifoInit.error };
+    const products = this.getProducts().map(product => ({ ...product }));
+    let lots = this.getInventoryLots().map(lot => ({ ...lot }));
+    let allocations = this.getFifoAllocations().map(allocation => ({ ...allocation }));
+    const previousReturns = this.getPurchaseReturns(purchase.id);
+    const returnItems: PurchaseReturn['items'] = [];
+    const requestedByProduct = new Map<string, number>();
+    for (const item of params.items) {
+      const quantity = Number(item.quantityPieces);
+      const product = products.find(entry => entry.id === item.productId);
+      if (!product || !Number.isFinite(quantity) || quantity <= 0) {
+        return { success: false, error: 'بيانات الصنف أو كمية المرتجع غير صالحة.' };
+      }
+      requestedByProduct.set(item.productId, (requestedByProduct.get(item.productId) || 0) + quantity);
+    }
+
+    const now = new Date();
+    const returnId = `pret-${now.getTime()}-${Math.random().toString(36).slice(2, 7)}`;
+    let totalAmount = 0;
+    for (const [productId, requested] of requestedByProduct) {
+      const product = products.find(entry => entry.id === productId)!;
+      const originalQty = purchase.items.reduce((sum, item) => {
+        if (item.productId !== productId) return sum;
+        const factor = item.unit === 'CARTON' ? Number(product.piecesPerWholesaleUnit)
+          : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * 20 : 1;
+        return sum + Number(item.quantity) * factor;
+      }, 0) + (purchase.bonusType === 'GOODS' && purchase.items[0]?.productId === productId
+        ? Number(purchase.bonusGoodsQuantity || 0) * Number(product.piecesPerWholesaleUnit) : 0);
+      const alreadyReturned = previousReturns.reduce((sum, record) =>
+        sum + record.items.filter(line => line.productId === productId).reduce((n, line) => n + line.quantityPieces, 0), 0);
+      if (!Number.isFinite(originalQty) || requested + alreadyReturned > originalQty + 0.001) {
+        return { success: false, error: `كمية مرتجع الصنف "${product.name}" تتجاوز الكمية المستلمة بعد خصم المرتجعات السابقة.` };
+      }
+      const currentStock = Number(product.stockPieces);
+      if (!Number.isFinite(currentStock) || currentStock < requested) {
+        return { success: false, error: `لا يمكن إرجاع الصنف "${product.name}": رصيد المخزون الحالي أقل من الكمية المطلوبة.` };
+      }
+
+      let remaining = requested;
+      const lotAllocations: PurchaseReturn['items'][number]['lotAllocations'] = [];
+      const candidates = lots.filter(lot => lot.referenceId === purchase.id && lot.productId === productId && lot.remainingQty > 0)
+        .sort((a, b) => a.receivedAt.localeCompare(b.receivedAt) || a.sequence - b.sequence || a.id.localeCompare(b.id));
+      for (const lot of candidates) {
+        if (remaining <= 0.001) break;
+        const take = Math.round(Math.min(remaining, lot.remainingQty) * 1000) / 1000;
+        if (take <= 0) continue;
+        lot.remainingQty = Math.round((lot.remainingQty - take) * 1000) / 1000;
+        remaining = Math.round((remaining - take) * 1000) / 1000;
+        const lineCost = Math.round(take * lot.unitCost * 100) / 100;
+        totalAmount += lineCost;
+        lotAllocations.push({ lotId: lot.id, quantity: take, unitCost: lot.unitCost });
+        allocations.push({
+          id: `alloc-${returnId}-${lotAllocations.length}`,
+          invoiceId: returnId,
+          invoiceItemId: `${productId}-${lotAllocations.length}`,
+          productId,
+          lotId: lot.id,
+          quantity: take,
+          unitCost: lot.unitCost,
+          returnedQty: 0,
+          createdAt: now.toISOString(),
+        });
+      }
+      if (remaining > 0.001) {
+        return { success: false, error: `لا توجد كمية متبقية كافية من دفعات فاتورة الشراء الأصلية للصنف "${product.name}". قد تكون الكمية بيعت أو أُعيدت سابقًا.` };
+      }
+      product.stockPieces = Math.round((currentStock - requested) * 1000) / 1000;
+      returnItems.push({
+        id: `${returnId}-${productId}`,
+        productId,
+        productName: product.name,
+        quantityPieces: requested,
+        unitCost: requested > 0 ? Math.round((lotAllocations.reduce((sum, line) => sum + line.quantity * line.unitCost, 0) / requested) * 100) / 100 : 0,
+        totalCost: Math.round(lotAllocations.reduce((sum, line) => sum + line.quantity * line.unitCost, 0) * 100) / 100,
+        lotAllocations,
+      });
+    }
+    totalAmount = Math.round(totalAmount * 100) / 100;
+    if (totalAmount <= 0) return { success: false, error: 'قيمة المرتجع صفر؛ لا يمكن تسجيل تسوية مالية.' };
+
+    const suppliers = this.getSuppliers().map(supplier => ({ ...supplier }));
+    const supplier = suppliers.find(entry => entry.id === purchase.supplierId);
+    if (!supplier) return { success: false, error: 'المورد الأصلي غير موجود.' };
+    if (params.settlement === 'SUPPLIER_BALANCE') {
+      const balance = Number(supplier.currentBalance);
+      if (!Number.isFinite(balance) || balance + 0.001 < totalAmount) {
+        return { success: false, error: 'رصيد المورد المستحق أقل من قيمة المرتجع؛ اختر استرداد نقدي أو راجع حساب المورد.' };
+      }
+      supplier.currentBalance = Math.round((balance - totalAmount) * 100) / 100;
+    }
+
+    const record: PurchaseReturn = {
+      id: returnId,
+      returnNumber: `PRET-${now.getFullYear()}-${String(now.getTime()).slice(-6)}`,
+      date: getCairoDateString(now),
+      time: now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' }),
+      purchaseInvoiceId: purchase.id,
+      purchaseInvoiceNumber: purchase.invoiceNumber,
+      supplierId: purchase.supplierId,
+      supplierName: purchase.supplierName,
+      items: returnItems,
+      totalAmount,
+      settlement: params.settlement,
+      notes: params.notes?.trim() || undefined,
+      performedByUserId: user.id,
+      performedBy: user.fullName,
+    };
+    const fifoErrors = [...validateFifoLedger(products, lots), ...validateFifoAllocations(lots, allocations)];
+    if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
+
+    // Persist the inventory, FIFO audit trail, supplier balance and return record only after full validation.
+    this.setItem(STORAGE_KEYS.PRODUCTS, products);
+    this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
+    this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, allocations);
+    if (params.settlement === 'SUPPLIER_BALANCE') this.setItem(STORAGE_KEYS.SUPPLIERS, suppliers);
+    const returns = this.getPurchaseReturns();
+    returns.unshift(record);
+    this.setItem(STORAGE_KEYS.PURCHASE_RETURNS, returns);
+    if (params.settlement === 'CASH_REFUND') {
+      const cashResult = this.addCashMovement({
+        id: `cm-${returnId}`,
+        date: record.date,
+        time: record.time,
+        type: 'IN',
+        category: 'PURCHASE_RETURN',
+        categoryLabelArabic: 'استرداد نقدي من مورد',
+        amount: totalAmount,
+        referenceId: record.returnNumber,
+        supplierId: supplier.id,
+        supplierName: supplier.name,
+        description: `استرداد قيمة مرتجع المشتريات ${record.returnNumber} من ${supplier.name}`,
+        performedBy: user.fullName,
+      }, { skipCashOutCheck: true, bypassLicenseCheck: true });
+      if (!cashResult.success) return { success: false, error: cashResult.error || 'تعذر تسجيل استرداد المرتجع بالخزينة.' };
+    }
+    this.addAuditLog('PURCHASE_RETURN', 'مرتجع مشتريات', 'مرتجعات المشتريات', record.returnNumber,
+      `مرتجع ${record.returnNumber} للفاتورة ${purchase.invoiceNumber} بقيمة ${totalAmount} ج.م`);
+    return { success: true, purchaseReturn: record };
   }
 
   public postPurchaseInvoice(
