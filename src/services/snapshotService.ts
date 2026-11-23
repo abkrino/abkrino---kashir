@@ -3,7 +3,7 @@ import { storage, STORAGE_KEYS } from './storageService';
 import { validateFifoLedger, validateFifoAllocations } from './inventoryFifoService';
 import { DEFAULT_STORE_PROFILE, LEGACY_STORE_PROFILE, DEFAULT_FUNDING_SOURCES } from '../types';
 
-export const CURRENT_SCHEMA_VERSION = 1;
+export const CURRENT_SCHEMA_VERSION = 2;
 export const APP_VERSION = '1.0.0';
 
 export const REQUIRED_COLLECTIONS: { key: string; label: string; isArray: boolean }[] = [
