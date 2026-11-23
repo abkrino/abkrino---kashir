@@ -144,6 +144,15 @@ export const Navbar: React.FC<NavbarProps> = ({
               {storeProfile.receiptHeader || 'نظام إدارة المبيعات ونقاط البيع المتكامل'}
             </p>
           </div>
+          {/* Abkrino product identity — kept separate from the customer's store logo */}
+          <div className="hidden md:flex items-center justify-center h-9 sm:h-10 w-28 shrink-0 px-1">
+            <img
+              src="/assets/aistudio/logo.png"
+              alt="ABKRINO — SEARCH, DEVELOP, RUN"
+              className="max-h-full max-w-full object-contain"
+              draggable={false}
+            />
+          </div>
         </div>
 
         {/* Left Section: Status, Cash, and User Menu */}
