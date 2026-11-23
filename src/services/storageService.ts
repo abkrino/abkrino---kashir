@@ -1983,7 +1983,7 @@ class StorageService {
     // invoice lines by product so splitting a quantity across lines cannot bypass the check.
     const requestedByProduct = new Map<string, number>();
     for (const item of invoice.items || []) {
-      const quantity = Number(item.piecesCount);
+      const quantity = Number(item.unit === 'KG' ? item.quantity : item.piecesCount);
       if (!Number.isFinite(quantity) || quantity <= 0) {
         return { success: false, error: `كمية غير صالحة للصنف ${item.productName || item.productId}.` };
       }
@@ -2012,7 +2012,7 @@ class StorageService {
     let nextAllocations = this.getFifoAllocations();
     let fifoInvoiceCost = 0;
     for (const item of invoice.items || []) {
-      const allocated = allocateFifo(nextLots, nextAllocations, invoice.id, item.id, item.productId, Number(item.piecesCount), `${invoice.date}T${invoice.time || '00:00:00'}`);
+      const allocated = allocateFifo(nextLots, nextAllocations, invoice.id, item.id, item.productId, Number(item.unit === 'KG' ? item.quantity : item.piecesCount), `${invoice.date}T${invoice.time || '00:00:00'}`);
       if (allocated.error) return { success: false, error: allocated.error };
       nextLots = allocated.lots;
       nextAllocations = allocated.allocations;
@@ -2297,7 +2297,7 @@ class StorageService {
     let nextAllocations = released.allocations;
     let nextFifoCost = 0;
     for (const item of updatedInvoice.items) {
-      const allocated = allocateFifo(nextLots, nextAllocations, updatedInvoice.id, item.id, item.productId, Number(item.piecesCount), `${updatedInvoice.date}T${updatedInvoice.time || '00:00:00'}`);
+      const allocated = allocateFifo(nextLots, nextAllocations, updatedInvoice.id, item.id, item.productId, Number(item.unit === 'KG' ? item.quantity : item.piecesCount), `${updatedInvoice.date}T${updatedInvoice.time || '00:00:00'}`);
       if (allocated.error) return { success: false, error: allocated.error };
       nextLots = allocated.lots;
       nextAllocations = allocated.allocations;
@@ -2662,13 +2662,13 @@ class StorageService {
 
       const prod = products.find(p => p.id === origItem.productId);
       const piecesPerUnit =
-        origItem.unit === 'CARTON'
+        origItem.unit === 'KG'
+          ? 1
+          : origItem.unit === 'CARTON'
           ? (origItem.quantity > 0 && origItem.piecesCount > 0
               ? origItem.piecesCount / origItem.quantity
               : (prod?.piecesPerWholesaleUnit || 1))
-          : (origItem.quantity > 0 && origItem.piecesCount > 0
-              ? origItem.piecesCount / origItem.quantity
-              : 1);
+          : 1;
 
       const normalizedQty = origItem.unit === 'KG' ? Math.round(qty * 1000) / 1000 : qty;
       const piecesCount = Math.round(normalizedQty * piecesPerUnit * 1000) / 1000;
