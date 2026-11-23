@@ -1897,6 +1897,9 @@ class StorageService {
     const invoices = this.getSalesInvoices();
     const invoice = invoices.find(inv => inv.id === invoiceId || inv.invoiceNumber === invoiceId);
     if (!invoice) return { success: false, error: 'الفاتورة غير موجودة' };
+    if (this.getSalesReturns(invoice.id).length > 0) {
+      return { success: false, error: 'لا يمكن حذف فاتورة لها مرتجعات مسجلة. راجع المرتجعات المرتبطة بها أولاً.' };
+    }
 
     const products = this.getProducts();
     const customers = this.getCustomers();
@@ -1962,63 +1965,157 @@ class StorageService {
     if (oldIndex === -1) return { success: false, error: 'الفاتورة غير موجودة' };
 
     const oldInvoice = invoices[oldIndex];
+    if (this.getSalesReturns(oldInvoice.id).length > 0) {
+      return {
+        success: false,
+        error: 'لا يمكن تعديل فاتورة لها مرتجعات مسجلة؛ لأن المرتجعات مرتبطة بأصناف وكميات الفاتورة الأصلية. راجع المرتجعات أولاً.',
+      };
+    }
+
     const products = this.getProducts();
     const customers = this.getCustomers();
+    const nextCustomerId = updatedInvoice.customerId;
+    const oldCustomerId = oldInvoice.customerId;
+    const nextCustomer = customers.find(c => c.id === nextCustomerId);
+    const oldCustomer = customers.find(c => c.id === oldCustomerId);
+    const oldDebt = Number(oldInvoice.remainingAmount ?? 0);
+    const nextDebt = Number(updatedInvoice.remainingAmount);
+    const oldPaid = Number(oldInvoice.paidAmount ?? 0);
+    const nextPaid = Number(updatedInvoice.paidAmount);
 
-    // Calculate the resulting stock without mutating records. Restore the old
-    // invoice quantities first, then aggregate the edited invoice quantities.
-    const projectedStock = new Map<string, number>(
-      products.map(product => [product.id, Number(product.stockPieces) || 0])
-    );
-    for (const item of oldInvoice.items || []) {
-      if (projectedStock.has(item.productId)) {
-        projectedStock.set(item.productId, projectedStock.get(item.productId)! + (Number(item.piecesCount) || 0));
+    if (!nextCustomer) {
+      return { success: false, error: 'لا يمكن تعديل الفاتورة: العميل المحدد غير موجود في سجل العملاء.' };
+    }
+    if (oldDebt > 0 && !oldCustomer) {
+      return { success: false, error: 'لا يمكن تعديل الفاتورة: حساب العميل الأصلي غير موجود، ولا يمكن تسوية مديونيته بأمان.' };
+    }
+    if (![oldDebt, nextDebt, oldPaid, nextPaid, Number(updatedInvoice.total)].every(Number.isFinite) ||
+        oldDebt < 0 || nextDebt < 0 || oldPaid < 0 || nextPaid < 0 || Number(updatedInvoice.total) < 0) {
+      return { success: false, error: 'لا يمكن تعديل الفاتورة: توجد مبالغ غير صالحة في بيانات الدفع أو المديونية.' };
+    }
+
+    // Calculate stock changes without mutating the cached records.
+    const projectedStock = new Map<string, number>();
+    for (const product of products) {
+      const current = Number(product.stockPieces);
+      if (!Number.isFinite(current) || current < 0) {
+        return { success: false, error: `رصيد المخزون غير صالح للصنف: ${product.name}.` };
       }
+      projectedStock.set(product.id, current);
+    }
+
+    for (const item of oldInvoice.items || []) {
+      const current = projectedStock.get(item.productId);
+      const quantity = Number(item.piecesCount);
+      if (current === undefined || !Number.isFinite(quantity) || quantity < 0) {
+        return {
+          success: false,
+          error: `لا يمكن تعديل الفاتورة: بيانات الصنف الأصلي غير مكتملة (${item.productName || item.productId}).`,
+        };
+      }
+      projectedStock.set(item.productId, current + quantity);
+    }
+
+    if (!Array.isArray(updatedInvoice.items) || updatedInvoice.items.length === 0) {
+      return { success: false, error: 'لا يمكن حفظ فاتورة بيع بدون أصناف.' };
     }
 
     const requestedByProduct = new Map<string, number>();
-    for (const item of updatedInvoice.items || []) {
+    for (const item of updatedInvoice.items) {
       const quantity = Number(item.piecesCount);
       if (!Number.isFinite(quantity) || quantity <= 0) {
         return { success: false, error: `كمية غير صالحة للصنف ${item.productName || item.productId}.` };
       }
-      const prod = products.find(p => p.id === item.productId);
-      if (!prod) {
+      const product = products.find(p => p.id === item.productId);
+      if (!product) {
         return { success: false, error: `الصنف غير موجود في المخزون: ${item.productName || item.productId}.` };
       }
       requestedByProduct.set(item.productId, (requestedByProduct.get(item.productId) || 0) + quantity);
     }
 
     for (const [productId, requested] of requestedByProduct) {
-      const prod = products.find(p => p.id === productId)!;
+      const product = products.find(p => p.id === productId)!;
       const availableAfterReversal = projectedStock.get(productId) || 0;
       if (requested > availableAfterReversal) {
         return {
           success: false,
-          error: `لا يمكن تعديل الفاتورة: المتاح من الصنف "${prod.name}" بعد إلغاء أثر الفاتورة القديمة هو ${availableAfterReversal} قطعة، والمطلوب ${requested} قطعة.`,
+          error: `لا يمكن تعديل الفاتورة: المتاح من الصنف "${product.name}" بعد إلغاء أثر الفاتورة القديمة هو ${availableAfterReversal} قطعة، والمطلوب ${requested} قطعة.`,
         };
       }
       projectedStock.set(productId, availableAfterReversal - requested);
     }
 
-    for (const prod of products) {
-      const resultingStock = projectedStock.get(prod.id);
-      if (resultingStock !== undefined) prod.stockPieces = resultingStock;
-    }
-    this.setItem(STORAGE_KEYS.PRODUCTS, products);
+    // Prepare all related records before applying any changes.
+    const nextProducts = products.map(product => ({
+      ...product,
+      stockPieces: projectedStock.get(product.id) ?? product.stockPieces,
+    }));
+    const nextCustomers = customers.map(customer => ({ ...customer }));
+    const nextOldCustomer = nextCustomers.find(c => c.id === oldCustomerId);
+    const nextCustomerRecord = nextCustomers.find(c => c.id === nextCustomerId)!;
+    const previousNewCustomerBalance = Number(nextCustomerRecord.currentBalance) || 0;
 
-    // Revert old debt and apply new debt
-    const cust = customers.find(c => c.id === updatedInvoice.customerId);
-    if (cust) {
-      cust.currentBalance -= oldInvoice.remainingAmount;
-      cust.currentBalance += updatedInvoice.remainingAmount;
-      this.setItem(STORAGE_KEYS.CUSTOMERS, customers);
-      updatedInvoice.newCustomerBalance = cust.currentBalance;
+    if (oldCustomerId === nextCustomerId) {
+      nextCustomerRecord.currentBalance = Math.round((previousNewCustomerBalance - oldDebt + nextDebt) * 100) / 100;
+    } else {
+      if (oldDebt > 0 && nextOldCustomer) {
+        nextOldCustomer.currentBalance = Math.round((Number(nextOldCustomer.currentBalance) - oldDebt) * 100) / 100;
+      }
+      nextCustomerRecord.currentBalance = Math.round((previousNewCustomerBalance + nextDebt) * 100) / 100;
+    }
+
+    updatedInvoice.previousCustomerBalance = previousNewCustomerBalance;
+    updatedInvoice.newCustomerBalance = nextCustomerRecord.currentBalance;
+
+    // Keep the drawer ledger aligned with edited invoice payments:
+    // reverse the old collected amount, then record the newly collected amount.
+    const nextCashMovements = this.getCashMovements().slice();
+    const now = new Date();
+    const date = getCairoDateString(now);
+    const time = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+    const actor = this.getActiveUser()?.fullName || updatedInvoice.salespersonName || 'النظام';
+    const movementId = () => `cm-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    if (oldPaid > 0) {
+      nextCashMovements.unshift({
+        id: movementId(),
+        date,
+        time,
+        type: 'OUT',
+        category: 'INVOICE_REVERSAL',
+        categoryLabelArabic: 'عكس تحصيل فاتورة معدلة',
+        amount: oldPaid,
+        referenceId: oldInvoice.invoiceNumber,
+        description: `عكس المبلغ المحصل سابقاً عند تعديل فاتورة المبيعات ${oldInvoice.invoiceNumber}`,
+        performedBy: actor,
+      });
+    }
+    if (nextPaid > 0) {
+      nextCashMovements.unshift({
+        id: movementId(),
+        date: updatedInvoice.date || date,
+        time: updatedInvoice.time || time,
+        type: 'IN',
+        category: 'SALES_CASH',
+        categoryLabelArabic: 'تحصيل فاتورة مبيعات معدلة',
+        amount: nextPaid,
+        referenceId: updatedInvoice.invoiceNumber,
+        description: `المبلغ المحصل بعد تعديل فاتورة المبيعات ${updatedInvoice.invoiceNumber} - العميل: ${updatedInvoice.customerName}`,
+        performedBy: updatedInvoice.salespersonName || actor,
+      });
     }
 
     updatedInvoice.status = 'MODIFIED';
-    invoices[oldIndex] = updatedInvoice;
-    this.setItem(STORAGE_KEYS.INVOICES, invoices);
+    const nextInvoices = invoices.slice();
+    nextInvoices[oldIndex] = updatedInvoice;
+
+    // All validation is complete. Apply the prepared records.
+    this.setItem(STORAGE_KEYS.PRODUCTS, nextProducts);
+    this.setItem(STORAGE_KEYS.CUSTOMERS, nextCustomers);
+    if (oldPaid > 0 || nextPaid > 0) {
+      this.setItem(STORAGE_KEYS.CASH_MOVEMENTS, nextCashMovements);
+    }
+    this.setItem(STORAGE_KEYS.INVOICES, nextInvoices);
 
     this.addAuditLog(
       'SALES',
