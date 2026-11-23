@@ -257,18 +257,14 @@ export function splitIntoChunks(
  * Computes SHA-256 hex digest of a string (for payload checksum after compression).
  */
 export async function computeTextSha256Hex(text: string): Promise<string> {
+  if (typeof crypto === 'undefined' || !crypto.subtle || typeof crypto.subtle.digest !== 'function') {
+    throw new Error('SHA-256 غير متاح في بيئة التشغيل؛ تعذر التحقق الآمن من النسخة السحابية.');
+  }
   const bytes = new TextEncoder().encode(text);
-  if (typeof crypto !== 'undefined' && crypto.subtle && typeof crypto.subtle.digest === 'function') {
-    const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
-    return Array.from(new Uint8Array(hashBuffer))
-      .map(b => b.toString(16).padStart(2, '0'))
-      .join('');
-  }
-  let h = 0;
-  for (let i = 0; i < bytes.length; i++) {
-    h = ((h << 5) - h + bytes[i]) | 0;
-  }
-  return Math.abs(h).toString(16).padStart(64, '0');
+  const hashBuffer = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 export function extractTimestampMs(ts: unknown): number {
