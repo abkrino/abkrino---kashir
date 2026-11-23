@@ -629,6 +629,8 @@ class SnapshotService {
     }
 
     const data = parsed.data || parsed;
+    // Preserve the exact pre-normalization payload for checksum verification of legacy backups.
+    const checksumData = JSON.parse(JSON.stringify(data));
     // FIFO collections were introduced after legacy backup schemas; old files remain restorable.
     if (!Array.isArray(data.inventoryLots)) data.inventoryLots = [];
     if (!Array.isArray(data.fifoAllocations)) data.fifoAllocations = [];
@@ -685,9 +687,9 @@ class SnapshotService {
     let checksumStatus: BackupPreview['checksumStatus'] = 'missing';
 
     if (parsed.checksum) {
-      const calculatedChecksum = await computeDataChecksum(data);
+      const calculatedChecksum = await computeDataChecksum(checksumData);
       const legacyMatch = calculatedChecksum !== parsed.checksum
-        ? await matchesLegacyDataChecksum(data, parsed.checksum)
+        ? await matchesLegacyDataChecksum(checksumData, parsed.checksum)
         : false;
       const checksumMismatch = calculatedChecksum !== parsed.checksum && !legacyMatch;
 
