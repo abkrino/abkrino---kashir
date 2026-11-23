@@ -635,7 +635,7 @@ class SnapshotService {
     if (typeof data.fifoInitialized !== 'boolean') data.fifoInitialized = false;
     if (data.fifoInitialized) {
       const fifoErrors = [
-        ...validateFifoLedger(data.products, data.inventoryLots),
+        ...validateFifoLedger(Array.isArray(data.products) ? data.products : [], data.inventoryLots),
         ...validateFifoAllocations(data.inventoryLots, data.fifoAllocations),
       ];
       if (fifoErrors.length) return { valid: false, error: `سجل FIFO في النسخة الاحتياطية غير متسق: ${fifoErrors[0]}` };
