@@ -14,7 +14,7 @@ import {
 import { licenseService, WriteOperationCategory, WriteGateContext } from './licenseService';
 export type { WriteOperationCategory, WriteGateContext };
 import { idb, type KVRecord } from './idbStore';
-import { seedOpeningLots, allocateFifo, releaseInvoiceAllocations, receiveLot, returnToOriginalLots, validateFifoLedger, type InventoryLot, type FifoAllocation } from './inventoryFifoService';
+import { seedOpeningLots, allocateFifo, releaseInvoiceAllocations, receiveLot, returnToOriginalLots, validateFifoLedger, type InventoryLot, type FifoAllocation, validateFifoAllocations } from './inventoryFifoService';
 
 const DEFAULT_PRODUCT_CATEGORIES = [
   'منتجات الألبان والأجبان',
@@ -1289,14 +1289,24 @@ class StorageService {
 
   /** Idempotently seeds current stock as opening lots on first FIFO activation. */
   public ensureFifoInitialized(): { success: boolean; error?: string } {
-    if (this.getItem<boolean>(STORAGE_KEYS.FIFO_INITIALIZED, false)) return { success: true };
+    if (this.getItem<boolean>(STORAGE_KEYS.FIFO_INITIALIZED, false)) {
+      const errors = [
+        ...validateFifoLedger(this.getProducts(), this.getInventoryLots()),
+        ...validateFifoAllocations(this.getInventoryLots(), this.getFifoAllocations()),
+      ];
+      return errors.length ? { success: false, error: errors[0] } : { success: true };
+    }
     try {
       const products = this.getProducts();
       const lots = seedOpeningLots(products, this.getInventoryLots());
-      const errors = validateFifoLedger(products, lots);
+      const allocations = this.getFifoAllocations();
+      const errors = [
+        ...validateFifoLedger(products, lots),
+        ...validateFifoAllocations(lots, allocations),
+      ];
       if (errors.length) return { success: false, error: errors[0] };
       this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
-      this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, this.getFifoAllocations());
+      this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, allocations);
       this.setItem(STORAGE_KEYS.FIFO_INITIALIZED, true);
       return { success: true };
     } catch (error: any) {
@@ -1305,7 +1315,12 @@ class StorageService {
   }
 
   public validateInventoryFifo(): { valid: boolean; errors: string[] } {
-    return { valid: this.getItem<boolean>(STORAGE_KEYS.FIFO_INITIALIZED, false), errors: validateFifoLedger(this.getProducts(), this.getInventoryLots()) };
+    const lots = this.getInventoryLots();
+    const errors = [
+      ...validateFifoLedger(this.getProducts(), lots),
+      ...validateFifoAllocations(lots, this.getFifoAllocations()),
+    ];
+    return { valid: this.isFifoInitialized() && errors.length === 0, errors };
   }
 
   // --- PRODUCTS (SINGLE WAREHOUSE) ---
