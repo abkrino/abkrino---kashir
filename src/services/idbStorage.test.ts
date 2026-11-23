@@ -127,6 +127,7 @@ describe('IndexedDB Storage Layer & Migration (idbStore + storageService)', () =
       salePrice: 60,
       purchaseCost: 45,
       stock: 15,
+      stockPieces: 15,
       unit: 'كجم',
     } as unknown as Product;
     storage.saveProduct(newProduct);
@@ -179,8 +180,8 @@ describe('IndexedDB Storage Layer & Migration (idbStore + storageService)', () =
     await storage.init();
 
     // Make rapid changes
-    const productA: Product = { id: 'p-fast-1', name: 'صنف أ', category: 'grocery', salePrice: 20, purchaseCost: 15, stock: 5, unit: 'قطعة' } as unknown as Product;
-    const productB: Product = { id: 'p-fast-2', name: 'صنف ب', category: 'grocery', salePrice: 30, purchaseCost: 22, stock: 8, unit: 'قطعة' } as unknown as Product;
+    const productA: Product = { id: 'p-fast-1', name: 'صنف أ', category: 'grocery', salePrice: 20, purchaseCost: 15, stock: 5, stockPieces: 5, unit: 'قطعة' } as unknown as Product;
+    const productB: Product = { id: 'p-fast-2', name: 'صنف ب', category: 'grocery', salePrice: 30, purchaseCost: 22, stock: 8, stockPieces: 8, unit: 'قطعة' } as unknown as Product;
 
     storage.saveProduct(productA);
     storage.saveProduct(productB);
@@ -208,7 +209,7 @@ describe('IndexedDB Storage Layer & Migration (idbStore + storageService)', () =
     vi.spyOn(idb.kv, 'bulkPut').mockRejectedValue(new Error('QuotaExceededError: Database storage limit exceeded'));
 
     // Perform write
-    const testProduct: Product = { id: 'p-err-1', name: 'صنف خطأ', category: 'grocery', salePrice: 10, purchaseCost: 5, stock: 1, unit: 'علبة' } as unknown as Product;
+    const testProduct: Product = { id: 'p-err-1', name: 'صنف خطأ', category: 'grocery', salePrice: 10, purchaseCost: 5, stock: 1, stockPieces: 1, unit: 'علبة' } as unknown as Product;
     storage.saveProduct(testProduct);
 
     // Flush
@@ -226,7 +227,7 @@ describe('IndexedDB Storage Layer & Migration (idbStore + storageService)', () =
     await storage.init();
 
     // Create a product
-    const prod: Product = { id: 'p-export-1', name: 'منتج تصدير', category: 'grocery', salePrice: 50, purchaseCost: 40, stock: 10, unit: 'قطعة' } as unknown as Product;
+    const prod: Product = { id: 'p-export-1', name: 'منتج تصدير', category: 'grocery', salePrice: 50, purchaseCost: 40, stock: 10, stockPieces: 10, unit: 'قطعة' } as unknown as Product;
     storage.saveProduct(prod);
     await storage.flush();
 
