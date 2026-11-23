@@ -101,8 +101,10 @@ export const ProfitReports: React.FC<ProfitReportsProps> = ({ currentUser }) => 
   const grossSales = filteredInvoices.reduce((sum, inv) => sum + inv.subtotal, 0);
   const totalDiscounts = filteredInvoices.reduce((sum, inv) => sum + inv.discountAmount, 0);
   const totalReturnsAmount = Math.round(filteredReturns.reduce((sum, ret) => sum + (ret.totalAmount || 0), 0) * 100) / 100;
-  const totalReturnsCost = Math.round(filteredReturns.reduce((sum, ret) => sum + (ret.totalCost || 0), 0) * 100) / 100;
-  const totalNonRestockedReturnsCost = Math.round(filteredReturns.reduce((sum, ret) => sum + (ret.nonRestockedCostTotal || 0), 0) * 100) / 100;
+  const totalReturnsCost = Math.round(filteredReturns.reduce((sum, ret) =>
+    sum + (ret.returnToStock === false ? 0 : (Number(ret.totalCost) || 0)), 0) * 100) / 100;
+  const totalNonRestockedReturnsCost = Math.round(filteredReturns.reduce((sum, ret) =>
+    sum + (Number(ret.nonRestockedCostTotal ?? (ret.returnToStock === false ? ret.totalCost : 0)) || 0), 0) * 100) / 100;
   const netSalesRevenue = grossSales - totalDiscounts - totalReturnsAmount;
 
   let grossCOGS = 0;

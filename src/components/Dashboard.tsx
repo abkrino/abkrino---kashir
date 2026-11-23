@@ -81,7 +81,14 @@ export const Dashboard: React.FC<DashboardProps> = ({
     }
   });
   const periodReturnsTotal = Math.round(filteredReturns.reduce((sum, r) => sum + (r.totalAmount || 0), 0) * 100) / 100;
-  const periodReturnsProfitReversed = Math.round(filteredReturns.reduce((sum, r) => sum + (r.totalProfitReversed || 0), 0) * 100) / 100;
+  const periodReturnsProfitReversed = Math.round(filteredReturns.reduce((sum, r) => {
+    // Legacy damaged returns stored the blended cost as reversed COGS; preserve
+    // correct profit by treating the full refund as the loss when stock was not restored.
+    const profitImpact = r.returnToStock === false
+      ? (Number(r.totalAmount) || 0)
+      : (Number(r.totalProfitReversed) || 0);
+    return sum + profitImpact;
+  }, 0) * 100) / 100;
 
   const grossPeriodSalesTotal = filteredInvoices.reduce((sum, inv) => sum + inv.total, 0);
   const periodSalesTotal = Math.round((grossPeriodSalesTotal - periodReturnsTotal) * 100) / 100;
