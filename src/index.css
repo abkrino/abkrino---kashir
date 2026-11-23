@@ -371,3 +371,70 @@ html.reduce-motion *::after {
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
 }
+
+
+/* POS-specific hierarchy: fast catalog scanning and a clear checkout lane. */
+.abkrino-pos .abkrino-product-card {
+  background: var(--bg-card) !important;
+  border-color: var(--border-app) !important;
+  border-radius: var(--clay-radius-panel) !important;
+  box-shadow: var(--clay-shadow-soft) !important;
+  min-width: 0;
+}
+.abkrino-pos .abkrino-product-card:hover {
+  border-color: var(--brand-teal) !important;
+  box-shadow: var(--clay-shadow), 0 0 0 1px var(--accent-emerald-border) !important;
+  transform: translateY(-2px);
+}
+.abkrino-pos .abkrino-product-card h4 {
+  color: var(--text-main);
+}
+.abkrino-pos .abkrino-product-card .font-mono {
+  color: var(--brand-teal) !important;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.abkrino-pos .abkrino-cart-panel {
+  background: var(--bg-surface) !important;
+  border-color: var(--border-app) !important;
+  border-radius: var(--clay-radius-panel) !important;
+  box-shadow: var(--clay-shadow) !important;
+}
+.abkrino-pos .abkrino-checkout-panel {
+  background: var(--bg-subtle) !important;
+  border-color: var(--border-app) !important;
+  border-radius: var(--clay-radius-panel) !important;
+  box-shadow: var(--clay-shadow-inset) !important;
+}
+.abkrino-pos .abkrino-checkout-panel button[class~="bg-emerald-600"] {
+  background: var(--brand-green) !important;
+  border-color: var(--brand-green) !important;
+}
+.abkrino-pos .abkrino-checkout-panel button[class~="bg-rose-600"] {
+  background: var(--brand-crimson) !important;
+  border-color: var(--brand-crimson) !important;
+}
+.abkrino-pos .abkrino-checkout-panel > div:last-child button {
+  min-height: 48px;
+  border-radius: var(--clay-radius-control) !important;
+  box-shadow: var(--clay-shadow-soft);
+}
+.abkrino-pos .abkrino-cart-panel table {
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.abkrino-pos .abkrino-cart-panel thead {
+  background: var(--bg-subtle);
+}
+.abkrino-pos .abkrino-cart-panel tbody tr:hover {
+  background: var(--accent-emerald-bg);
+}
+.abkrino-pos .abkrino-checkout-panel input,
+.abkrino-pos .abkrino-checkout-panel select {
+  background: var(--bg-surface) !important;
+  color: var(--text-main) !important;
+}
+@media (max-width: 1023px) {
+  .abkrino-pos .abkrino-product-card {
+    border-radius: 18px !important;
+    box-shadow: var(--clay-shadow-soft) !important;
+  }
+}

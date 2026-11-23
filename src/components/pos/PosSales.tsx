@@ -699,7 +699,7 @@ export const PosSales: React.FC<PosSalesProps> = ({
   }, [products, catalogCategory, catalogSearchQuery, productUsageScores]);
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4" dir="rtl">
+    <div className="abkrino-pos grid grid-cols-1 lg:grid-cols-12 gap-4" dir="rtl">
       {/* Toast Alert */}
       {itemAddedToast && (
         <div className="lg:col-span-12 fixed top-16 left-4 right-4 z-50 flex justify-center pointer-events-none">
@@ -1027,7 +1027,7 @@ export const PosSales: React.FC<PosSalesProps> = ({
                           addItemToInvoice(prod, 'PIECE', 1);
                         }
                       }}
-                      className={`group relative rounded-2xl border-2 transition-all cursor-pointer flex flex-col justify-between select-none aspect-square text-right shadow-2xs hover:shadow-md active:scale-95 ${
+                      className={`abkrino-product-card group relative rounded-2xl border transition-all cursor-pointer flex flex-col justify-between select-none aspect-square text-right shadow-2xs hover:shadow-md active:scale-95 ${
                         cardSize === 'COMPACT'
                           ? 'p-2 min-h-[95px] sm:min-h-[105px]'
                           : cardSize === 'LARGE'
@@ -1194,7 +1194,7 @@ export const PosSales: React.FC<PosSalesProps> = ({
         </div>
 
         {/* Items Basket Table */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl shadow-sm overflow-hidden">
+        <div className="abkrino-cart-panel bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl shadow-sm overflow-hidden">
           <div className="p-3 bg-slate-50 dark:bg-slate-950 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
             <span className="text-xs sm:text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
               <Receipt className="w-4 h-4 text-emerald-600" />
@@ -1302,7 +1302,7 @@ export const PosSales: React.FC<PosSalesProps> = ({
         </div>
 
         {/* TENDER & PAYMENT PANEL */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl p-3.5 shadow-sm space-y-3">
+        <div className="abkrino-checkout-panel bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl p-3.5 shadow-sm space-y-3">
           {/* Discount Bar */}
           <div className="flex items-center justify-between text-xs gap-2">
             <span className="font-bold text-slate-700 dark:text-slate-300">الخصم الإضافي:</span>
