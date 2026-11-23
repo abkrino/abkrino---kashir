@@ -160,3 +160,16 @@
 - No-network fallback: allow importing an externally recorded WAV/MP3 announcement into the same playlist. Neural generation must remain local; importing audio must not require an account or network.
 - Current status: **research candidate only**. No Audar runtime/model has been added to the repository; do not claim offline speech generation is implemented or verified.
 - Acceptance: install from the complete offline installer on a clean Windows machine, disconnect Wi-Fi/Ethernet, generate an Arabic offer WAV, restart the app, play the saved announcement, and confirm playlist persistence. Test missing/corrupt model errors and ensure cashier operations remain responsive.
+
+
+## Announcer stability work — implementation in progress (2026-11-23)
+- [x] Keep Windows speech synthesis in a separate PowerShell child process rather than the Electron main/UI thread.
+- [x] Bound captured PowerShell stdout/stderr to the most recent 12,000 characters to prevent unbounded diagnostic buffering.
+- [x] Add a 90-second generation timeout; timed-out generation is terminated and the temporary WAV is removed.
+- [x] Prevent overlapping speech-generation requests in the Electron main process.
+- [x] Expose an explicit Cancel action in the announcer UI and preload IPC bridge.
+- [x] Terminate an active speech child process when the application is quitting.
+- [ ] Run type-check, automated tests, and Windows smoke tests for success, missing Arabic voice, cancellation, timeout, app exit, and playlist integrity.
+- [ ] Measure POS responsiveness and resource usage during generation on a low-end CPU-only Windows machine.
+
+**Important limitation:** this is a stability hardening of the existing Windows System.Speech implementation. It does **not** yet deliver a self-contained bundled TTS model/runtime, does not guarantee an Egyptian Arabic voice on every Windows installation, and has not been benchmarked on customer hardware. The offline bundled-engine decision remains open pending licensing, voice-quality, package-size, and low-end performance validation. Do not describe the announcer as fully bundled or universally supported yet.
