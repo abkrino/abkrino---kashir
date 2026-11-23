@@ -3341,6 +3341,10 @@ class StorageService {
     if (purchase.isStockInserted && purchaseLots.length === 0) {
       return { success: false, error: 'لا يمكن حذف فاتورة شراء قديمة غير ممثلة بدفعات FIFO؛ يلزم تسويتها أولاً.' };
     }
+    const purchaseLotIds = new Set(purchaseLots.map(lot => lot.id));
+    if (this.getFifoAllocations().some(allocation => purchaseLotIds.has(allocation.lotId))) {
+      return { success: false, error: 'لا يمكن حذف فاتورة الشراء: توجد تخصيصات FIFO تاريخية مرتبطة بدفعاتها. استخدم عكسًا محاسبيًا ومخزنيًا بدلاً من الحذف.' };
+    }
     if (purchaseLots.some(lot => Math.abs(lot.remainingQty - lot.originalQty) > 0.001)) {
       return { success: false, error: 'لا يمكن حذف فاتورة الشراء: تم استهلاك جزء من دفعاتها في المبيعات أو المرتجعات. استخدم عملية مرتجع/عكس مخزون مخصصة.' };
     }
