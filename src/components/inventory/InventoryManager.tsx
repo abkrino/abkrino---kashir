@@ -309,6 +309,7 @@ export const InventoryManager: React.FC<InventoryManagerProps> = ({
         baseUnit: baseUnit || 'قطعة',
         wholesaleUnit: wholesaleUnit || 'كرتونة',
         piecesPerWholesaleUnit: totalPiecesPerCarton,
+        piecesPerPallet: Math.max(1, Number(piecesPerPallet) || 20),
         costPricePerBase: finalCostPerBase,
         costPricePerCarton,
         wholesalePricePerCarton,
