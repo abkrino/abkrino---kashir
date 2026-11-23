@@ -1886,7 +1886,7 @@ class StorageService {
     );
     this.notifyAction(`فاتورة مبيعات: ${invoice.invoiceNumber}`);
 
-    return { success: true, hasNegativeStock };
+    return { success: true, hasNegativeStock: false };
   }
 
   // DELETE SALES INVOICE (With full stock restoration and customer debt deletion)
