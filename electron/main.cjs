@@ -78,22 +78,35 @@ function runArabicSpeech(text, outputPath) {
     const pathB64 = Buffer.from(outputPath, 'utf8').toString('base64');
     const ps = [
       "$ErrorActionPreference = 'Stop'",
+      "$ProgressPreference = 'SilentlyContinue'",
+      "$ErrorView = 'ConciseView'",
+      "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)",
       'Add-Type -AssemblyName System.Speech',
       "$text = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + textB64 + "'))",
       "$output = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('" + pathB64 + "'))",
       '$synth = New-Object System.Speech.Synthesis.SpeechSynthesizer',
       'try {',
       "  $voice = $synth.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Culture.Name.StartsWith('ar', [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1",
-      "  if (-not $voice) { throw 'لم يتم العثور على صوت عربي مثبت في Windows. ثبّت حزمة صوت عربية من إعدادات Windows ثم أعد المحاولة.' }",
+      "  if (-not $voice) { throw 'لم يتم العثور على صوت عربي مثبت. افتح إعدادات Windows > الوقت واللغة > اللغة والمنطقة > خيارات اللغة، وثبّت حزمة تحويل النص إلى كلام العربية.' }",
       '  $synth.SelectVoice($voice.VoiceInfo.Name)',
       '  $synth.SetOutputToWaveFile($output)',
       '  $synth.Speak($text)',
-      '} finally { $synth.Dispose() }'
-    ].join('\r\n');
+      '} catch {',
+      '  [Console]::Error.WriteLine($_.Exception.Message)',
+      '  exit 1',
+      '} finally {',
+      '  if ($synth) { $synth.Dispose() }',
+      '}'
+    ].join('\\r\\n');
     const encoded = Buffer.from(ps, 'utf16le').toString('base64');
-    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], { windowsHide: true });
+    const child = spawn('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded], {
+      windowsHide: true,
+      env: { ...process.env, LANG: 'en_US.UTF-8' }
+    });
     let stderr = '';
-    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    let stdout = '';
+    child.stdout.on('data', chunk => { stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', chunk => { stderr += chunk.toString('utf8'); });
     child.on('error', reject);
     child.on('close', async code => {
       if (code === 0) {
@@ -102,11 +115,14 @@ function runArabicSpeech(text, outputPath) {
           if (stat.size < 44) return reject(new Error('ملف الصوت الناتج غير صالح.'));
           resolve();
         } catch (error) { reject(error); }
-      } else reject(new Error(stderr.trim() || 'فشل محرك تحويل النص إلى كلام في Windows.'));
+      } else {
+        const details = (stderr || stdout).replace(/#< CLIXML[\\s\\S]*/i, '').trim();
+        const message = details || 'تعذر توليد الإعلان الصوتي. تأكد من تثبيت صوت عربي متوافق في Windows.';
+        reject(new Error(message));
+      }
     });
   });
 }
-
 ipcMain.handle('announcer:list', async () => readPlaylist());
 ipcMain.handle('announcer:create', async (_event, payload) => {
   if (!isWindows) throw new Error('توليد الصوت المحلي متاح في نسخة Windows فقط.');
