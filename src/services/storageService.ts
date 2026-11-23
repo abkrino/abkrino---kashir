@@ -2093,12 +2093,6 @@ class StorageService {
     if (this.getSalesReturns(invoice.id).length > 0) {
       return { success: false, error: 'لا يمكن حذف فاتورة لها مرتجعات مسجلة. راجع المرتجعات المرتبطة بها أولاً.' };
     }
-    const fifoInit = this.ensureFifoInitialized();
-    if (!fifoInit.success) return { success: false, error: fifoInit.error };
-    const currentAllocations = this.getFifoAllocations();
-    if (!currentAllocations.some(allocation => allocation.invoiceId === invoice.id)) {
-      return { success: false, error: 'لا يمكن حذف فاتورة بيع قديمة لا تحتوي على تخصيصات FIFO؛ يلزم ترحيلها أو تسويتها أولاً.' };
-    }
 
     // Validate every linked record before preparing any mutation.
     if (!Array.isArray(invoice.items) || invoice.items.length === 0) {
@@ -2127,6 +2121,13 @@ class StorageService {
         return { success: false, error: `لا يمكن حذف الفاتورة: الصنف المرتبط بها غير موجود في المخزون (${item.productName || item.productId}).` };
       }
       quantitiesByProduct.set(item.productId, (quantitiesByProduct.get(item.productId) || 0) + quantity);
+    }
+
+    const fifoInit = this.ensureFifoInitialized();
+    if (!fifoInit.success) return { success: false, error: fifoInit.error };
+    const currentAllocations = this.getFifoAllocations();
+    if (!currentAllocations.some(allocation => allocation.invoiceId === invoice.id)) {
+      return { success: false, error: 'لا يمكن حذف فاتورة بيع قديمة لا تحتوي على تخصيصات FIFO؛ يلزم ترحيلها أو تسويتها أولاً.' };
     }
 
     for (const [productId, quantity] of quantitiesByProduct) {
@@ -2602,8 +2603,6 @@ class StorageService {
       return { success: false, error: 'يرجى اختيار صنف واحد على الأقل بكمية مرتجعة موجبة' };
     }
 
-    const fifoInit = this.ensureFifoInitialized();
-    if (!fifoInit.success) return { success: false, error: fifoInit.error };
     const products = this.getProducts();
     const summary = this.getInvoiceReturnSummary(invoice);
     const requestedPerKey: Record<string, number> = {};
@@ -2663,19 +2662,16 @@ class StorageService {
 
       const prod = products.find(p => p.id === origItem.productId);
       const piecesPerUnit =
-        origItem.unit === 'KG'
-          ? 1
-          : origItem.unit === 'CARTON'
+        origItem.unit === 'CARTON'
           ? (origItem.quantity > 0 && origItem.piecesCount > 0
               ? origItem.piecesCount / origItem.quantity
               : (prod?.piecesPerWholesaleUnit || 1))
-          : 1;
+          : (origItem.quantity > 0 && origItem.piecesCount > 0
+              ? origItem.piecesCount / origItem.quantity
+              : 1);
 
       const normalizedQty = origItem.unit === 'KG' ? Math.round(qty * 1000) / 1000 : qty;
-      const piecesCount =
-        origItem.unit === 'KG'
-          ? normalizedQty
-          : Math.round(normalizedQty * piecesPerUnit * 1000) / 1000;
+      const piecesCount = Math.round(normalizedQty * piecesPerUnit * 1000) / 1000;
 
       const unitSellingPrice = Number(origItem.unitPrice) || 0;
       const fallbackUnitCost = prod
@@ -2701,6 +2697,9 @@ class StorageService {
         costTotal,
       });
     }
+
+    const fifoInit = this.ensureFifoInitialized();
+    if (!fifoInit.success) return { success: false, error: fifoInit.error };
 
     const subtotal = Math.round(returnItems.reduce((s, it) => s + it.subtotal, 0) * 100) / 100;
     const totalCost = Math.round(returnItems.reduce((s, it) => s + it.costTotal, 0) * 100) / 100;
