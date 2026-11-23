@@ -15,6 +15,16 @@ import { licenseService, WriteOperationCategory, WriteGateContext } from './lice
 export type { WriteOperationCategory, WriteGateContext };
 import { idb, type KVRecord } from './idbStore';
 
+const DEFAULT_PRODUCT_CATEGORIES = [
+  'منتجات الألبان والأجبان',
+  'بقالة ومواد غذائية جافة',
+  'سناكس وبسكويت وحلويات',
+  'مشروبات وعصائر ومياه',
+  'مخبوزات وتوست',
+  'منظفات وعناية منزلية',
+  'أخرى',
+];
+
 export const STORAGE_KEYS = {
   PRODUCTS: 'sm_products_v3',
   CATEGORIES: 'sm_categories_v1',
@@ -1185,10 +1195,21 @@ class StorageService {
 
   // --- PRODUCT CATEGORIES ---
   public getCategories(): string[] {
-    const stored = this.getItem<unknown>(STORAGE_KEYS.CATEGORIES, []);
-    return Array.isArray(stored)
-      ? Array.from(new Set(stored.filter((name): name is string => typeof name === 'string').map(name => name.trim()).filter(Boolean)))
-      : [];
+    const stored = this.getItem<unknown>(STORAGE_KEYS.CATEGORIES, null);
+    if (Array.isArray(stored)) {
+      return Array.from(new Set(stored.filter((name): name is string => typeof name === 'string').map(name => name.trim()).filter(Boolean)));
+    }
+
+    // One-time migration: preserve current defaults and every category already used by products.
+    const existingProductCategories = this.getProducts().map(product => product.category);
+    const migrated = Array.from(new Set(
+      [...DEFAULT_PRODUCT_CATEGORIES, ...existingProductCategories]
+        .filter((name): name is string => typeof name === 'string')
+        .map(name => name.trim())
+        .filter(Boolean)
+    ));
+    this.setItem(STORAGE_KEYS.CATEGORIES, migrated);
+    return migrated;
   }
 
   public addCategory(name: string): { success: boolean; error?: string } {
@@ -3419,7 +3440,12 @@ class StorageService {
       }
 
       this.setItem(STORAGE_KEYS.PRODUCTS, parsed.data.products);
-      if (Array.isArray(parsed.data.categories)) this.setItem(STORAGE_KEYS.CATEGORIES, parsed.data.categories);
+      if (Array.isArray(parsed.data.categories)) {
+        this.setItem(STORAGE_KEYS.CATEGORIES, parsed.data.categories);
+      } else {
+        const restoredCategories = Array.isArray(parsed.data.products) ? parsed.data.products.map((product: Product) => product.category) : [];
+        this.setItem(STORAGE_KEYS.CATEGORIES, Array.from(new Set([...DEFAULT_PRODUCT_CATEGORIES, ...restoredCategories].filter((name): name is string => typeof name === 'string' && Boolean(name.trim())).map(name => name.trim()))));
+      }
       this.setItem(STORAGE_KEYS.CUSTOMERS, parsed.data.customers);
       this.setItem(STORAGE_KEYS.SUPPLIERS, parsed.data.suppliers || []);
       this.setItem(STORAGE_KEYS.INVOICES, parsed.data.invoices || []);
@@ -3471,7 +3497,12 @@ class StorageService {
       ? rawInput.data
       : rawInput;
     if (data.products !== undefined) this.cache.set(STORAGE_KEYS.PRODUCTS, data.products);
-    if (data.categories !== undefined) this.cache.set(STORAGE_KEYS.CATEGORIES, data.categories);
+    if (data.categories !== undefined) {
+      this.cache.set(STORAGE_KEYS.CATEGORIES, data.categories);
+    } else if (data.products !== undefined) {
+      const restoredCategories = Array.isArray(data.products) ? data.products.map((product: Product) => product.category) : [];
+      this.cache.set(STORAGE_KEYS.CATEGORIES, Array.from(new Set([...DEFAULT_PRODUCT_CATEGORIES, ...restoredCategories].filter((name): name is string => typeof name === 'string' && Boolean(name.trim())).map(name => name.trim()))));
+    }
     if (data.customers !== undefined) this.cache.set(STORAGE_KEYS.CUSTOMERS, data.customers);
     if (data.suppliers !== undefined) this.cache.set(STORAGE_KEYS.SUPPLIERS, data.suppliers);
     if (data.invoices !== undefined) this.cache.set(STORAGE_KEYS.INVOICES, data.invoices);
