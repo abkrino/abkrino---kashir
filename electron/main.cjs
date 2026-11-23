@@ -16,6 +16,7 @@ let mainWindow;
 let cachedMachineId = null;
 let activeSpeechChild = null;
 let speechGenerationActive = false;
+let activeSpeechStopReason = null;
 const SPEECH_TIMEOUT_MS = 90000;
 const MAX_SPEECH_OUTPUT_CHARS = 12000;
 
@@ -108,11 +109,15 @@ function runArabicSpeech(text, outputPath) {
       env: { ...process.env, LANG: 'en_US.UTF-8' }
     });
     activeSpeechChild = child;
+    activeSpeechStopReason = null;
     let stderr = '';
     let stdout = '';
     let settled = false;
     const timeout = setTimeout(() => {
-      if (!settled) child.kill();
+      if (!settled) {
+        activeSpeechStopReason = 'timeout';
+        child.kill();
+      }
     }, SPEECH_TIMEOUT_MS);
     const appendBounded = (current, chunk) => (current + chunk.toString('utf8')).slice(-MAX_SPEECH_OUTPUT_CHARS);
     child.stdout.on('data', chunk => { stdout = appendBounded(stdout, chunk); });
@@ -132,10 +137,12 @@ function runArabicSpeech(text, outputPath) {
         } catch (error) { reject(error); }
       } else {
         const details = (stderr || stdout).replace(/#< CLIXML[\\s\\S]*/i, '').trim();
-        const timedOut = code === null;
-        const message = timedOut
-          ? 'تم إيقاف توليد الصوت لتجاوز الحد الزمني (90 ثانية). يمكنك المحاولة مرة أخرى.'
-          : (details || 'تعذر توليد الإعلان الصوتي. تأكد من تثبيت صوت عربي متوافق في Windows.');
+        const message = activeSpeechStopReason === 'cancelled'
+          ? 'تم إلغاء توليد الإعلان بناءً على طلبك.'
+          : activeSpeechStopReason === 'timeout'
+            ? 'تم إيقاف توليد الصوت لتجاوز الحد الزمني (90 ثانية). يمكنك المحاولة مرة أخرى.'
+            : (details || 'تعذر توليد الإعلان الصوتي. تأكد من تثبيت صوت عربي متوافق في Windows.');
+        activeSpeechStopReason = null;
         reject(new Error(message));
       }
     });
@@ -170,6 +177,7 @@ ipcMain.handle('announcer:create', async (_event, payload) => {
 });
 ipcMain.handle('announcer:cancel', async () => {
   if (!activeSpeechChild) return false;
+  activeSpeechStopReason = 'cancelled';
   activeSpeechChild.kill();
   return true;
 });
