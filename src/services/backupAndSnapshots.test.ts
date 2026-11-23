@@ -667,6 +667,7 @@ describe('Local Snapshots, SHA-256 Checksum, Restore Safety & Bootstrap Idempote
       salePrice: 50,
       purchaseCost: 30,
       stock: 10,
+      stockPieces: 10,
       unit: 'قطعة',
     } as unknown as Product;
     storage.saveProduct(testProd);
