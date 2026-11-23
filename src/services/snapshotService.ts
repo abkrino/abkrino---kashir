@@ -48,6 +48,7 @@ export interface BackupPreview {
   schemaVersion: number;
   appVersion?: string;
   hasChecksum: boolean;
+  checksumStatus?: 'verified' | 'legacy-verified' | 'transport-verified' | 'mismatch' | 'missing';
   isLegacy: boolean;
   warning?: string;
   counts: {
@@ -597,7 +598,10 @@ class SnapshotService {
    */
   public async validateBackup(
     content: string | Record<string, any>,
-    options?: { allowChecksumMismatchAfterVerifiedTransport?: boolean }
+    options?: {
+      allowChecksumMismatchAfterVerifiedTransport?: boolean;
+      allowChecksumMismatchAfterExplicitRecovery?: boolean;
+    }
   ): Promise<{
     valid: boolean;
     error?: string;
@@ -659,25 +663,39 @@ class SnapshotService {
     // 3. Checksum verification (SHA-256)
     let isLegacy = false;
     let warning: string | undefined;
+    let checksumStatus: BackupPreview['checksumStatus'] = 'missing';
 
     if (parsed.checksum) {
       const calculatedChecksum = await computeDataChecksum(data);
       const legacyMatch = calculatedChecksum !== parsed.checksum
         ? await matchesLegacyDataChecksum(data, parsed.checksum)
         : false;
-      if (calculatedChecksum !== parsed.checksum && !legacyMatch && !options?.allowChecksumMismatchAfterVerifiedTransport) {
+      const checksumMismatch = calculatedChecksum !== parsed.checksum && !legacyMatch;
+
+      if (checksumMismatch &&
+        !options?.allowChecksumMismatchAfterVerifiedTransport &&
+        !options?.allowChecksumMismatchAfterExplicitRecovery) {
         return {
           valid: false,
           error: 'فشل التحقق من التوقيع الرقمي (SHA-256). ملف النسخة الاحتياطية تالف أو تم التعديل عليه يدوياً.',
         };
       }
-      if (calculatedChecksum !== parsed.checksum && !legacyMatch) {
-        warning = 'تم التحقق من سلامة محتوى النسخة عبر بصمة SHA-256 للملف السحابي، لكن بصمة البيانات الداخلية لا تطابق بسبب اختلاف تنسيق إصدار سابق. يُنصح بإنشاء نسخة جديدة بعد الاستعادة.';
+
+      if (checksumMismatch && options?.allowChecksumMismatchAfterVerifiedTransport) {
+        checksumStatus = 'transport-verified';
+        warning = 'بصمة البيانات الداخلية لا تطابق، لكن الملف السحابي نفسه اجتاز تحقق SHA-256 المستقل أثناء التنزيل. يُنصح بإنشاء نسخة جديدة بعد الاستعادة.';
+      } else if (checksumMismatch && options?.allowChecksumMismatchAfterExplicitRecovery) {
+        checksumStatus = 'mismatch';
+        warning = 'تحذير أمني: بصمة SHA-256 المسجلة لا تطابق محتوى البيانات. اجتازت النسخة فحوص البنية وأعداد السجلات فقط، لكن لا يمكن إثبات أنها لم تُعدّل. لا تتابع إلا إذا كنت تثق بمصدر الملف وتقبل هذه المخاطرة. سيتم إنشاء لقطة أمان قبل الاستعادة.';
       } else if (legacyMatch) {
+        checksumStatus = 'legacy-verified';
         warning = 'تم التحقق من النسخة باستخدام طريقة التوقيع المتوافقة مع إصدار أقدم. يُنصح بإنشاء نسخة احتياطية جديدة بعد الاستعادة.';
+      } else {
+        checksumStatus = 'verified';
       }
     } else {
       isLegacy = true;
+      checksumStatus = 'missing';
       warning = 'تنبيه: ملف نسخة احتياطية قديم بدون توقيع رقمي، تم التحقق من سلامة البنية الداخلية واكتمال كافة المجموعات الاثنتي عشرة.';
     }
 
@@ -719,6 +737,7 @@ class SnapshotService {
       schemaVersion: parsed.schemaVersion || 1,
       appVersion: parsed.appVersion || parsed.version || '1.0',
       hasChecksum: Boolean(parsed.checksum),
+      checksumStatus,
       isLegacy,
       warning,
       counts: {
