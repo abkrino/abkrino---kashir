@@ -94,6 +94,7 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
   const [invoiceToDelete, setInvoiceToDelete] = useState<PurchaseInvoice | null>(null);
   const [invoiceToPrint, setInvoiceToPrint] = useState<PurchaseInvoice | null>(null);
   const [invoiceToReturn, setInvoiceToReturn] = useState<PurchaseInvoice | null>(null);
+  const [purchaseReturns, setPurchaseReturns] = useState(storage.getPurchaseReturns());
   const [returnQuantities, setReturnQuantities] = useState<Record<string, string>>({});
   const [returnSettlement, setReturnSettlement] = useState<'SUPPLIER_BALANCE' | 'CASH_REFUND'>('SUPPLIER_BALANCE');
   const [returnNotes, setReturnNotes] = useState('');
@@ -135,6 +136,7 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
 
   const reloadData = () => {
     setPurchases(storage.getPurchases());
+    setPurchaseReturns(storage.getPurchaseReturns());
     setPurchaseReturns(storage.getPurchaseReturns());
     setSuppliers(storage.getSuppliers());
     onRefreshData();
@@ -763,6 +765,32 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
                 <button type="button" onClick={submitPurchaseReturn} className="px-5 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-black">تأكيد مرتجع المشتريات</button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {purchaseReturns.length > 0 && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-800 rounded-2xl overflow-hidden shadow-sm">
+          <div className="p-4 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900 flex items-center justify-between">
+            <h3 className="font-black text-sm text-slate-900 dark:text-white">سجل مرتجعات المشتريات</h3>
+            <span className="text-xs font-bold text-amber-700 dark:text-amber-300">{purchaseReturns.length} مرتجع</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-right text-xs">
+              <thead><tr className="bg-slate-50 dark:bg-slate-800 text-slate-500"><th className="p-3">رقم المرتجع</th><th className="p-3">الفاتورة الأصلية</th><th className="p-3">المورد</th><th className="p-3">التاريخ</th><th className="p-3">القيمة</th><th className="p-3">التسوية</th></tr></thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {purchaseReturns.map(record => (
+                  <tr key={record.id} className="text-slate-700 dark:text-slate-300">
+                    <td className="p-3 font-mono font-bold text-amber-700 dark:text-amber-300">{record.returnNumber}</td>
+                    <td className="p-3 font-mono">{record.purchaseInvoiceNumber}</td>
+                    <td className="p-3">{record.supplierName}</td>
+                    <td className="p-3 font-mono">{record.date}</td>
+                    <td className="p-3 font-mono font-bold">{record.totalAmount.toLocaleString('ar-EG')} ج.م</td>
+                    <td className="p-3">{record.settlement === 'SUPPLIER_BALANCE' ? 'خصم من حساب المورد' : 'استرداد نقدي'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}
