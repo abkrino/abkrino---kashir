@@ -21,6 +21,7 @@ interface PendingRestore {
   warning?: string;
   data: Record<string, any>;
   snapshotId?: string;
+  requiresChecksumRecoveryApproval?: boolean;
 }
 
 export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) => {
@@ -46,6 +47,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
   // Double-confirmation restore preview modal state
   const [pendingRestore, setPendingRestore] = useState<PendingRestore | null>(null);
   const [isDoubleConfirmed, setIsDoubleConfirmed] = useState(false);
+  const [isChecksumRecoveryConfirmed, setIsChecksumRecoveryConfirmed] = useState(false);
   const [isRestoring, setIsRestoring] = useState(false);
   const [lastCloudBackup, setLastCloudBackup] = useState<CloudBackupSummary | null>(() =>
     cloudBackupService.getLastSuccessfulBackup()
@@ -221,7 +223,20 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
     const reader = new FileReader();
     reader.onload = async (event) => {
       const content = event.target?.result as string;
-      const validation = await snapshotService.validateBackup(content);
+      let validation = await snapshotService.validateBackup(content);
+      let requiresChecksumRecoveryApproval = false;
+
+      // Never bypass checksum verification silently. Offer a separately labeled
+      // recovery preview only after ordinary validation fails specifically on SHA-256.
+      if (!validation.valid && validation.error?.includes('SHA-256')) {
+        const recoveryValidation = await snapshotService.validateBackup(content, {
+          allowChecksumMismatchAfterExplicitRecovery: true,
+        });
+        if (recoveryValidation.valid && recoveryValidation.preview?.checksumStatus === 'mismatch') {
+          validation = recoveryValidation;
+          requiresChecksumRecoveryApproval = true;
+        }
+      }
 
       if (!validation.valid) {
         setStatusMessage({
@@ -237,8 +252,10 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
         preview: validation.preview!,
         warning: validation.warning,
         data: validation.validatedData!,
+        requiresChecksumRecoveryApproval,
       });
       setIsDoubleConfirmed(false);
+      setIsChecksumRecoveryConfirmed(false);
     };
     reader.readAsText(file);
     // Reset file input so user can choose the same file again if desired
@@ -247,7 +264,8 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
 
   // Confirm Restore Execution (Dual confirmation + pre_restore snapshot)
   const handleExecuteRestore = async () => {
-    if (!pendingRestore || !isDoubleConfirmed) return;
+    if (!pendingRestore || !isDoubleConfirmed ||
+      (pendingRestore.requiresChecksumRecoveryApproval && !isChecksumRecoveryConfirmed)) return;
     setIsRestoring(true);
 
     try {
@@ -258,6 +276,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
           text: 'تمت استعادة البيانات بنجاح! تم أخذ لقطة أمان تلقائية للبيانات السابقة قبل البدء.',
         });
         setPendingRestore(null);
+        setIsChecksumRecoveryConfirmed(false);
         onRefreshData();
         await loadSnapshots();
       } else {
@@ -749,7 +768,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
               <button
                 type="button"
                 disabled={isRestoring}
-                onClick={() => setPendingRestore(null)}
+                onClick={() => { setPendingRestore(null); setIsChecksumRecoveryConfirmed(false); }}
                 className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded-lg cursor-pointer"
               >
                 <X className="w-4 h-4" />
@@ -768,10 +787,25 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
             <div className="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl text-xs space-y-1.5">
               <div className="flex items-center justify-between">
                 <span className="text-slate-600 dark:text-slate-300 font-bold">حالة البصمة الرقمية:</span>
-                {pendingRestore.preview.hasChecksum ? (
+                {pendingRestore.preview.checksumStatus === 'mismatch' ? (
+                  <span className="flex items-center gap-1 text-rose-600 dark:text-rose-400 font-bold">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>بصمة SHA-256 غير مطابقة</span>
+                  </span>
+                ) : pendingRestore.preview.checksumStatus === 'transport-verified' ? (
+                  <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-bold">
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>تم التحقق من بصمة الملف السحابي فقط</span>
+                  </span>
+                ) : pendingRestore.preview.checksumStatus === 'legacy-verified' ? (
+                  <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-bold">
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>مطابقة وفق طريقة إصدار قديم</span>
+                  </span>
+                ) : pendingRestore.preview.checksumStatus === 'verified' || pendingRestore.preview.hasChecksum ? (
                   <span className="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-bold">
                     <ShieldCheck className="w-4 h-4" />
-                    <span>توقيع رقمي SHA-256 مطابق وموثق</span>
+                    <span>تطابق SHA-256</span>
                   </span>
                 ) : (
                   <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-bold">
@@ -816,6 +850,20 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
               🛡️ <strong>حماية تلقائية:</strong> سيقوم النظام تلقائياً بإنشاء لقطة أمان كاملة (قبل الاستعادة) لبياناتك الحالية قبل تطبيق هذه النسخة، لتتمكن من العودة إليها في أي وقت.
             </div>
 
+            {pendingRestore.requiresChecksumRecoveryApproval && (
+              <label className="flex items-start gap-2.5 bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 p-3 rounded-xl cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={isChecksumRecoveryConfirmed}
+                  onChange={(e) => setIsChecksumRecoveryConfirmed(e.target.checked)}
+                  className="mt-0.5 rounded text-rose-600 focus:ring-rose-500 cursor-pointer"
+                />
+                <span className="text-xs text-rose-800 dark:text-rose-200 font-bold leading-relaxed">
+                  أفهم أن بصمة SHA-256 لا تطابق محتوى الملف، وأن فحوص البنية وأعداد السجلات لا تثبت أصالة البيانات. أتحمل مسؤولية المتابعة لأنني أثق بمصدر هذه النسخة.
+                </span>
+              </label>
+            )}
+
             {/* Double Confirmation Checkbox */}
             <label className="flex items-start gap-2.5 bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl cursor-pointer hover:bg-slate-100/60 transition">
               <input
@@ -840,7 +888,7 @@ export const BackupManager: React.FC<BackupManagerProps> = ({ onRefreshData }) =
               </button>
               <button
                 type="button"
-                disabled={!isDoubleConfirmed || isRestoring}
+                disabled={!isDoubleConfirmed || (pendingRestore.requiresChecksumRecoveryApproval && !isChecksumRecoveryConfirmed) || isRestoring}
                 onClick={handleExecuteRestore}
                 className="px-5 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black text-xs cursor-pointer shadow-md transition flex items-center gap-1.5"
               >
