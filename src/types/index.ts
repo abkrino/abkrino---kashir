@@ -229,6 +229,33 @@ export interface PurchaseInvoice {
   affectsDrawer?: boolean;
 }
 
+export interface PurchaseReturnItem {
+  id: string;
+  productId: string;
+  productName: string;
+  quantityPieces: number;
+  unitCost: number;
+  totalCost: number;
+  lotAllocations: Array<{ lotId: string; quantity: number; unitCost: number }>;
+}
+
+export interface PurchaseReturn {
+  id: string;
+  returnNumber: string;
+  date: string;
+  time: string;
+  purchaseInvoiceId: string;
+  purchaseInvoiceNumber: string;
+  supplierId: string;
+  supplierName: string;
+  items: PurchaseReturnItem[];
+  totalAmount: number;
+  settlement: 'SUPPLIER_BALANCE' | 'CASH_REFUND';
+  notes?: string;
+  performedByUserId: string;
+  performedBy: string;
+}
+
 export interface StockAdjustment {
   id: string;
   date: string;
@@ -300,7 +327,7 @@ export interface CashMovement {
     | 'OPENING_BALANCE' 
     | 'DRAWER_ADJUSTMENT' 
     | 'INVOICE_REVERSAL'
-    | 'SALES_REFUND'
+    | 'SALES_REFUND'\n    | 'PURCHASE_RETURN'
     | 'CAPITAL_INJECTION';
   categoryLabelArabic: string;
   amount: number;
