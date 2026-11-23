@@ -3264,8 +3264,18 @@ class StorageService {
     const purchase = purchases.find(p => p.id === invoiceId || p.invoiceNumber === invoiceId);
     if (!purchase) return { success: false, error: 'فاتورة الشراء غير موجودة' };
 
+    const fifoInit = this.ensureFifoInitialized();
+    if (!fifoInit.success) return { success: false, error: fifoInit.error };
     const products = this.getProducts();
     const suppliers = this.getSuppliers();
+    const purchaseLots = this.getInventoryLots().filter(lot => lot.referenceId === purchase.id);
+    if (purchase.isStockInserted && purchaseLots.length === 0) {
+      return { success: false, error: 'لا يمكن حذف فاتورة شراء قديمة غير ممثلة بدفعات FIFO؛ يلزم تسويتها أولاً.' };
+    }
+    if (purchaseLots.some(lot => Math.abs(lot.remainingQty - lot.originalQty) > 0.001)) {
+      return { success: false, error: 'لا يمكن حذف فاتورة الشراء: تم استهلاك جزء من دفعاتها في المبيعات أو المرتجعات. استخدم عملية مرتجع/عكس مخزون مخصصة.' };
+    }
+    const remainingLotsAfterDelete = this.getInventoryLots().filter(lot => lot.referenceId !== purchase.id);
     const paidAmount = Number(purchase.paidAmount ?? 0);
     const remainingAmount = Number(purchase.remainingAmount ?? 0);
     if (!Number.isFinite(paidAmount) || paidAmount < 0 ||
@@ -3339,7 +3349,12 @@ class StorageService {
     }
 
     // All linked records are validated before the first persistent mutation.
-    if (purchase.isStockInserted) this.setItem(STORAGE_KEYS.PRODUCTS, nextProducts);
+    if (purchase.isStockInserted) {
+      const fifoErrors = validateFifoLedger(nextProducts, remainingLotsAfterDelete);
+      if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
+      this.setItem(STORAGE_KEYS.PRODUCTS, nextProducts);
+      this.setItem(STORAGE_KEYS.INVENTORY_LOTS, remainingLotsAfterDelete);
+    }
     if (remainingAmount > 0) this.setItem(STORAGE_KEYS.SUPPLIERS, nextSuppliers);
 
     if (paidAmount > 0) {
