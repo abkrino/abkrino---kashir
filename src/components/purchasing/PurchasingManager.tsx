@@ -98,7 +98,7 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
   const [returnQuantities, setReturnQuantities] = useState<Record<string, string>>({});
   const [returnSettlement, setReturnSettlement] = useState<'SUPPLIER_BALANCE' | 'CASH_REFUND'>('SUPPLIER_BALANCE');
   const [returnNotes, setReturnNotes] = useState('');
-  const [purchaseReturns, setPurchaseReturns] = useState(storage.getPurchaseReturns());
+
 
 
   const openPurchaseReturn = (invoice: PurchaseInvoice) => {
