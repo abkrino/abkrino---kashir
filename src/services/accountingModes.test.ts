@@ -260,6 +260,26 @@ describe('Accounting Modes, Unified evaluateCashOut & Structured Funding Sources
     expect(overReturn.success).toBe(false);
   });
 
+  it('applies discount and freight proportionally to FIFO lot cost when a purchase is inserted later', () => {
+    const purchase = makePurchaseInvoice(0, 120);
+    purchase.isStockInserted = false;
+    purchase.discountAmount = 12;
+    purchase.freightCost = 6;
+    purchase.totalCost = 114;
+
+    expect(storage.postPurchaseInvoice(purchase, { user: adminUser }).success).toBe(true);
+    expect(storage.getProducts().find(product => product.id === testProduct.id)!.stockPieces).toBe(100);
+
+    const inserted = storage.insertPurchaseIntoStock(purchase.id);
+    expect(inserted.success).toBe(true);
+
+    const lot = storage.getInventoryLots().find(entry => entry.referenceId === purchase.id && entry.source === 'PURCHASE');
+    expect(lot?.originalQty).toBe(12);
+    expect(lot?.unitCost).toBe(9.5);
+    expect(storage.getProducts().find(product => product.id === testProduct.id)!.stockPieces).toBe(112);
+    expect(storage.validateInventoryFifo().valid).toBe(true);
+  });
+
   it('defaults to DAILY_DRAWER and structured DEFAULT_FUNDING_SOURCES', () => {
     expect(storage.getAccountingMode()).toBe('DAILY_DRAWER');
     const sources = storage.getFundingSources();
