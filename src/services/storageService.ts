@@ -3529,6 +3529,8 @@ class StorageService {
     const gate = this.assertWriteAllowed('ADMIN_DATA', `تسوية مخزون الصنف ${params.productId}`);
     if (!gate.allowed) return { success: false, error: gate.error };
 
+    const fifoInit = this.ensureFifoInitialized();
+    if (!fifoInit.success) return { success: false, error: fifoInit.error };
     const products = this.getProducts();
     const prod = products.find(p => p.id === params.productId);
     if (!prod) return { success: false, error: 'الصنف غير موجود' };
@@ -3545,15 +3547,38 @@ class StorageService {
         error: `لا يمكن تنفيذ التسوية؛ رصيد الصنف "${prod.name}" هو ${prevPieces} قطعة، والتسوية ستجعله بالسالب.`,
       };
     }
-    prod.stockPieces = newPieces;
-    this.setItem(STORAGE_KEYS.PRODUCTS, products);
-
     const now = new Date();
     const dateStr = getCairoDateString(now);
     const timeStr = now.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+    const adjustmentId = `adj-${Date.now()}`;
+    let lots = this.getInventoryLots();
+    let allocations = this.getFifoAllocations();
+    if (differencePieces > 0) {
+      try {
+        lots = receiveLot(lots, {
+          id: `lot-adjustment-${adjustmentId}`, productId: prod.id, source: 'ADJUSTMENT',
+          referenceId: adjustmentId, referenceNumber: params.reasonArabic,
+          receivedAt: now.toISOString(), originalQty: differencePieces, remainingQty: differencePieces,
+          unitCost: Number(prod.costPricePerBase) || 0,
+        });
+      } catch (error: any) {
+        return { success: false, error: error?.message || 'تعذر إنشاء دفعة تسوية.' };
+      }
+    } else if (differencePieces < 0) {
+      const consumed = allocateFifo(lots, allocations, adjustmentId, `adjustment-${adjustmentId}`, prod.id, Math.abs(differencePieces), now.toISOString());
+      if (consumed.error) return { success: false, error: consumed.error };
+      lots = consumed.lots;
+      allocations = consumed.allocations;
+    }
+    const nextProducts = products.map(product => product.id === prod.id ? { ...product, stockPieces: newPieces } : product);
+    const fifoErrors = validateFifoLedger(nextProducts, lots);
+    if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
+    this.setItem(STORAGE_KEYS.PRODUCTS, nextProducts);
+    this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
+    this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, allocations);
 
     const adjustment: StockAdjustment = {
-      id: `adj-${Date.now()}`,
+      id: adjustmentId,
       date: dateStr,
       time: timeStr,
       productId: prod.id,
