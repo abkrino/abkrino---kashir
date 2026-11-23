@@ -182,6 +182,27 @@ export function returnToOriginalLots(
   return { lots: nextLots, allocations: nextAllocations };
 }
 
+export function validateFifoAllocations(lots: InventoryLot[], allocations: FifoAllocation[]): string[] {
+  const errors: string[] = [];
+  const lotById = new Map(lots.map(lot => [lot.id, lot]));
+  const ids = new Set<string>();
+  for (const allocation of allocations) {
+    if (!allocation.id || ids.has(allocation.id)) errors.push(`تخصيص FIFO بمعرّف مكرر أو فارغ: ${allocation.id || 'غير معروف'}.`);
+    ids.add(allocation.id);
+    const lot = lotById.get(allocation.lotId);
+    if (!lot) errors.push(`تخصيص FIFO ${allocation.id}: دفعة المخزون غير موجودة.`);
+    else if (lot.productId !== allocation.productId) errors.push(`تخصيص FIFO ${allocation.id}: الصنف لا يطابق دفعة المخزون.`);
+    if (!allocation.invoiceId || !allocation.invoiceItemId || !allocation.productId ||
+        !Number.isFinite(allocation.quantity) || allocation.quantity <= 0 ||
+        !Number.isFinite(allocation.returnedQty) || allocation.returnedQty < 0 ||
+        allocation.returnedQty > allocation.quantity + 1e-6 ||
+        !Number.isFinite(allocation.unitCost) || allocation.unitCost < 0) {
+      errors.push(`تخصيص FIFO ${allocation.id}: بيانات كمية أو تكلفة غير صالحة.`);
+    }
+  }
+  return errors;
+}
+
 export function validateFifoLedger(products: Product[], lots: InventoryLot[]): string[] {
   const errors: string[] = [];
   const productMap = new Map(products.map(product => [product.id, product]));
