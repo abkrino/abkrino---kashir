@@ -93,9 +93,49 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
   // Delete & Print Modals
   const [invoiceToDelete, setInvoiceToDelete] = useState<PurchaseInvoice | null>(null);
   const [invoiceToPrint, setInvoiceToPrint] = useState<PurchaseInvoice | null>(null);
+  const [invoiceToReturn, setInvoiceToReturn] = useState<PurchaseInvoice | null>(null);
+  const [returnQuantities, setReturnQuantities] = useState<Record<string, string>>({});
+  const [returnSettlement, setReturnSettlement] = useState<'SUPPLIER_BALANCE' | 'CASH_REFUND'>('SUPPLIER_BALANCE');
+  const [returnNotes, setReturnNotes] = useState('');
+  const [purchaseReturns, setPurchaseReturns] = useState(storage.getPurchaseReturns());
+
+
+  const openPurchaseReturn = (invoice: PurchaseInvoice) => {
+    setInvoiceToReturn(invoice);
+    setReturnQuantities({});
+    setReturnSettlement('SUPPLIER_BALANCE');
+    setReturnNotes('');
+    setActionError(null);
+  };
+
+  const submitPurchaseReturn = () => {
+    if (!invoiceToReturn) return;
+    const items = invoiceToReturn.items.map((item, index) => {
+      const product = products.find(entry => entry.id === item.productId);
+      const factor = item.unit === 'CARTON' ? Number(product?.piecesPerWholesaleUnit || 1)
+        : item.unit === 'PALLET' ? Number(product?.piecesPerWholesaleUnit || 1) * 20 : 1;
+      return { productId: item.productId, quantityPieces: Number(returnQuantities[String(index)] || 0) * factor };
+    }).filter(item => item.quantityPieces > 0);
+    const result = storage.processPurchaseReturn({
+      purchaseInvoiceId: invoiceToReturn.id,
+      items,
+      settlement: returnSettlement,
+      notes: returnNotes,
+      user: currentUser,
+    });
+    if (!result.success) {
+      setActionError(result.error || 'تعذر تسجيل مرتجع المشتريات');
+      return;
+    }
+    setInvoiceToReturn(null);
+    setReturnQuantities({});
+    setReturnNotes('');
+    reloadData();
+  };
 
   const reloadData = () => {
     setPurchases(storage.getPurchases());
+    setPurchaseReturns(storage.getPurchaseReturns());
     setSuppliers(storage.getSuppliers());
     onRefreshData();
   };
@@ -639,9 +679,19 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
                         >
                           <Printer className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
                         </button>
+                        {p.isStockInserted && (
+                          <button
+                            type="button"
+                            onClick={() => openPurchaseReturn(p)}
+                            className="p-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/50 hover:bg-amber-100 text-amber-700 dark:text-amber-300 cursor-pointer transition-colors"
+                            title="تسجيل مرتجع مشتريات"
+                          >
+                            <RefreshCw className="w-4 h-4" />
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() => handleOpenEditInvoice(p)}
+                          onClick={() => handleOpenEditInvoice(p)
                           className="p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 cursor-pointer transition-colors"
                           title="تعديل فاتورة الشراء"
                         >
@@ -664,6 +714,58 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
           )}
         </div>
       </div>
+
+      {invoiceToReturn && (
+        <div className="fixed inset-0 z-[70] bg-black/75 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-2xl p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto text-right" dir="rtl">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-700 pb-3 mb-4">
+              <div>
+                <h3 className="font-black text-lg text-slate-900 dark:text-white">مرتجع مشتريات</h3>
+                <p className="text-xs text-slate-500 mt-1">الفاتورة {invoiceToReturn.invoiceNumber} — {invoiceToReturn.supplierName}</p>
+              </div>
+              <button type="button" onClick={() => setInvoiceToReturn(null)} className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"><X className="w-5 h-5"/></button>
+            </div>
+            <div className="space-y-3">
+              {invoiceToReturn.items.map((item, index) => {
+                const product = products.find(entry => entry.id === item.productId);
+                const factor = item.unit === 'CARTON' ? Number(product?.piecesPerWholesaleUnit || 1)
+                  : item.unit === 'PALLET' ? Number(product?.piecesPerWholesaleUnit || 1) * 20 : 1;
+                const maxQty = Number(item.quantity);
+                return (
+                  <div key={`${item.productId}-${index}`} className="grid grid-cols-1 sm:grid-cols-[1fr_130px] gap-3 items-center p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70">
+                    <div>
+                      <div className="font-bold text-sm text-slate-900 dark:text-white">{item.productName}</div>
+                      <div className="text-[11px] text-slate-500">المستلم: {maxQty} {item.unit === 'CARTON' ? 'كرتونة' : item.unit === 'PALLET' ? 'بالتة' : 'قطعة'} — {maxQty * factor} قطعة</div>
+                    </div>
+                    <label className="text-xs font-bold text-slate-600 dark:text-slate-300">
+                      كمية المرتجع ({item.unit === 'CARTON' ? 'كرتونة' : item.unit === 'PALLET' ? 'بالتة' : 'قطعة'})
+                      <input
+                        type="number" min="0" max={maxQty} step="0.001"
+                        value={returnQuantities[String(index)] || ''}
+                        onChange={event => setReturnQuantities(previous => ({...previous, [String(index)]: event.target.value}))}
+                        className="mt-1 w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-950 px-3 py-2 text-sm"
+                        placeholder="0"
+                      />
+                    </label>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="mt-4 space-y-3">
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">طريقة التسوية</label>
+              <select value={returnSettlement} onChange={event => setReturnSettlement(event.target.value as 'SUPPLIER_BALANCE' | 'CASH_REFUND')} className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-950 p-2.5 text-sm">
+                <option value="SUPPLIER_BALANCE">خصم من مديونية المورد</option>
+                <option value="CASH_REFUND">استرداد نقدي من المورد للخزينة</option>
+              </select>
+              <textarea value={returnNotes} onChange={event => setReturnNotes(event.target.value)} rows={2} placeholder="ملاحظات / سبب المرتجع (اختياري)" className="w-full rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-950 p-3 text-sm"/>
+              <div className="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                <button type="button" onClick={() => setInvoiceToReturn(null)} className="px-4 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-bold">إلغاء</button>
+                <button type="button" onClick={submitPurchaseReturn} className="px-5 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white font-black">تأكيد مرتجع المشتريات</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* NEW / EDIT PURCHASE INVOICE MODAL */}
       {isInvoiceModalOpen && (
