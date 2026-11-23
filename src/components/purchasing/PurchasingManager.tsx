@@ -114,7 +114,7 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
     const items = invoiceToReturn.items.map((item, index) => {
       const product = products.find(entry => entry.id === item.productId);
       const factor = item.unit === 'CARTON' ? Number(product?.piecesPerWholesaleUnit || 1)
-        : item.unit === 'PALLET' ? Number(product?.piecesPerWholesaleUnit || 1) * 20 : 1;
+        : item.unit === 'PALLET' ? Number(product?.piecesPerWholesaleUnit || 1) * (Number(product?.piecesPerPallet) || 20) : 1;
       return { productId: item.productId, quantityPieces: Number(returnQuantities[String(index)] || 0) * factor };
     }).filter(item => item.quantityPieces > 0);
     const result = storage.processPurchaseReturn({
@@ -730,7 +730,7 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
               {invoiceToReturn.items.map((item, index) => {
                 const product = products.find(entry => entry.id === item.productId);
                 const factor = item.unit === 'CARTON' ? Number(product?.piecesPerWholesaleUnit || 1)
-                  : item.unit === 'PALLET' ? Number(product?.piecesPerWholesaleUnit || 1) * 20 : 1;
+                  : item.unit === 'PALLET' ? Number(product?.piecesPerWholesaleUnit || 1) * (Number(product?.piecesPerPallet) || 20) : 1;
                 const maxQty = Number(item.quantity);
                 return (
                   <div key={`${item.productId}-${index}`} className="grid grid-cols-1 sm:grid-cols-[1fr_130px] gap-3 items-center p-3 rounded-xl bg-slate-50 dark:bg-slate-800/70">
@@ -881,7 +881,7 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
                         const p = products.find(prod => prod.id === e.target.value);
                         if (p) {
                           if (itemUnit === 'CARTON') setItemCostPrice(p.costPricePerCarton);
-                          else if (itemUnit === 'PALLET') setItemCostPrice(p.costPricePerCarton * 20);
+                          else if (itemUnit === 'PALLET') setItemCostPrice(p.costPricePerCarton * (Number(p.piecesPerPallet) || 20));
                           else setItemCostPrice(p.costPricePerBase);
                         }
                       }}
@@ -906,7 +906,7 @@ export const PurchasingManager: React.FC<PurchasingManagerProps> = ({
                         const p = products.find(prod => prod.id === selectedProductId);
                         if (p) {
                           if (u === 'CARTON') setItemCostPrice(p.costPricePerCarton);
-                          else if (u === 'PALLET') setItemCostPrice(p.costPricePerCarton * 20);
+                          else if (u === 'PALLET') setItemCostPrice(p.costPricePerCarton * (Number(p.piecesPerPallet) || 20));
                           else setItemCostPrice(p.costPricePerBase);
                         }
                       }}
