@@ -134,6 +134,29 @@ export async function computeDataChecksum(data: any): Promise<string> {
     .join('');
 }
 
+/**
+ * Previous releases hashed a non-JSON canonical representation where undefined
+ * object properties became the literal text "undefined". Keep this verifier
+ * only to read existing trusted backups/snapshots; all new exports use the
+ * JSON-compatible canonical representation above.
+ */
+function legacyCanonicalStringify(value: any): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return '[' + value.map(legacyCanonicalStringify).join(',') + ']';
+  }
+  const keys = Object.keys(value).sort();
+  return '{' + keys.map(key => JSON.stringify(key) + ':' + legacyCanonicalStringify(value[key])).join(',') + '}';
+}
+
+async function matchesLegacyDataChecksum(data: any, expected: string): Promise<boolean> {
+  if (typeof crypto === 'undefined' || !crypto.subtle || typeof crypto.subtle.digest !== 'function') return false;
+  const legacy = legacyCanonicalStringify(data);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(legacy));
+  const actual = Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+  return actual === expected;
+}
+
 class SnapshotService {
   private isProcessingSnapshot: boolean = false;
   private dropAlert: string | null = null;
@@ -636,11 +659,17 @@ class SnapshotService {
 
     if (parsed.checksum) {
       const calculatedChecksum = await computeDataChecksum(data);
-      if (calculatedChecksum !== parsed.checksum) {
+      const legacyMatch = calculatedChecksum !== parsed.checksum
+        ? await matchesLegacyDataChecksum(data, parsed.checksum)
+        : false;
+      if (calculatedChecksum !== parsed.checksum && !legacyMatch) {
         return {
           valid: false,
           error: 'فشل التحقق من التوقيع الرقمي (SHA-256). ملف النسخة الاحتياطية تالف أو تم التعديل عليه يدوياً.',
         };
+      }
+      if (legacyMatch) {
+        warning = 'تم التحقق من النسخة باستخدام طريقة التوقيع المتوافقة مع إصدار أقدم. يُنصح بإنشاء نسخة احتياطية جديدة بعد الاستعادة.';
       }
     } else {
       isLegacy = true;
@@ -920,7 +949,10 @@ class SnapshotService {
       // Check integrity if checksum present
       if (snapshot.metadata?.checksum) {
         const computed = await computeDataChecksum(snapshot.data);
-        if (computed !== snapshot.metadata.checksum) {
+        const legacyMatch = computed !== snapshot.metadata.checksum
+          ? await matchesLegacyDataChecksum(snapshot.data, snapshot.metadata.checksum)
+          : false;
+        if (computed !== snapshot.metadata.checksum && !legacyMatch) {
           return { success: false, error: 'اللقطة الداخلية تالفة ولا تطابق التوقيع الرقمي' };
         }
       }
