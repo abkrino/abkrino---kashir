@@ -7,6 +7,7 @@ declare global {
     kashirAnnouncer?: {
       list(): Promise<AnnouncementItem[]>;
       create(payload: { title: string; text: string }): Promise<AnnouncementItem>;
+      cancel(): Promise<boolean>;
       readAudio(id: string): Promise<string>;
       remove(id: string): Promise<boolean>;
     };
