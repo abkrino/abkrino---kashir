@@ -3218,8 +3218,6 @@ class StorageService {
         }
       }
 
-      this.setItem(STORAGE_KEYS.PRODUCTS, products);
-
       // Create one immutable cost lot per received purchase line.
       let lots = this.getInventoryLots();
       for (let index = 0; index < purchase.items.length; index++) {
@@ -3257,6 +3255,7 @@ class StorageService {
       }
       const fifoErrors = validateFifoLedger(products, lots);
       if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
+      this.setItem(STORAGE_KEYS.PRODUCTS, products);
       this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
     }
 
@@ -3492,8 +3491,6 @@ class StorageService {
       if (!bonusProduct) return { success: false, error: 'صنف بونص البضاعة غير موجود.' };
       bonusProduct.stockPieces += Number(purchase.bonusGoodsQuantity) * Number(bonusProduct.piecesPerWholesaleUnit);
     }
-    this.setItem(STORAGE_KEYS.PRODUCTS, products);
-
     let lots = this.getInventoryLots();
     for (let index = 0; index < purchase.items.length; index++) {
       const item = purchase.items[index];
@@ -3529,6 +3526,7 @@ class StorageService {
     }
     const ledgerErrors = validateFifoLedger(products, lots);
     if (ledgerErrors.length) return { success: false, error: ledgerErrors[0] };
+    this.setItem(STORAGE_KEYS.PRODUCTS, products);
     this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
 
     purchase.isStockInserted = true;
