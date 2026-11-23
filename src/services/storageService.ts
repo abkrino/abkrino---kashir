@@ -2051,6 +2051,12 @@ class StorageService {
     if (this.getSalesReturns(invoice.id).length > 0) {
       return { success: false, error: 'لا يمكن حذف فاتورة لها مرتجعات مسجلة. راجع المرتجعات المرتبطة بها أولاً.' };
     }
+    const fifoInit = this.ensureFifoInitialized();
+    if (!fifoInit.success) return { success: false, error: fifoInit.error };
+    const currentAllocations = this.getFifoAllocations();
+    if (!currentAllocations.some(allocation => allocation.invoiceId === invoice.id)) {
+      return { success: false, error: 'لا يمكن حذف فاتورة بيع قديمة لا تحتوي على تخصيصات FIFO؛ يلزم ترحيلها أو تسويتها أولاً.' };
+    }
 
     // Validate every linked record before preparing any mutation.
     if (!Array.isArray(invoice.items) || invoice.items.length === 0) {
@@ -2067,6 +2073,8 @@ class StorageService {
     const customers = this.getCustomers();
     const nextProducts = products.map(product => ({ ...product }));
     const quantitiesByProduct = new Map<string, number>();
+    const releasedFifo = releaseInvoiceAllocations(this.getInventoryLots(), currentAllocations, invoice.id);
+    if (releasedFifo.error) return { success: false, error: releasedFifo.error };
 
     for (const item of invoice.items) {
       const quantity = Number(item.piecesCount);
@@ -2088,6 +2096,9 @@ class StorageService {
       product.stockPieces = currentStock + quantity;
     }
 
+    const fifoErrors = validateFifoLedger(nextProducts, releasedFifo.lots);
+    if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
+
     const nextCustomers = customers.map(customer => ({ ...customer }));
     if (remainingAmount > 0) {
       const customer = nextCustomers.find(c => c.id === invoice.customerId);
@@ -2103,6 +2114,8 @@ class StorageService {
 
     // All linked records passed validation; now apply the prepared changes.
     this.setItem(STORAGE_KEYS.PRODUCTS, nextProducts);
+    this.setItem(STORAGE_KEYS.INVENTORY_LOTS, releasedFifo.lots);
+    this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, releasedFifo.allocations);
     if (remainingAmount > 0) {
       this.setItem(STORAGE_KEYS.CUSTOMERS, nextCustomers);
     }
