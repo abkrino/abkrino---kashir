@@ -3602,7 +3602,7 @@ class StorageService {
         return { success: false, error: error?.message || 'تعذر إنشاء دفعة البونص.' };
       }
     }
-    const ledgerErrors = validateFifoLedger(products, lots);
+    const ledgerErrors = [...validateFifoLedger(products, lots), ...validateFifoAllocations(lots, this.getFifoAllocations())];
     if (ledgerErrors.length) return { success: false, error: ledgerErrors[0] };
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
     this.setItem(STORAGE_KEYS.INVENTORY_LOTS, lots);
