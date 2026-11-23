@@ -3009,83 +3009,83 @@ class StorageService {
 
     const products = this.getProducts();
     const suppliers = this.getSuppliers();
-
-    // Refuse purchase deletion if removing its received goods would make any
-    // product stock negative. Validate all quantities before changing anything.
-    if (purchase.isStockInserted) {
-      const removalByProduct = new Map<string, number>();
-      for (const item of purchase.items || []) {
-        const prod = products.find(p => p.id === item.productId);
-        if (!prod) {
-          return {
-            success: false,
-            error: `لا يمكن حذف فاتورة الشراء: الصنف المرتبط بها غير موجود حاليًا (معرّف الصنف: ${item.productId}). راجع سجل المخزون قبل الحذف.`,
-          };
-        }
-        const piecesPerUnit = item.unit === 'CARTON'
-          ? prod.piecesPerWholesaleUnit
-          : item.unit === 'PALLET'
-          ? (prod.piecesPerWholesaleUnit * 20)
-          : 1;
-        const quantity = Number(item.quantity) * piecesPerUnit;
-        if (!Number.isFinite(quantity) || quantity < 0) {
-          return { success: false, error: `كمية غير صالحة في فاتورة الشراء للصنف "${prod.name}".` };
-        }
-        removalByProduct.set(item.productId, (removalByProduct.get(item.productId) || 0) + quantity);
-      }
-      if (purchase.bonusType === 'GOODS' && purchase.bonusGoodsQuantity && purchase.items.length > 0) {
-        const firstProd = products.find(p => p.id === purchase.items[0].productId);
-        if (firstProd) {
-          const bonusPieces = Number(purchase.bonusGoodsQuantity) * firstProd.piecesPerWholesaleUnit;
-          removalByProduct.set(firstProd.id, (removalByProduct.get(firstProd.id) || 0) + bonusPieces);
-        }
-      }
-      for (const [productId, requestedRemoval] of removalByProduct) {
-        const prod = products.find(p => p.id === productId)!;
-        const available = Number(prod.stockPieces) || 0;
-        if (requestedRemoval > available) {
-          return {
-            success: false,
-            error: `لا يمكن حذف فاتورة الشراء: رصيد الصنف "${prod.name}" هو ${available} قطعة، وخصم الفاتورة سيحتاج ${requestedRemoval} قطعة. عالج حركة المخزون أولاً.`,
-          };
-        }
-      }
+    const paidAmount = Number(purchase.paidAmount ?? 0);
+    const remainingAmount = Number(purchase.remainingAmount ?? 0);
+    if (!Number.isFinite(paidAmount) || paidAmount < 0 ||
+        !Number.isFinite(remainingAmount) || remainingAmount < 0) {
+      return { success: false, error: 'لا يمكن حذف فاتورة الشراء: بيانات المبالغ غير صالحة.' };
+    }
+    if (!Array.isArray(purchase.items) || purchase.items.length === 0) {
+      return { success: false, error: 'لا يمكن حذف فاتورة الشراء: تفاصيل الأصناف غير موجودة.' };
     }
 
-    // 1. إذا كانت البضاعة قد أُدرجت بالمخزن: خصم كمياتها من المخزن
+    const nextProducts = products.map(product => ({ ...product }));
+    const removalByProduct = new Map<string, number>();
     if (purchase.isStockInserted) {
       for (const item of purchase.items) {
-        const prod = products.find(p => p.id === item.productId);
-        if (prod) {
-          const piecesPerUnit = item.unit === 'CARTON' 
-            ? prod.piecesPerWholesaleUnit 
-            : item.unit === 'PALLET' 
-            ? (prod.piecesPerWholesaleUnit * 20) 
-            : 1;
-          prod.stockPieces -= (item.quantity * piecesPerUnit);
+        const product = products.find(p => p.id === item.productId);
+        if (!product) {
+          return { success: false, error: `لا يمكن حذف فاتورة الشراء: الصنف المرتبط بها غير موجود (معرّف: ${item.productId}).` };
+        }
+        const quantity = Number(item.quantity);
+        if (!Number.isFinite(quantity) || quantity <= 0 ||
+            !['CARTON', 'PIECE', 'PALLET'].includes(item.unit)) {
+          return { success: false, error: `بيانات كمية أو وحدة غير صالحة للصنف "${product.name}".` };
+        }
+        const piecesPerUnit = item.unit === 'CARTON' ? Number(product.piecesPerWholesaleUnit)
+          : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * 20 : 1;
+        if (!Number.isFinite(piecesPerUnit) || piecesPerUnit <= 0) {
+          return { success: false, error: `معامل تحويل الوحدة غير صالح للصنف "${product.name}".` };
+        }
+        const pieces = quantity * piecesPerUnit;
+        removalByProduct.set(item.productId, (removalByProduct.get(item.productId) || 0) + pieces);
+      }
+      if (purchase.bonusType === 'GOODS') {
+        const bonusQuantity = Number(purchase.bonusGoodsQuantity);
+        if (!Number.isFinite(bonusQuantity) || bonusQuantity < 0) {
+          return { success: false, error: 'كمية بونص البضاعة غير صالحة.' };
+        }
+        if (bonusQuantity > 0) {
+          const firstItem = purchase.items[0];
+          const firstProduct = products.find(p => p.id === firstItem.productId);
+          if (!firstProduct) return { success: false, error: 'صنف بونص البضاعة غير موجود.' };
+          const factor = firstItem.unit === 'PIECE' ? 1
+            : firstItem.unit === 'PALLET' ? Number(firstProduct.piecesPerWholesaleUnit) * 20
+            : Number(firstProduct.piecesPerWholesaleUnit);
+          if (!Number.isFinite(factor) || factor <= 0) {
+            return { success: false, error: 'معامل تحويل بونص البضاعة غير صالح.' };
+          }
+          removalByProduct.set(firstProduct.id, (removalByProduct.get(firstProduct.id) || 0) + bonusQuantity * factor);
         }
       }
-
-      // خصم بونص البضاعة المجانية إن وجد
-      if (purchase.bonusType === 'GOODS' && purchase.bonusGoodsQuantity && purchase.items.length > 0) {
-        const firstProd = products.find(p => p.id === purchase.items[0].productId);
-        if (firstProd) {
-          firstProd.stockPieces -= (purchase.bonusGoodsQuantity * firstProd.piecesPerWholesaleUnit);
+      for (const [productId, requested] of removalByProduct) {
+        const product = nextProducts.find(p => p.id === productId)!;
+        const available = Number(product.stockPieces);
+        if (!Number.isFinite(available) || available < requested) {
+          return { success: false, error: `لا يمكن حذف فاتورة الشراء: رصيد الصنف "${product.name}" غير كافٍ أو غير صالح. المطلوب خصمه ${requested} قطعة.` };
         }
+        product.stockPieces = available - requested;
       }
-
-      this.setItem(STORAGE_KEYS.PRODUCTS, products);
     }
 
-    // 2. إلغاء مديونية المورد
-    const supp = suppliers.find(s => s.id === purchase.supplierId);
-    if (supp && purchase.remainingAmount > 0) {
-      supp.currentBalance = Math.max(0, supp.currentBalance - purchase.remainingAmount);
-      this.setItem(STORAGE_KEYS.SUPPLIERS, suppliers);
+    const nextSuppliers = suppliers.map(supplier => ({ ...supplier }));
+    if (remainingAmount > 0) {
+      const supplier = nextSuppliers.find(s => s.id === purchase.supplierId);
+      if (!supplier) {
+        return { success: false, error: 'لا يمكن حذف فاتورة الشراء: المورد المرتبط بها غير موجود، ولا يمكن تسوية مديونيته بأمان.' };
+      }
+      const balance = Number(supplier.currentBalance);
+      if (!Number.isFinite(balance) || balance < 0) {
+        return { success: false, error: 'رصيد المورد غير صالح؛ تم إيقاف الحذف لحماية الحسابات.' };
+      }
+      supplier.currentBalance = Math.max(0, Math.round((balance - remainingAmount) * 100) / 100);
     }
 
-    // 3. رد النقدية المسددة إن وجدت (باحترام affectsDrawer إذا كانت الفاتورة من رأس المال)
-    if (purchase.paidAmount > 0) {
+    // All linked records are validated before the first persistent mutation.
+    if (purchase.isStockInserted) this.setItem(STORAGE_KEYS.PRODUCTS, nextProducts);
+    if (remainingAmount > 0) this.setItem(STORAGE_KEYS.SUPPLIERS, nextSuppliers);
+
+    if (paidAmount > 0) {
       this.addCashMovement(
         {
           id: `cm-${Date.now()}`,
@@ -3094,7 +3094,7 @@ class StorageService {
           type: 'IN',
           category: 'DRAWER_ADJUSTMENT',
           categoryLabelArabic: 'إلغاء فاتورة شراء',
-          amount: purchase.paidAmount,
+          amount: paidAmount,
           referenceId: purchase.invoiceNumber,
           description: `رد نقدية لحذف فاتورة الشراء رقم ${purchase.invoiceNumber} من ${purchase.supplierName}`,
           performedBy: this.getActiveUser()?.fullName || 'النظام',
@@ -3105,17 +3105,14 @@ class StorageService {
       );
     }
 
-    const filtered = purchases.filter(p => p.id !== purchase.id);
-    this.setItem(STORAGE_KEYS.PURCHASES, filtered);
-
+    this.setItem(STORAGE_KEYS.PURCHASES, purchases.filter(p => p.id !== purchase.id));
     this.addAuditLog(
       'PURCHASE_DELETE',
       'حذف فاتورة شراء',
       'فواتير الشراء',
       purchase.invoiceNumber,
-      `تم حذف فاتورة الشراء ${purchase.invoiceNumber} وخصم بضاعتها من المخزن وإلغاء مديونية المورد`
+      `تم حذف فاتورة الشراء ${purchase.invoiceNumber} بعد التحقق من المخزون وحساب المورد`
     );
-
     return { success: true };
   }
 
