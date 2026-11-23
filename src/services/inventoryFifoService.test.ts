@@ -6,6 +6,7 @@ import {
   returnToOriginalLots,
   seedOpeningLots,
   validateFifoLedger,
+  validateFifoAllocations,
   type InventoryLot,
 } from './inventoryFifoService';
 
@@ -61,6 +62,17 @@ describe('FIFO inventory ledger', () => {
     expect(returned.error).toBeUndefined();
     expect(returned.lots.map(x => x.remainingQty)).toEqual([60, 50]);
     expect(returned.allocations.map(x => x.returnedQty)).toEqual([60, 0]);
+  });
+
+  it('detects broken or mismatched FIFO allocation references', () => {
+    const lots = [lot('lot-a', 10, 5, 1, '2026-01-01')];
+    const errors = validateFifoAllocations(lots, [{
+      id: 'alloc-1', invoiceId: 'sale-1', invoiceItemId: 'line-1',
+      productId: 'wrong-product', lotId: 'lot-a', quantity: 2,
+      unitCost: 5, returnedQty: 3, createdAt: '2026-01-02',
+    }]);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.join(' ')).toContain('الصنف لا يطابق');
   });
 
   it('releases unreturned allocations back to their original lots', () => {
