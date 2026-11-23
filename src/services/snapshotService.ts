@@ -1,5 +1,6 @@
 import { idb, SnapshotRecord, SnapshotMetadata, SnapshotStatus, KVRecord } from './idbStore';
 import { storage, STORAGE_KEYS } from './storageService';
+import { validateFifoLedger, validateFifoAllocations } from './inventoryFifoService';
 import { DEFAULT_STORE_PROFILE, LEGACY_STORE_PROFILE, DEFAULT_FUNDING_SOURCES } from '../types';
 
 export const CURRENT_SCHEMA_VERSION = 1;
@@ -632,6 +633,13 @@ class SnapshotService {
     if (!Array.isArray(data.inventoryLots)) data.inventoryLots = [];
     if (!Array.isArray(data.fifoAllocations)) data.fifoAllocations = [];
     if (typeof data.fifoInitialized !== 'boolean') data.fifoInitialized = false;
+    if (data.fifoInitialized) {
+      const fifoErrors = [
+        ...validateFifoLedger(data.products, data.inventoryLots),
+        ...validateFifoAllocations(data.inventoryLots, data.fifoAllocations),
+      ];
+      if (fifoErrors.length) return { valid: false, error: `سجل FIFO في النسخة الاحتياطية غير متسق: ${fifoErrors[0]}` };
+    }
     if (!data || typeof data !== 'object') {
       return { valid: false, error: 'هيكل بيانات النسخة الاحتياطية فارغ أو تالف' };
     }
@@ -835,6 +843,14 @@ class SnapshotService {
             };
           }
         }
+      }
+
+      if (payload.fifoInitialized) {
+        const fifoErrors = [
+          ...validateFifoLedger(payload.products, Array.isArray(payload.inventoryLots) ? payload.inventoryLots : []),
+          ...validateFifoAllocations(Array.isArray(payload.inventoryLots) ? payload.inventoryLots : [], Array.isArray(payload.fifoAllocations) ? payload.fifoAllocations : []),
+        ];
+        if (fifoErrors.length) return { success: false, error: `سجل FIFO في بيانات الاستعادة غير متسق: ${fifoErrors[0]}` };
       }
 
       // Step 1: Pre-restore snapshot check (Requirement 2)
