@@ -224,7 +224,7 @@ class SnapshotService {
       salesReturns: storage.getSalesReturns(),
       inventoryLots: storage.getInventoryLots(),
       fifoAllocations: storage.getFifoAllocations(),
-      fifoInitialized: true,
+      fifoInitialized: storage.isFifoInitialized(),
     };
   }
 
