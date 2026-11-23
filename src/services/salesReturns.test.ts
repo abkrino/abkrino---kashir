@@ -790,4 +790,95 @@ describe('Sales Returns (مرتجعات المبيعات)', () => {
     expect(storage.getPurchases()).toHaveLength(0);
   });
 
+
+  it('rejects negative or zero purchase quantities before posting stock or financial records', () => {
+    const product = { ...testProduct, stockPieces: 10 };
+    const supplier = {
+      id: 'supplier-invalid-purchase',
+      code: 'SUP-TEST',
+      name: 'مورد اختبار',
+      type: 'WHOLESALER' as const,
+      phone: '',
+      contactPerson: '',
+      currentBalance: 0,
+      paymentTermsDays: 0,
+    };
+    storage.setItem(STORAGE_KEYS.PRODUCTS, [product]);
+    storage.setItem(STORAGE_KEYS.SUPPLIERS, [supplier]);
+    const purchase = {
+      id: 'pur-invalid-quantity',
+      invoiceNumber: 'PUR-INVALID-QUANTITY',
+      date: new Date().toISOString().slice(0, 10),
+      supplierId: supplier.id,
+      supplierName: supplier.name,
+      supplierType: 'WHOLESALER' as const,
+      items: [{
+        productId: product.id,
+        productName: product.name,
+        unit: 'PIECE' as const,
+        quantity: -5,
+        unitCost: 20,
+        totalCost: -100,
+      }],
+      subtotal: -100,
+      discountAmount: 0,
+      freightCost: 0,
+      totalCost: -100,
+      paidAmount: 0,
+      remainingAmount: 0,
+      paymentType: 'CASH' as const,
+      previousSupplierBalance: 0,
+      newSupplierBalance: 0,
+      isStockInserted: true,
+    };
+
+    const result = storage.postPurchaseInvoice(purchase);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('كمية الشراء غير صالحة');
+    expect(storage.getProducts().find(p => p.id === product.id)?.stockPieces).toBe(10);
+    expect(storage.getSuppliers()[0].currentBalance).toBe(0);
+    expect(storage.getPurchases()).toHaveLength(0);
+    expect(storage.getCashMovements()).toHaveLength(0);
+  });
+
+  it('rejects invalid legacy purchase quantities when inserting a draft into stock', () => {
+    const product = { ...testProduct, stockPieces: 10 };
+    storage.setItem(STORAGE_KEYS.PRODUCTS, [product]);
+    const purchase = {
+      id: 'pur-invalid-draft',
+      invoiceNumber: 'PUR-INVALID-DRAFT',
+      date: new Date().toISOString().slice(0, 10),
+      supplierId: 'supplier-test',
+      supplierName: 'مورد اختبار',
+      supplierType: 'WHOLESALER' as const,
+      items: [{
+        productId: product.id,
+        productName: product.name,
+        unit: 'PIECE' as const,
+        quantity: -3,
+        unitCost: 20,
+        totalCost: -60,
+      }],
+      subtotal: -60,
+      discountAmount: 0,
+      freightCost: 0,
+      totalCost: -60,
+      paidAmount: 0,
+      remainingAmount: 0,
+      paymentType: 'CASH' as const,
+      previousSupplierBalance: 0,
+      newSupplierBalance: 0,
+      isStockInserted: false,
+    };
+    storage.setItem(STORAGE_KEYS.PURCHASES, [purchase]);
+
+    const result = storage.insertPurchaseIntoStock(purchase.id);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('كمية الإدراج غير صالحة');
+    expect(storage.getProducts().find(p => p.id === product.id)?.stockPieces).toBe(10);
+    expect(storage.getPurchases()[0].isStockInserted).toBe(false);
+  });
+
 });
