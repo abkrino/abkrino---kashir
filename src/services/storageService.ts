@@ -1242,7 +1242,7 @@ class StorageService {
     }
     if (oldClean.toLocaleLowerCase() === newClean.toLocaleLowerCase()) return { success: true };
     const products = this.getProducts();
-    const linkedProducts = products.filter(product => product.category.trim().toLocaleLowerCase() === oldClean.toLocaleLowerCase());
+    const linkedProducts = products.filter(product => String(product.category || '').trim().toLocaleLowerCase() === oldClean.toLocaleLowerCase());
     linkedProducts.forEach(product => { product.category = newClean; });
     this.setItem(STORAGE_KEYS.PRODUCTS, products);
     this.setItem(STORAGE_KEYS.CATEGORIES, categories.map(item => item.toLocaleLowerCase() === oldClean.toLocaleLowerCase() ? newClean : item));
@@ -1258,7 +1258,7 @@ class StorageService {
     if (!categories.some(item => item.toLocaleLowerCase() === cleanName.toLocaleLowerCase())) {
       return { success: false, error: 'التصنيف المطلوب غير موجود.' };
     }
-    const linkedCount = this.getProducts().filter(product => product.category.trim().toLocaleLowerCase() === cleanName.toLocaleLowerCase()).length;
+    const linkedCount = this.getProducts().filter(product => String(product.category || '').trim().toLocaleLowerCase() === cleanName.toLocaleLowerCase()).length;
     if (linkedCount > 0) {
       return { success: false, error: `لا يمكن حذف التصنيف لأنه مرتبط بعدد ${linkedCount} صنف. انقل الأصناف إلى تصنيف آخر أولاً.` };
     }
