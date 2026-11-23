@@ -9,6 +9,7 @@ import {
   DEFAULT_FUNDING_SOURCES,
   Product,
   PurchaseInvoice,
+  SalesInvoice,
   Supplier,
   User,
 } from '../types';
@@ -278,6 +279,104 @@ describe('Accounting Modes, Unified evaluateCashOut & Structured Funding Sources
     expect(lot?.unitCost).toBe(9.5);
     expect(storage.getProducts().find(product => product.id === testProduct.id)!.stockPieces).toBe(112);
     expect(storage.validateInventoryFifo().valid).toBe(true);
+  });
+
+  it('reverses sales-return cost from original FIFO lots and tracks damaged returns separately', () => {
+    testProduct = { ...testProduct, stockPieces: 0 };
+    expect(storage.saveProduct(testProduct).success).toBe(true);
+
+    const firstPurchase = makePurchaseInvoice(0, 120);
+    expect(storage.postPurchaseInvoice(firstPurchase, { user: adminUser }).success).toBe(true);
+    const secondPurchase = makePurchaseInvoice(0, 240);
+    expect(storage.postPurchaseInvoice(secondPurchase, { user: adminUser }).success).toBe(true);
+    expect(storage.getProducts().find(product => product.id === testProduct.id)!.stockPieces).toBe(24);
+
+    const customer = storage.getCustomers()[0];
+    const sale: SalesInvoice = {
+      id: 'sale-fifo-return-1',
+      invoiceNumber: 'INV-FIFO-RETURN-1',
+      date: new Date().toISOString().split('T')[0],
+      time: '12:00',
+      customerId: customer.id,
+      customerName: customer.name,
+      salespersonId: adminUser.id,
+      salespersonName: adminUser.fullName,
+      items: [{
+        id: 'sale-item-fifo-1',
+        productId: testProduct.id,
+        productCode: testProduct.code,
+        productName: testProduct.name,
+        unit: 'PIECE',
+        unitLabel: 'قطعة',
+        quantity: 13,
+        piecesCount: 13,
+        unitPrice: 30,
+        defaultUnitPrice: 30,
+        costPrice: 0,
+        totalPrice: 390,
+        discount: 0,
+        lineProfit: 0,
+      }],
+      subtotal: 390,
+      discountType: 'AMOUNT',
+      discountValue: 0,
+      discountAmount: 0,
+      total: 390,
+      paidAmount: 0,
+      remainingAmount: 0,
+      paymentType: 'CASH',
+      previousCustomerBalance: 0,
+      newCustomerBalance: 0,
+      totalCost: 0,
+      totalProfit: 0,
+      status: 'POSTED',
+    };
+    expect(storage.postSalesInvoice(sale).success).toBe(true);
+    expect(sale.totalCost).toBe(140);
+    seedDrawerCash(5000);
+
+    const damagedReturn = storage.processSalesReturn({
+      invoiceId: sale.id,
+      items: [{ invoiceItemId: 'sale-item-fifo-1', productId: testProduct.id, unit: 'PIECE', quantity: 10 }],
+      reason: 'DAMAGED',
+      refundMethod: 'CASH',
+      returnToStock: false,
+      user: adminUser,
+    });
+    expect(damagedReturn.success).toBe(true);
+    expect(damagedReturn.salesReturn?.totalCost).toBe(100);
+    expect(damagedReturn.salesReturn?.items[0].costTotal).toBe(100);
+
+    const stockableReturn = storage.processSalesReturn({
+      invoiceId: sale.id,
+      items: [{ invoiceItemId: 'sale-item-fifo-1', productId: testProduct.id, unit: 'PIECE', quantity: 3 }],
+      reason: 'CUSTOMER_CHANGED_MIND',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: adminUser,
+    });
+    expect(stockableReturn.success).toBe(true);
+    expect(stockableReturn.salesReturn?.totalCost).toBe(40);
+    expect(stockableReturn.salesReturn?.items[0].costTotal).toBe(40);
+    expect(storage.getProducts().find(product => product.id === testProduct.id)!.stockPieces).toBe(14);
+
+    const allocations = storage.getFifoAllocations().filter(allocation => allocation.invoiceId === sale.id);
+    expect(allocations).toHaveLength(2);
+    expect(allocations[0].nonRestockedReturnQty).toBe(10);
+    expect(allocations[0].returnedQty).toBe(2);
+    expect(allocations[1].returnedQty).toBe(1);
+    expect(storage.validateInventoryFifo().valid).toBe(true);
+
+    const overReturn = storage.processSalesReturn({
+      invoiceId: sale.id,
+      items: [{ invoiceItemId: 'sale-item-fifo-1', productId: testProduct.id, unit: 'PIECE', quantity: 0.1 }],
+      reason: 'OTHER',
+      reasonNote: 'اختبار تجاوز الكمية',
+      refundMethod: 'CASH',
+      returnToStock: true,
+      user: adminUser,
+    });
+    expect(overReturn.success).toBe(false);
   });
 
   it('uses the configured cartons-per-pallet value for stock and FIFO lot quantities', () => {

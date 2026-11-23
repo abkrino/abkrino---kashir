@@ -2710,7 +2710,7 @@ class StorageService {
     if (!fifoInit.success) return { success: false, error: fifoInit.error };
 
     const subtotal = Math.round(returnItems.reduce((s, it) => s + it.subtotal, 0) * 100) / 100;
-    const totalCost = Math.round(returnItems.reduce((s, it) => s + it.costTotal, 0) * 100) / 100;
+    let totalCost = Math.round(returnItems.reduce((s, it) => s + it.costTotal, 0) * 100) / 100;
 
     // Apply proportional invoice-level discount if original invoice had a discount
     let discountAdjustedAmount = 0;
@@ -2724,7 +2724,6 @@ class StorageService {
       totalAmount = maxRemainingInvoiceAmount;
       discountAdjustedAmount = Math.max(0, Math.round((subtotal - totalAmount) * 100) / 100);
     }
-    const totalProfitReversed = Math.round((totalAmount - totalCost) * 100) / 100;
 
     // 5. Refund Method checks BEFORE applying any side effects
     let resolvedFunding: CashMovementFunding | undefined;
@@ -2767,18 +2766,27 @@ class StorageService {
 
     let returnLots = this.getInventoryLots();
     let returnAllocations = this.getFifoAllocations();
-    if (params.returnToStock) {
-      for (const item of returnItems) {
-        const originalItem = invoice.items.find(candidate => this.getInvoiceLineKey(candidate) === item.itemKey);
-        if (!originalItem) return { success: false, error: 'تعذر ربط المرتجع بسطر البيع الأصلي.' };
-        const hasOriginalAllocation = returnAllocations.some(allocation => allocation.invoiceId === invoice.id && allocation.invoiceItemId === originalItem.id);
-        if (hasOriginalAllocation) {
-          const returned = returnToOriginalLots(returnLots, returnAllocations, invoice.id, originalItem.id, item.piecesCount);
-          if (returned.error) return { success: false, error: returned.error };
-          returnLots = returned.lots;
-          returnAllocations = returned.allocations;
-        } else if (!returnAllocations.some(allocation => allocation.invoiceId === invoice.id)) {
-          // Compatibility path for sales invoices posted before FIFO activation.
+    for (const item of returnItems) {
+      const originalItem = invoice.items.find(candidate => this.getInvoiceLineKey(candidate) === item.itemKey);
+      if (!originalItem) return { success: false, error: 'تعذر ربط المرتجع بسطر البيع الأصلي.' };
+      const hasOriginalAllocation = returnAllocations.some(allocation =>
+        allocation.invoiceId === invoice.id && allocation.invoiceItemId === originalItem.id
+      );
+      if (hasOriginalAllocation) {
+        const returned = returnToOriginalLots(
+          returnLots, returnAllocations, invoice.id, originalItem.id, item.piecesCount, params.returnToStock
+        );
+        if (returned.error) return { success: false, error: returned.error };
+        returnLots = returned.lots;
+        returnAllocations = returned.allocations;
+        item.costTotal = returned.costTotal;
+        item.unitCostPrice = item.quantity > 0
+          ? Math.round((returned.costTotal / item.quantity) * 100) / 100
+          : 0;
+      } else if (!returnAllocations.some(allocation => allocation.invoiceId === invoice.id)) {
+        // Compatibility path for sales invoices posted before FIFO activation.
+        // Their historical blended cost is the only available cost evidence.
+        if (params.returnToStock) {
           const unitCost = item.piecesCount > 0 ? item.costTotal / item.piecesCount : 0;
           try {
             returnLots = receiveLot(returnLots, {
@@ -2790,21 +2798,34 @@ class StorageService {
           } catch (error: any) {
             return { success: false, error: error?.message || 'تعذر إنشاء دفعة المرتجع.' };
           }
-        } else {
-          return { success: false, error: 'تخصيص FIFO لسطر البيع الأصلي غير مكتمل؛ تم إيقاف المرتجع لحماية تكلفة المخزون.' };
         }
+      } else {
+        return { success: false, error: 'تخصيص FIFO لسطر البيع الأصلي غير مكتمل؛ تم إيقاف المرتجع لحماية تكلفة المخزون.' };
       }
+    }
+
+    if (params.returnToStock) {
       const nextStockProducts = products.map(product => ({ ...product }));
       for (const item of returnItems) {
         const product = nextStockProducts.find(candidate => candidate.id === item.productId);
         if (product) product.stockPieces = Math.round((product.stockPieces + item.piecesCount) * 1000) / 1000;
       }
-      const ledgerErrors = [...validateFifoLedger(nextStockProducts, returnLots), ...validateFifoAllocations(returnLots, returnAllocations)];
+      const ledgerErrors = [
+        ...validateFifoLedger(nextStockProducts, returnLots),
+        ...validateFifoAllocations(returnLots, returnAllocations),
+      ];
       if (ledgerErrors.length) return { success: false, error: ledgerErrors[0] };
       this.setItem(STORAGE_KEYS.PRODUCTS, nextStockProducts);
       this.setItem(STORAGE_KEYS.INVENTORY_LOTS, returnLots);
-      this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, returnAllocations);
+    } else {
+      const allocationErrors = validateFifoAllocations(returnLots, returnAllocations);
+      if (allocationErrors.length) return { success: false, error: allocationErrors[0] };
     }
+    this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, returnAllocations);
+
+    // Use the exact historical lot costs, not the invoice line's blended average.
+    totalCost = Math.round(returnItems.reduce((sum, item) => sum + item.costTotal, 0) * 100) / 100;
+    const totalProfitReversed = Math.round((totalAmount - totalCost) * 100) / 100;
 
     if (params.refundMethod === 'CUSTOMER_CREDIT' && targetCustomer) {
       targetCustomer.currentBalance = Math.round((targetCustomer.currentBalance - totalAmount) * 100) / 100;

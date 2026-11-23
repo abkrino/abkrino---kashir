@@ -31,6 +31,8 @@ export interface FifoAllocation {
   quantity: number;
   unitCost: number;
   returnedQty: number;
+  /** Returned to the customer but not restocked (e.g. damaged/unsaleable). */
+  nonRestockedReturnQty?: number;
   createdAt: string;
 }
 
@@ -153,33 +155,57 @@ export function releaseInvoiceAllocations(
   return { lots: nextLots, allocations: nextAllocations };
 }
 
-/** Restock a customer return into the exact lots consumed by the original sale. */
+/** Allocate a customer return against the exact lots consumed by the original sale.
+ * Non-restocked (damaged/unsaleable) returns are tracked separately from stock-restored
+ * quantities so a later return cannot reuse the same sold units.
+ */
 export function returnToOriginalLots(
   lots: InventoryLot[],
   allocations: FifoAllocation[],
   invoiceId: string,
   invoiceItemId: string,
-  quantity: number
-): { lots: InventoryLot[]; allocations: FifoAllocation[]; error?: string } {
+  quantity: number,
+  restock = true
+): { lots: InventoryLot[]; allocations: FifoAllocation[]; costTotal: number; error?: string } {
   let remaining = roundQty(Number(quantity));
-  if (!Number.isFinite(remaining) || remaining <= 0) return { lots, allocations, error: 'كمية المرتجع غير صالحة.' };
+  if (!Number.isFinite(remaining) || remaining <= 0) {
+    return { lots, allocations, costTotal: 0, error: 'كمية المرتجع غير صالحة.' };
+  }
   const nextLots = lots.map(lot => ({ ...lot }));
   const nextAllocations = allocations.map(allocation => ({ ...allocation }));
   const matches = nextAllocations
-    .filter(a => a.invoiceId === invoiceId && a.invoiceItemId === invoiceItemId && a.returnedQty < a.quantity)
+    .filter(a => {
+      const nonRestocked = Number(a.nonRestockedReturnQty) || 0;
+      return a.invoiceId === invoiceId && a.invoiceItemId === invoiceItemId &&
+        a.returnedQty + nonRestocked < a.quantity - 1e-6;
+    })
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-  const returnable = roundQty(matches.reduce((sum, a) => sum + a.quantity - a.returnedQty, 0));
-  if (returnable + 1e-6 < remaining) return { lots, allocations, error: 'كمية المرتجع تتجاوز الكمية المتبقية من تخصيصات FIFO الأصلية.' };
+  const returnable = roundQty(matches.reduce((sum, a) =>
+    sum + a.quantity - a.returnedQty - (Number(a.nonRestockedReturnQty) || 0), 0));
+  if (returnable + 1e-6 < remaining) {
+    return { lots, allocations, costTotal: 0, error: 'كمية المرتجع تتجاوز الكمية المتبقية من تخصيصات FIFO الأصلية.' };
+  }
+  let costTotal = 0;
   for (const allocation of matches) {
     if (remaining <= 1e-6) break;
-    const take = roundQty(Math.min(remaining, allocation.quantity - allocation.returnedQty));
+    const nonRestocked = Number(allocation.nonRestockedReturnQty) || 0;
+    const available = allocation.quantity - allocation.returnedQty - nonRestocked;
+    const take = roundQty(Math.min(remaining, available));
+    if (take <= 0) continue;
     const lot = nextLots.find(candidate => candidate.id === allocation.lotId);
-    if (!lot) return { lots, allocations, error: `دفعة FIFO المرتبطة بالمرتجع غير موجودة: ${allocation.lotId}` };
-    lot.remainingQty = roundQty(lot.remainingQty + take);
-    allocation.returnedQty = roundQty(allocation.returnedQty + take);
+    if (!lot) {
+      return { lots, allocations, costTotal: 0, error: `دفعة FIFO المرتبطة بالمرتجع غير موجودة: ${allocation.lotId}` };
+    }
+    costTotal += take * allocation.unitCost;
+    if (restock) {
+      lot.remainingQty = roundQty(lot.remainingQty + take);
+      allocation.returnedQty = roundQty(allocation.returnedQty + take);
+    } else {
+      allocation.nonRestockedReturnQty = roundQty(nonRestocked + take);
+    }
     remaining = roundQty(remaining - take);
   }
-  return { lots: nextLots, allocations: nextAllocations };
+  return { lots: nextLots, allocations: nextAllocations, costTotal: roundMoney(costTotal) };
 }
 
 export function validateFifoAllocations(lots: InventoryLot[], allocations: FifoAllocation[]): string[] {
@@ -193,13 +219,17 @@ export function validateFifoAllocations(lots: InventoryLot[], allocations: FifoA
     const lot = lotById.get(allocation.lotId);
     if (!lot) errors.push(`تخصيص FIFO ${allocation.id}: دفعة المخزون غير موجودة.`);
     else if (lot.productId !== allocation.productId) errors.push(`تخصيص FIFO ${allocation.id}: الصنف لا يطابق دفعة المخزون.`);
+    const nonRestockedReturnQty = Number(allocation.nonRestockedReturnQty ?? 0);
     if (!allocation.invoiceId || !allocation.invoiceItemId || !allocation.productId ||
         !Number.isFinite(allocation.quantity) || allocation.quantity <= 0 ||
         !Number.isFinite(allocation.returnedQty) || allocation.returnedQty < 0 ||
-        allocation.returnedQty > allocation.quantity + 1e-6 ||
+        !Number.isFinite(nonRestockedReturnQty) || nonRestockedReturnQty < 0 ||
+        allocation.returnedQty + nonRestockedReturnQty > allocation.quantity + 1e-6 ||
         !Number.isFinite(allocation.unitCost) || allocation.unitCost < 0) {
       errors.push(`تخصيص FIFO ${allocation.id}: بيانات كمية أو تكلفة غير صالحة.`);
     }
+    // Only physically restocked returns reduce the quantity consumed from a lot.
+    // Non-restocked returns remain consumed inventory and therefore stay in COGS.
     const outstanding = Number(allocation.quantity) - Number(allocation.returnedQty);
     consumedByLot.set(allocation.lotId, (consumedByLot.get(allocation.lotId) || 0) + (Number.isFinite(outstanding) ? outstanding : 0));
   }
