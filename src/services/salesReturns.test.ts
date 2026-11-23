@@ -722,4 +722,72 @@ describe('Sales Returns (مرتجعات المبيعات)', () => {
     expect(legacyRestore.success).toBe(true);
     expect(storage.getSalesReturns()).toEqual([]);
   });
+
+  it('blocks deleting a received purchase when removing its goods and bonus would make stock negative', () => {
+    const product = { ...testProduct, stockPieces: 10 };
+    storage.setItem(STORAGE_KEYS.PRODUCTS, [product]);
+    const purchase = {
+      id: 'pur-over-delete',
+      invoiceNumber: 'PUR-OVER-DELETE',
+      date: new Date().toISOString().slice(0, 10),
+      supplierId: 'supplier-test',
+      supplierName: 'مورد اختبار',
+      supplierType: 'WHOLESALER',
+      items: [{ productId: product.id, productName: product.name, quantity: 5, unit: 'PIECE' }],
+      subtotal: 100,
+      discountAmount: 0,
+      freightCost: 0,
+      bonusType: 'GOODS',
+      bonusGoodsQuantity: 1,
+      totalCost: 100,
+      paidAmount: 0,
+      remainingAmount: 0,
+      paymentType: 'CASH',
+      previousSupplierBalance: 0,
+      newSupplierBalance: 0,
+      isStockInserted: true,
+    };
+    storage.setItem(STORAGE_KEYS.PURCHASES, [purchase]);
+
+    const result = storage.deletePurchaseInvoice(purchase.id);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('لا يمكن حذف فاتورة الشراء');
+    expect(storage.getProducts().find(p => p.id === product.id)?.stockPieces).toBe(10);
+    expect(storage.getPurchases()).toHaveLength(1);
+  });
+
+  it('deletes a received purchase only when stock can cover its goods and bonus', () => {
+    const product = { ...testProduct, stockPieces: 100 };
+    storage.setItem(STORAGE_KEYS.PRODUCTS, [product]);
+    const purchase = {
+      id: 'pur-safe-delete',
+      invoiceNumber: 'PUR-SAFE-DELETE',
+      date: new Date().toISOString().slice(0, 10),
+      supplierId: 'supplier-test',
+      supplierName: 'مورد اختبار',
+      supplierType: 'WHOLESALER',
+      items: [{ productId: product.id, productName: product.name, quantity: 5, unit: 'PIECE' }],
+      subtotal: 100,
+      discountAmount: 0,
+      freightCost: 0,
+      bonusType: 'GOODS',
+      bonusGoodsQuantity: 1,
+      totalCost: 100,
+      paidAmount: 0,
+      remainingAmount: 0,
+      paymentType: 'CASH',
+      previousSupplierBalance: 0,
+      newSupplierBalance: 0,
+      isStockInserted: true,
+    };
+    storage.setItem(STORAGE_KEYS.PURCHASES, [purchase]);
+
+    const result = storage.deletePurchaseInvoice(purchase.id);
+
+    expect(result.success).toBe(true);
+    expect(storage.getProducts().find(p => p.id === product.id)?.stockPieces).toBe(85);
+    expect(storage.getPurchases()).toHaveLength(0);
+  });
+
 });
