@@ -3180,7 +3180,7 @@ class StorageService {
       const originalQty = purchase.items.reduce((sum, item) => {
         if (item.productId !== productId) return sum;
         const factor = item.unit === 'CARTON' ? Number(product.piecesPerWholesaleUnit)
-          : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * 20 : 1;
+          : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * (Number(product.piecesPerPallet) || 20) : 1;
         return sum + Number(item.quantity) * factor;
       }, 0) + (purchase.bonusType === 'GOODS' && purchase.items[0]?.productId === productId
         ? Number(purchase.bonusGoodsQuantity || 0) * Number(product.piecesPerWholesaleUnit) : 0);
@@ -3377,7 +3377,7 @@ class StorageService {
           const piecesPerUnit = item.unit === 'CARTON' 
             ? prod.piecesPerWholesaleUnit 
             : item.unit === 'PALLET' 
-            ? (prod.piecesPerWholesaleUnit * 20) 
+            ? (prod.piecesPerWholesaleUnit * (Number(prod.piecesPerPallet) || 20)) 
             : 1;
 
           const addedPieces = item.quantity * piecesPerUnit;
@@ -3421,7 +3421,7 @@ class StorageService {
         const item = purchase.items[index];
         const product = products.find(p => p.id === item.productId)!;
         const factor = item.unit === 'CARTON' ? Number(product.piecesPerWholesaleUnit)
-          : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * 20 : 1;
+          : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * (Number(product.piecesPerPallet) || 20) : 1;
         const receivedQty = Number(item.quantity) * factor;
         try {
           lots = receiveLot(lots, {
@@ -3544,7 +3544,7 @@ class StorageService {
           return { success: false, error: `بيانات كمية أو وحدة غير صالحة للصنف "${product.name}".` };
         }
         const piecesPerUnit = item.unit === 'CARTON' ? Number(product.piecesPerWholesaleUnit)
-          : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * 20 : 1;
+          : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * (Number(product.piecesPerPallet) || 20) : 1;
         if (!Number.isFinite(piecesPerUnit) || piecesPerUnit <= 0) {
           return { success: false, error: `معامل تحويل الوحدة غير صالح للصنف "${product.name}".` };
         }
@@ -3712,7 +3712,7 @@ class StorageService {
         const piecesPerUnit = item.unit === 'CARTON'
           ? Number(prod.piecesPerWholesaleUnit)
           : item.unit === 'PALLET'
-          ? Number(prod.piecesPerWholesaleUnit) * 20
+          ? Number(prod.piecesPerWholesaleUnit) * (Number(prod.piecesPerPallet) || 20)
           : 1;
         const addedPieces = Number(item.quantity) * piecesPerUnit;
         const totalPiecesBefore = Number(prod.stockPieces) || 0;
@@ -3742,7 +3742,7 @@ class StorageService {
       const item = purchase.items[index];
       const product = products.find(p => p.id === item.productId)!;
       const factor = item.unit === 'CARTON' ? Number(product.piecesPerWholesaleUnit)
-        : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * 20 : 1;
+        : item.unit === 'PALLET' ? Number(product.piecesPerWholesaleUnit) * (Number(product.piecesPerPallet) || 20) : 1;
       const receivedQty = Number(item.quantity) * factor;
       try {
         lots = receiveLot(lots, {
