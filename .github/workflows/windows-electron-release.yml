@@ -11,6 +11,7 @@ on:
   push:
     branches:
       - release/electron-voice-announcer
+      - v2/review-and-stabilization
   pull_request:
     branches:
       - main
