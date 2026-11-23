@@ -3749,7 +3749,7 @@ class StorageService {
           id: `lot-purchase-${purchase.id}-${index + 1}`, productId: product.id,
           source: 'PURCHASE', referenceId: purchase.id, referenceNumber: purchase.invoiceNumber,
           receivedAt: new Date().toISOString(),
-          originalQty: receivedQty, remainingQty: receivedQty, unitCost: Number(item.unitCost) / factor,
+          originalQty: receivedQty, remainingQty: receivedQty, unitCost: (Number(item.unitCost) * landedCostMultiplier) / factor,
           batchNumber: item.batchNumber, expiryDate: item.expiryDate,
         });
       } catch (error: any) {
