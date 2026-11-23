@@ -21,6 +21,20 @@ describe('Backup checksum JSON compatibility', () => {
     expect(checksum).toMatch(/^[a-f0-9]{64}$/);
   });
 
+
+  it('keeps export checksums stable after JSON serialization removes undefined properties', async () => {
+    const exportData = {
+      products: [{ id: 'p1', optionalNote: undefined, name: 'صنف' }],
+      currentShift: null,
+      users: [{ id: 'u1', optionalPin: undefined }],
+    };
+    const checksumBeforeExport = await computeDataChecksum(exportData);
+    const serializedPackage = JSON.stringify({ checksum: checksumBeforeExport, data: exportData });
+    const importedPackage = JSON.parse(serializedPackage);
+    const checksumAfterImport = await computeDataChecksum(importedPackage.data);
+    expect(checksumAfterImport).toBe(checksumBeforeExport);
+  });
+
   it('retains the established checksum serialization for previously exported JSON data', () => {
     const oldBackupData = {
       products: [{ id: 'p1', name: 'صنف', stockPieces: 5 }],
