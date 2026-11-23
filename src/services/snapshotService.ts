@@ -421,8 +421,6 @@ class SnapshotService {
           users: data.users?.length || 0,
           parkedCarts: data.parkedCarts?.length || 0,
           salesReturns: data.salesReturns?.length || 0,
-        inventoryLots: data.inventoryLots?.length || 0,
-        fifoAllocations: data.fifoAllocations?.length || 0,
           inventoryLots: data.inventoryLots?.length || 0,
           fifoAllocations: data.fifoAllocations?.length || 0,
         },
