@@ -245,9 +245,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
                           onClick={() => handleItemClick(item.id)}
                           className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-right transition-all cursor-pointer ${
                             isItemActive
-                              ? 'bg-emerald-600 text-white font-black shadow-sm shadow-emerald-600/30'
+                              ? 'abkrino-nav-active text-white font-black'
                               : item.highlight
-                              ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/40 font-bold border border-emerald-200 dark:border-emerald-800/60'
+                              ? 'abkrino-nav-highlight font-bold'
                               : 'text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800/80 font-bold'
                           }`}
                         >
@@ -305,7 +305,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <>
       {/* Desktop Persistent Sidebar */}
-      <aside className="w-64 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 hidden lg:flex flex-col shrink-0 transition-colors z-20">
+      <aside className="abkrino-sidebar w-64 bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-800 hidden lg:flex flex-col shrink-0 transition-colors z-20">
         {navContent}
       </aside>
 
@@ -324,7 +324,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           />
 
           {/* Drawer Content */}
-          <div className="relative w-72 max-w-[85vw] bg-white dark:bg-slate-900 h-full shadow-2xl flex flex-col z-10 transition-transform animate-in slide-in-from-right duration-200">
+          <div className="abkrino-sidebar relative w-72 max-w-[85vw] bg-white dark:bg-slate-900 h-full shadow-2xl flex flex-col z-10 transition-transform animate-in slide-in-from-right duration-200">
             {navContent}
           </div>
         </div>

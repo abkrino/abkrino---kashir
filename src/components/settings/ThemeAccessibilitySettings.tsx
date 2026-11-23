@@ -60,6 +60,10 @@ export const ThemeAccessibilitySettings: React.FC = () => {
     themeService.updateSetting('highContrast', !settings.highContrast);
   };
 
+  const handleToggleReduceMotion = () => {
+    themeService.updateSetting('reduceMotion', !settings.reduceMotion);
+  };
+
   const handleResetDefaults = () => {
     themeService.saveSettings({
       theme: 'dark',
@@ -333,6 +337,31 @@ export const ThemeAccessibilitySettings: React.FC = () => {
           ) : (
             <span>تفعيل التباين العالي</span>
           )}
+        </button>
+      </div>
+
+      {/* Section 4: Reduced Motion Accessibility */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-2xl p-6 shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div>
+          <h3 className="text-xl font-bold text-slate-900 dark:text-white flex items-center gap-2">
+            <Clock className="w-6 h-6 text-emerald-600 dark:text-emerald-400" />
+            <span>تقليل الحركة والمؤثرات</span>
+          </h3>
+          <p className="text-sm text-slate-600 dark:text-slate-400 mt-1">
+            يقلل الانتقالات والحركات البصرية داخل البرنامج لتجربة أكثر هدوءاً، وقد يساعد على الأجهزة الأضعف.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={handleToggleReduceMotion}
+          aria-pressed={settings.reduceMotion}
+          className={`btn-primary-accessible cursor-pointer transition-all ${
+            settings.reduceMotion
+              ? 'bg-emerald-600 text-white shadow-md'
+              : 'bg-slate-200 dark:bg-slate-800 text-slate-800 dark:text-slate-200 hover:bg-slate-300 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-600'
+          }`}
+        >
+          {settings.reduceMotion ? 'تقليل الحركة مفعّل ✓' : 'تفعيل تقليل الحركة'}
         </button>
       </div>
 

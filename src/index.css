@@ -325,3 +325,49 @@ button:active:not(:disabled) {
     border: 0 !important;
   }
 }
+
+
+/* ABKRINO navigation surfaces and active states. */
+.abkrino-sidebar {
+  background: var(--bg-surface) !important;
+  color: var(--text-main);
+  border-color: var(--border-app) !important;
+}
+.abkrino-sidebar .abkrino-nav-active {
+  background: var(--brand-teal) !important;
+  color: #ffffff !important;
+  border: 1px solid var(--brand-teal) !important;
+  border-radius: var(--clay-radius-control) !important;
+  box-shadow:
+    inset 2px 2px 5px rgba(0, 0, 0, 0.12),
+    3px 4px 10px rgba(0, 137, 123, 0.18) !important;
+}
+html.dark .abkrino-sidebar .abkrino-nav-active {
+  color: #071b19 !important;
+  box-shadow:
+    0 0 0 1px rgba(0, 200, 179, 0.14),
+    0 4px 14px rgba(0, 200, 179, 0.16),
+    inset 1px 1px 0 rgba(255, 255, 255, 0.12) !important;
+}
+.abkrino-sidebar .abkrino-nav-highlight {
+  background: var(--accent-emerald-bg) !important;
+  color: var(--brand-teal) !important;
+  border: 1px solid var(--accent-emerald-border) !important;
+  border-radius: var(--clay-radius-control) !important;
+}
+.abkrino-topbar {
+  background: var(--bg-surface) !important;
+  color: var(--text-main) !important;
+  border-color: var(--border-app) !important;
+  box-shadow: var(--clay-shadow-soft) !important;
+}
+
+/* User-selected reduced motion is persisted with accessibility settings. */
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+  scroll-behavior: auto !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}

@@ -102,7 +102,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const canViewCash = isAdmin || checkUserPermission(currentUser, 'manage_cash');
 
   return (
-    <header className="bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-b border-slate-200 dark:border-slate-800 shadow-xs sticky top-0 z-40 select-none transition-colors" dir="rtl">
+    <header className="abkrino-topbar bg-white dark:bg-slate-900 text-slate-900 dark:text-white border-b border-slate-200 dark:border-slate-800 shadow-xs sticky top-0 z-40 select-none transition-colors" dir="rtl">
       <div className="max-w-7xl mx-auto px-3 sm:px-4 py-2 sm:py-2.5 flex items-center justify-between gap-3">
         {/* Right Section: Brand & Mobile Menu Toggle */}
         <div className="flex items-center gap-2 sm:gap-3 min-w-0">

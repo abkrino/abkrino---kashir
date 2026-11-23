@@ -110,7 +110,10 @@ class ThemeService {
       root.style.setProperty('--app-base-font-size', '18px');
     }
 
-    // 3. High Contrast
+    // 3. Reduced Motion preference (also honored by the CSS media query).
+    root.classList.toggle('reduce-motion', Boolean(s.reduceMotion));
+
+    // 4. High Contrast
     if (s.highContrast) {
       root.classList.add('high-contrast');
     } else {
