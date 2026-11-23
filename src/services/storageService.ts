@@ -2161,6 +2161,12 @@ class StorageService {
     if (oldIndex === -1) return { success: false, error: 'الفاتورة غير موجودة' };
 
     const oldInvoice = invoices[oldIndex];
+    const fifoInit = this.ensureFifoInitialized();
+    if (!fifoInit.success) return { success: false, error: fifoInit.error };
+    const oldFifoAllocations = this.getFifoAllocations();
+    if (!oldFifoAllocations.some(allocation => allocation.invoiceId === oldInvoice.id)) {
+      return { success: false, error: 'لا يمكن تعديل فاتورة بيع قديمة لا تحتوي على تخصيصات FIFO؛ يلزم تسويتها أولاً.' };
+    }
     if (this.getSalesReturns(oldInvoice.id).length > 0) {
       return {
         success: false,
@@ -2241,6 +2247,24 @@ class StorageService {
       projectedStock.set(productId, availableAfterReversal - requested);
     }
 
+    // Release the previous sale allocations, then allocate the edited invoice from FIFO again.
+    const released = releaseInvoiceAllocations(this.getInventoryLots(), oldFifoAllocations, oldInvoice.id);
+    if (released.error) return { success: false, error: released.error };
+    let nextLots = released.lots;
+    let nextAllocations = released.allocations;
+    let nextFifoCost = 0;
+    for (const item of updatedInvoice.items) {
+      const allocated = allocateFifo(nextLots, nextAllocations, updatedInvoice.id, item.id, item.productId, Number(item.piecesCount), `${updatedInvoice.date}T${updatedInvoice.time || '00:00:00'}`);
+      if (allocated.error) return { success: false, error: allocated.error };
+      nextLots = allocated.lots;
+      nextAllocations = allocated.allocations;
+      nextFifoCost += allocated.costTotal;
+      item.costPrice = Number(item.quantity) > 0 ? Math.round((allocated.costTotal / Number(item.quantity)) * 100) / 100 : 0;
+      item.lineProfit = Math.round((Number(item.totalPrice) - allocated.costTotal) * 100) / 100;
+    }
+    updatedInvoice.totalCost = Math.round(nextFifoCost * 100) / 100;
+    updatedInvoice.totalProfit = Math.round((Number(updatedInvoice.total) - updatedInvoice.totalCost) * 100) / 100;
+
     // Prepare all related records before applying any changes.
     const nextProducts = products.map(product => ({
       ...product,
@@ -2306,7 +2330,11 @@ class StorageService {
     nextInvoices[oldIndex] = updatedInvoice;
 
     // All validation is complete. Apply the prepared records.
+    const fifoErrors = validateFifoLedger(nextProducts, nextLots);
+    if (fifoErrors.length) return { success: false, error: fifoErrors[0] };
     this.setItem(STORAGE_KEYS.PRODUCTS, nextProducts);
+    this.setItem(STORAGE_KEYS.INVENTORY_LOTS, nextLots);
+    this.setItem(STORAGE_KEYS.FIFO_ALLOCATIONS, nextAllocations);
     this.setItem(STORAGE_KEYS.CUSTOMERS, nextCustomers);
     if (oldPaid > 0 || nextPaid > 0) {
       this.setItem(STORAGE_KEYS.CASH_MOVEMENTS, nextCashMovements);
