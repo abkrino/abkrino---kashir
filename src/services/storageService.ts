@@ -3234,7 +3234,13 @@ class StorageService {
       if (purchase.bonusType === 'GOODS' && purchase.bonusGoodsQuantity && purchase.items.length > 0) {
         const firstProd = products.find(p => p.id === purchase.items[0].productId);
         if (firstProd) {
-          firstProd.stockPieces += (purchase.bonusGoodsQuantity * firstProd.piecesPerWholesaleUnit);
+          const bonusPieces = Number(purchase.bonusGoodsQuantity) * Number(firstProd.piecesPerWholesaleUnit);
+          const valueBeforeBonus = Math.max(0, Number(firstProd.stockPieces) || 0) * (Number(firstProd.costPricePerBase) || 0);
+          firstProd.stockPieces += bonusPieces;
+          if (firstProd.stockPieces > 0) {
+            firstProd.costPricePerBase = Math.round((valueBeforeBonus / firstProd.stockPieces) * 100) / 100;
+            firstProd.costPricePerCarton = Math.round(firstProd.costPricePerBase * Number(firstProd.piecesPerWholesaleUnit) * 100) / 100;
+          }
         }
       }
 
@@ -3552,7 +3558,13 @@ class StorageService {
     if (purchase.bonusType === 'GOODS' && Number(purchase.bonusGoodsQuantity) > 0 && purchase.items.length > 0) {
       const bonusProduct = products.find(p => p.id === purchase.items[0].productId);
       if (!bonusProduct) return { success: false, error: 'صنف بونص البضاعة غير موجود.' };
-      bonusProduct.stockPieces += Number(purchase.bonusGoodsQuantity) * Number(bonusProduct.piecesPerWholesaleUnit);
+      const bonusPieces = Number(purchase.bonusGoodsQuantity) * Number(bonusProduct.piecesPerWholesaleUnit);
+      const valueBeforeBonus = Math.max(0, Number(bonusProduct.stockPieces) || 0) * (Number(bonusProduct.costPricePerBase) || 0);
+      bonusProduct.stockPieces += bonusPieces;
+      if (bonusProduct.stockPieces > 0) {
+        bonusProduct.costPricePerBase = Math.round((valueBeforeBonus / bonusProduct.stockPieces) * 100) / 100;
+        bonusProduct.costPricePerCarton = Math.round(bonusProduct.costPricePerBase * Number(bonusProduct.piecesPerWholesaleUnit) * 100) / 100;
+      }
     }
     let lots = this.getInventoryLots();
     for (let index = 0; index < purchase.items.length; index++) {
