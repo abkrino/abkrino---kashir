@@ -36,7 +36,8 @@ describe('Backup checksum JSON compatibility', () => {
       parkedCarts: [],
       currentShift: null,
     };
-    expect(canonicalStringify(oldBackupData)).toBe(JSON.stringify(oldBackupData, Object.keys(oldBackupData).sort()));
-    expect(canonicalStringify(oldBackupData)).toContain('"products"');
+    expect(canonicalStringify(oldBackupData)).toBe(
+      '{"auditLogs":[],"cashMovements":[],"customers":[],"currentShift":null,"expenses":[],"invoices":[],"parkedCarts":[],"products":[{"id":"p1","name":"صنف","stockPieces":5}],"purchases":[],"stockAdjustments":[],"suppliers":[],"users":[]}'
+    );
   });
 });
