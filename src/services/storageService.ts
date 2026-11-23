@@ -3095,7 +3095,7 @@ class StorageService {
 
     const fifoInit = this.ensureFifoInitialized();
     if (!fifoInit.success) return { success: false, error: fifoInit.error };
-    const products = this.getProducts();
+    const products = this.getProducts().map(product => ({ ...product }));
     const suppliers = this.getSuppliers();
     const supp = suppliers.find(s => s.id === purchase.supplierId);
     if (!supp) return { success: false, error: 'المورد غير محدد' };
@@ -3432,7 +3432,7 @@ class StorageService {
 
     const fifoInit = this.ensureFifoInitialized();
     if (!fifoInit.success) return { success: false, error: fifoInit.error };
-    const products = this.getProducts();
+    const products = this.getProducts().map(product => ({ ...product }));
     // Validate every line and the bonus before applying any stock increase.
     for (const item of purchase.items || []) {
       const prod = products.find(p => p.id === item.productId);
