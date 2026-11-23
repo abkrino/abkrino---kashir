@@ -277,6 +277,70 @@ describe('Sales Returns (مرتجعات المبيعات)', () => {
     return inv;
   }
 
+  it('blocks a sale that exceeds stock without changing stock, invoices, cash or customer balances', () => {
+    const existing = postSampleInvoice();
+    const stockBefore = storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces;
+    const invoicesBefore = storage.getSalesInvoices().length;
+    const cashBefore = storage.getCashMovements().length;
+    const customersBefore = JSON.stringify(storage.getCustomers());
+
+    const attempted: SalesInvoice = {
+      ...existing,
+      id: 'inv-overstock-attempt',
+      invoiceNumber: 'INV-OVERSTOCK-ATTEMPT',
+      items: existing.items.map((item, index) =>
+        index === 0 ? { ...item, piecesCount: stockBefore + 1 } : item
+      ),
+    };
+
+    const result = storage.postSalesInvoice(attempted);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('لا يمكن إتمام البيع');
+    expect(storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces).toBe(stockBefore);
+    expect(storage.getSalesInvoices()).toHaveLength(invoicesBefore);
+    expect(storage.getCashMovements()).toHaveLength(cashBefore);
+    expect(JSON.stringify(storage.getCustomers())).toBe(customersBefore);
+  });
+
+  it('aggregates duplicate invoice lines when checking available stock', () => {
+    const existing = postSampleInvoice();
+    const stockBefore = storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces;
+    const attempted: SalesInvoice = {
+      ...existing,
+      id: 'inv-duplicate-lines-attempt',
+      invoiceNumber: 'INV-DUPLICATE-LINES',
+      items: [
+        { ...existing.items[0], id: 'dup-1', piecesCount: stockBefore * 0.6 },
+        { ...existing.items[0], id: 'dup-2', piecesCount: stockBefore * 0.6 },
+      ],
+    };
+
+    const result = storage.postSalesInvoice(attempted);
+    expect(result.success).toBe(false);
+    expect(storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces).toBe(stockBefore);
+  });
+
+  it('blocks invoice edits that would make stock negative without reverting the old invoice first', () => {
+    const first = postSampleInvoice();
+    const second = postSampleInvoice();
+    const stockBefore = storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces;
+    const invoicesBefore = JSON.stringify(storage.getSalesInvoices());
+
+    const edited: SalesInvoice = {
+      ...first,
+      items: first.items.map((item, index) =>
+        index === 0 ? { ...item, piecesCount: stockBefore + item.piecesCount + 1 } : item
+      ),
+    };
+
+    const result = storage.updateSalesInvoice(edited);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('لا يمكن تعديل الفاتورة');
+    expect(storage.getProducts().find(p => p.id === testProduct.id)!.stockPieces).toBe(stockBefore);
+    expect(JSON.stringify(storage.getSalesInvoices())).toBe(invoicesBefore);
+    expect(storage.getSalesInvoices().some(invoice => invoice.id === second.id)).toBe(true);
+  });
+
   it('1. Enforces quantity cap (sold - previouslyReturned) and supports multiple partial returns up to FULL', () => {
     const inv = postSampleInvoice();
     const initialInvoiceSnapshot = JSON.stringify(storage.getSalesInvoices().find(i => i.id === inv.id));
