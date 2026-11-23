@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { idb } from './idbStore';
+import { licenseService } from './licenseService';
 import { storage, STORAGE_KEYS } from './storageService';
 import { snapshotService, CURRENT_SCHEMA_VERSION } from './snapshotService';
 import { Product } from '../types';
@@ -31,6 +32,9 @@ if (typeof globalThis.localStorage === 'undefined') {
 
 describe('Local Snapshots, SHA-256 Checksum, Restore Safety & Bootstrap Idempotence', () => {
   beforeEach(async () => {
+    // These suites verify storage behavior, not subscription enforcement.
+    // Keep license policy isolated so an expired/missing test token cannot block fixture writes.
+    vi.spyOn(licenseService, 'canPerformWrite').mockReturnValue({ allowed: true, phase: 'ACTIVE' });
     localStorage.clear();
     await idb.kv.clear();
     await idb.snapshots.clear();
