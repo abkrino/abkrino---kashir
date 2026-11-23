@@ -138,6 +138,17 @@
 - Existing batch/expiry fields do not constitute lot-level FIFO.
 - HR module was not present in the audited baseline.
 
+
+
+#### Performance and stability acceptance — mandatory
+- The announcer must never run inference inside the Electron main process, renderer/UI thread, or React event loop. Use a separate worker/child process with asynchronous IPC.
+- Do not load the TTS model at application startup. Load it only when the user opens the announcer and requests generation; unload/terminate the engine after an idle timeout or when the user exits the announcer, subject to measured startup trade-offs.
+- POS sales, product search, inventory, barcode input, printing, and shift operations must remain usable while audio is being generated. Generation must be cancellable; errors/timeouts must not crash or restart the POS.
+- Apply a configurable resource policy: limit inference threads and CPU priority; do not reserve all CPU cores. Prefer CPU-friendly quantization and a bounded memory footprint. GPU acceleration is optional and must never be required for the POS to work.
+- No automatic generation, continuous background inference, or preloading on login. Audio playback must use the already generated local audio file and must not invoke the TTS model.
+- Benchmark matrix: clean Windows 10/11 x64, CPU-only low-end target hardware, and a representative GPU machine. Record cold-start and warm generation latency for 10–20 second Egyptian Arabic offers, peak RAM, CPU utilization, optional VRAM, cancellation latency, and impact on POS interaction latency.
+- Release gate: while generating a 15-second announcement, POS search and cart interaction must remain responsive; no UI freeze, crash, memory leak, or unacceptable sustained CPU saturation. If the selected neural engine fails the low-end CPU test, do not force it on all devices: provide a lightweight/manual-audio fallback or a separately gated capability, and keep POS fully functional.
+- The installer may be larger, but installed model files must be local and the engine must not download anything after installation.
 ### Voice announcer decision update — offline-only
 - Owner explicitly requires speech generation to work **without internet at runtime**. Cloud TTS is rejected; never send announcement text to a remote provider.
 - Current first candidate for a packaged local engine: **Audar-TTS-V1-Flash GGUF Q4_K_M + llama.cpp + its required Arabic codec**. The model card documents local Windows deployment, CPU/GPU support through llama.cpp, Arabic + English output, and an approximately 0.46 GB Q4_K_M model file. It also publishes an AudarAI Open License that permits commercial use and redistribution subject to notices/conditions. Sources: Audar model card and license.
