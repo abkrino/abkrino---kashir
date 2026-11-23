@@ -228,6 +228,38 @@ describe('Accounting Modes, Unified evaluateCashOut & Structured Funding Sources
     };
   }
 
+  it('records FIFO purchase returns against the original supplier lots and balance', () => {
+    const purchase = makePurchaseInvoice(0, 1200);
+    expect(storage.postPurchaseInvoice(purchase, { user: adminUser }).success).toBe(true);
+    const stockBefore = storage.getProducts().find(product => product.id === testProduct.id)!.stockPieces;
+    const supplierBefore = storage.getSuppliers().find(supplier => supplier.id === testSupplier.id)!.currentBalance;
+
+    const result = storage.processPurchaseReturn({
+      purchaseInvoiceId: purchase.id,
+      items: [{ productId: testProduct.id, quantityPieces: 3 }],
+      settlement: 'SUPPLIER_BALANCE',
+      notes: 'اختبار مرتجع جزئي',
+      user: adminUser,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.purchaseReturn?.totalAmount).toBe(300);
+    expect(storage.getProducts().find(product => product.id === testProduct.id)!.stockPieces).toBe(stockBefore - 3);
+    expect(storage.getSuppliers().find(supplier => supplier.id === testSupplier.id)!.currentBalance).toBe(supplierBefore - 300);
+    expect(storage.getPurchaseReturns(purchase.id)).toHaveLength(1);
+    const purchaseLot = storage.getInventoryLots().find(lot => lot.referenceId === purchase.id && lot.source === 'PURCHASE');
+    expect(purchaseLot?.remainingQty).toBe(9);
+    expect(storage.validateInventoryFifo().valid).toBe(true);
+
+    const overReturn = storage.processPurchaseReturn({
+      purchaseInvoiceId: purchase.id,
+      items: [{ productId: testProduct.id, quantityPieces: 10 }],
+      settlement: 'SUPPLIER_BALANCE',
+      user: adminUser,
+    });
+    expect(overReturn.success).toBe(false);
+  });
+
   it('defaults to DAILY_DRAWER and structured DEFAULT_FUNDING_SOURCES', () => {
     expect(storage.getAccountingMode()).toBe('DAILY_DRAWER');
     const sources = storage.getFundingSources();
